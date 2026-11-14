@@ -31,6 +31,8 @@ public enum RenderCommand: Equatable {
   case setFrame(id: NodeID, frame: Rect)
 }
 public protocol RenderBackend: AnyObject {
+  /// Host-scoped values, such as the native window used by popup presenters.
+  var environment: EnvironmentValues { get }
   /// Backends that reconcile the full tree can opt out of `perform` calls
   /// and incremental command generation.
   var needsRenderCommands: Bool { get }
@@ -97,6 +99,7 @@ public final class FakeBackend: RenderBackend {
   }
 }
 extension RenderBackend {
+  public var environment: EnvironmentValues { .default }
   public var needsRenderCommands: Bool { true }
   public func requestRender(_ render: @escaping () -> Void) -> Bool { false }
   public func didMeasureRender(_ timings: [String: Double]) {}

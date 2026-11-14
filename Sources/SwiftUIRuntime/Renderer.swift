@@ -552,6 +552,9 @@ import Foundation
   }
 
   private func buildTree() -> Element {
+    let savedEnvironment = EnvironmentValues.current
+    EnvironmentValues.current = backend.environment
+    defer { EnvironmentValues.current = savedEnvironment }
     lastTimings.removeAll(keepingCapacity: true)
     var start = Date.timeIntervalSinceReferenceDate
     StateRegistry.shared.begin()

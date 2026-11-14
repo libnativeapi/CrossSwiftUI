@@ -126,8 +126,24 @@ func resolvePresentations(_ root: Element, in size: Size) -> Element {
   return result
 }
 extension View {
+  /// Receives a secondary press in the view's local coordinates.
+  public func onSecondaryClick(perform action: @escaping (CGPoint) -> Void) -> some View {
+    SecondaryClickView(content: self, action: action)
+  }
+
   public func contextMenu<Menu: View>(@ViewBuilder menuItems: () -> Menu) -> some View {
     ContextMenuView(content: self, menu: menuItems())
+  }
+}
+private struct SecondaryClickView<Content: View>: View, _PrimitiveView {
+  typealias Body = Never
+  let content: Content
+  let action: (CGPoint) -> Void
+  var body: Never { fatalError() }
+  func _makeElement(path: ViewPath) -> Element {
+    var element = _render(content, path: path)
+    element.secondaryAction = action
+    return element
   }
 }
 private struct ContextMenuView<Content: View, Menu: View>: View, _PrimitiveView {
