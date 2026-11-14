@@ -1,8 +1,20 @@
 import CSwiftUIWindowsTestSupport
 import SwiftUIPort
+import SwiftUIRuntime
 import XCTest
 
 final class WindowsDrawingTests: XCTestCase {
+  func testShadowMaskFalloffTintOpacityClippingAndRetainedLifetime() throws {
+    WindowsDrawingBackend.prepareApplication()
+    for scale in [1.0, 2.0] {
+      let mask = try XCTUnwrap(ShadowMask(width: 200, height: 160, cornerRadius: 12,
+                                         radius: 24, scale: scale))
+      let errors = mask.alpha.withUnsafeBufferPointer {
+        shadow_probe($0.baseAddress, Int32(mask.width), Int32(mask.height), mask.inset, mask.scale)
+      }
+      XCTAssertEqual(errors, 0)
+    }
+  }
   func testScrollPixelReuseMatchesFreshRenderingAndFallsBackForUnsafeFrames() {
     WindowsDrawingBackend.prepareApplication()
     let result = scroll_probe()

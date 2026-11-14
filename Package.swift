@@ -68,6 +68,11 @@ if !buildForWeb {
 let drawingDependencies: [Target.Dependency] = ["CSwiftUIWindows"]
 #elseif !os(macOS)
 let drawingDependencies: [Target.Dependency] = []
+#if os(Linux)
+if !buildForWeb {
+  targets.append(.testTarget(name: "LinuxDrawingTests", dependencies: ["SwiftUIPort"]))
+}
+#endif
 #endif
 
 var products: [Product] = [

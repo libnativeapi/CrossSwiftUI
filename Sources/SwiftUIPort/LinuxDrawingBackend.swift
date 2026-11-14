@@ -323,7 +323,9 @@ public final class LinuxDrawingBackend: RenderBackend {
                           abs(node.props.scaleX), abs(node.props.scaleY))
           let rotates = motion.from.rotation != node.props.rotation || node.props.rotation != 0
           let spread = rotates ? (hypot(frame.width, frame.height) * scale) / 2 : 0
-          let shadow = node.props.shadows.map { $0.radius + max(abs($0.x), abs($0.y)) }.max() ?? 0
+          let shadow = (node.props.shadows.map {
+            ShadowMask.padding(radius: $0.radius) + max(abs($0.x), abs($0.y))
+          }.max() ?? 0) * scale * (rotates ? sqrt(2) : 1)
           let padX = max(spread, frame.width * (scale - 1) / 2) + shadow + 2
           let padY = max(spread, frame.height * (scale - 1) / 2) + shadow + 2
           let bounds = Rect(

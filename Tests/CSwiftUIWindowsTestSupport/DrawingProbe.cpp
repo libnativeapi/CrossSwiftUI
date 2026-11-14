@@ -65,6 +65,70 @@ struct Capture {
   }
 };
 } // namespace
+int shadow_probe(const uint8_t *alpha, int width, int height, double inset,
+                 double mask_scale) {
+  HWND host = CreateWindowExW(0, L"STATIC", L"Shadow regression", WS_OVERLAPPEDWINDOW,
+                              0, 0, 500, 500, nullptr, nullptr,
+                              GetModuleHandleW(nullptr), nullptr);
+  void *surface = sui_surface_create(host, nullptr, nullptr, 0);
+  void *mask = sui_mask_create(alpha, width, height);
+  const double scale = sui_surface_scale(surface);
+  auto px = [scale](double value) { return int(std::round(value * scale)); };
+  auto frame = [&](double x, uint32_t color, bool clipped = false) {
+    sui_surface_begin(surface);
+    sui_surface_shape(surface, 0, 0, 500, 500, 0, 0xFFFFFFFF, 0, 0);
+    if (clipped) sui_surface_clip(surface, 100, 100, 200, 160, 0);
+    sui_surface_mask(surface, mask, x - inset, 108 - inset,
+                      width / mask_scale, height / mask_scale, color);
+    if (clipped) sui_surface_restore(surface);
+    sui_surface_shape(surface, x, 100, 200, 160, 12, 0xFFFFFFFF, 0, 0);
+    sui_surface_end(surface);
+  };
+  int errors = 0, full = 0;
+  frame(100, 0x66000000);
+  {
+    Capture capture(host);
+    auto darkness = [&](int x) { return 255 - GetRValue(GetPixel(capture.dc, px(x), px(180))); };
+    full = darkness(90);
+    if (full <= 20 || darkness(76) <= 8 || darkness(26) > 1) ++errors;
+    int previous = 0;
+    for (int x = 26; x < 100; ++x) {
+      int value = darkness(x);
+      if (value < previous || value - previous > 3) ++errors;
+      previous = value;
+    }
+  }
+  frame(100, 0x33000000);
+  {
+    Capture capture(host);
+    if (std::abs((255 - int(GetRValue(GetPixel(capture.dc, px(90), px(180))))) - full / 2.) > 2)
+      ++errors;
+  }
+  frame(100, 0x66FF0000);
+  {
+    Capture capture(host);
+    auto color = GetPixel(capture.dc, px(90), px(180));
+    if (GetRValue(color) != 255 || std::abs(255 - int(GetGValue(color)) - full) > 2)
+      ++errors;
+  }
+  frame(100, 0x66000000, true);
+  {
+    Capture capture(host);
+    if (GetPixel(capture.dc, px(90), px(180)) != RGB(255, 255, 255)) ++errors;
+  }
+  frame(100, 0x66000000);
+  { Capture capture(host); }
+  frame(200, 0x66000000);
+  sui_mask_destroy(mask); // The retained frame must keep the bitmap alive.
+  {
+    Capture capture(host);
+    if (GetPixel(capture.dc, px(90), px(180)) != RGB(255, 255, 255)) ++errors;
+    if (255 - GetRValue(GetPixel(capture.dc, px(190), px(180))) <= 20) ++errors;
+  }
+  sui_surface_destroy(surface);
+  DestroyWindow(host);
+  return errors;
+}
 drawing_probe_result drawing_probe(void) {
   Probe p;
   p.host = CreateWindowExW(0, L"STATIC", L"SwiftUI drawing regression test",

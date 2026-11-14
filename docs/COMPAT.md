@@ -52,7 +52,7 @@ tests can run on macOS.
 | `.opacity` | partial | per-primitive alpha on Windows; Cairo groups on Linux |
 | `.clipShape` | partial | vector drawing clip and rectangular native control viewport clipping |
 | `.contentShape` | partial | rounded native button hit region on Windows; limited gesture hit testing |
-| `.shadow` | partial | layered approximation |
+| `.shadow` | partial | Gaussian-approximated rounded-rectangle mask on desktop |
 | `.animation` | partial | opacity, rotation, scale and offset interpolation, repeat/delay; no general layout/color interpolation |
 | `.hidden()` | partial | collapses layout instead of retaining space |
 | `.disabled(_:)` | partial | inherited by descendants; inner false can re-enable |

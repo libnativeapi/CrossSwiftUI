@@ -1,4 +1,5 @@
 #pragma once
+#include <stdint.h>
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -16,6 +17,8 @@ typedef struct {
   int copies, pixel_errors, fallback_errors;
 } scroll_probe_result;
 scroll_probe_result scroll_probe(void);
+int shadow_probe(const uint8_t *alpha, int width, int height, double inset,
+                 double scale);
 #ifdef __cplusplus
 }
 #endif

@@ -14,6 +14,26 @@ final class LinuxDrawing {
   private var measured: [TextKey: SwiftUIRuntime.Size] = [:]
   private var layouts: [TextKey: OpaquePointer] = [:]
   private let textContext = pango_font_map_create_context(pango_cairo_font_map_get_default())
+  private final class NativeShadowMask {
+    let surface: OpaquePointer
+    init?(_ mask: ShadowMask) {
+      guard let surface = cairo_image_surface_create(CAIRO_FORMAT_A8, Int32(mask.width), Int32(mask.height)) else { return nil }
+      guard cairo_surface_status(surface) == CAIRO_STATUS_SUCCESS,
+            let data = cairo_image_surface_get_data(surface) else {
+        cairo_surface_destroy(surface)
+        return nil
+      }
+      self.surface = surface
+      let stride = Int(cairo_image_surface_get_stride(surface))
+      for y in 0..<mask.height {
+        for x in 0..<mask.width { data[y * stride + x] = mask.alpha[y * mask.width + x] }
+      }
+      cairo_surface_mark_dirty(surface)
+      cairo_surface_set_device_scale(surface, mask.scale, mask.scale)
+    }
+    deinit { cairo_surface_destroy(surface) }
+  }
+  private let shadowCache = ShadowCache<NativeShadowMask>()
 
   deinit {
     for layout in layouts.values { g_object_unref(UnsafeMutableRawPointer(layout)) }
@@ -114,14 +134,23 @@ final class LinuxDrawing {
       cairo_translate(context, -frame.minX - frame.width / 2, -frame.minY - frame.height / 2)
     }
     for shadow in props.shadows where shadow.color.opacity > 0 {
-      let layers = max(1, min(12, Int(ceil(shadow.radius))))
-      for layer in (0..<layers).reversed() {
-        let spread = Double(layer) / 2
-        let rect = Rect(x: frame.minX + shadow.x - spread, y: frame.minY + shadow.y - spread,
-                        width: frame.width + spread * 2, height: frame.height + spread * 2)
-        addRoundedRect(rect, radius: props.cornerRadius + spread, to: context)
-        source(context, shadow.color.opacity(1 / Double(layers)))
+      // Shadows precede this node's clip/group but remain inside ancestor
+      // groups, so apply this node's relative opacity exactly once here.
+      source(context, shadow.color.opacity(opacity))
+      if shadow.radius <= 0 {
+        let rect = Rect(x: frame.minX + shadow.x, y: frame.minY + shadow.y,
+                        width: frame.width, height: frame.height)
+        addRoundedRect(rect, radius: props.cornerRadius, to: context)
         cairo_fill(context)
+      } else {
+        var sx = 1.0, sy = 1.0
+        cairo_surface_get_device_scale(cairo_get_target(context), &sx, &sy)
+        if let (mask, native) = shadowCache.value(
+          width: frame.width, height: frame.height, corner: props.cornerRadius,
+          radius: shadow.radius, scale: max(sx, sy), create: { NativeShadowMask($0) }) {
+          cairo_mask_surface(context, native.surface,
+                             frame.minX + shadow.x - mask.inset, frame.minY + shadow.y - mask.inset)
+        }
       }
     }
     if props.clipped {
