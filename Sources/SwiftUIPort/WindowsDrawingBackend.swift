@@ -66,6 +66,7 @@
       return ["raster": stats.raster_ms, "blit": stats.blit_ms, "count": Double(stats.paints)]
     }
     private let window: NativeAPI.Window
+    public var environment: EnvironmentValues { .hosting(window) }
     private let content: NativeAPI.View
     private var surface: UnsafeMutableRawPointer?
     private var listener: ListenerId?

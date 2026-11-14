@@ -16,6 +16,7 @@ public final class NativeViewBackend: RenderBackend {
   public var onResize: ((SwiftUIRuntime.Size) -> Void)?
 
   private let window: NativeAPI.Window
+  public var environment: EnvironmentValues { .hosting(window) }
   private let contentView: NativeAPI.View
 
   private var handles: [NodeID: NativeAPI.View] = [:]
