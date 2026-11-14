@@ -20,6 +20,18 @@ namespace {
 using namespace Gdiplus;
 constexpr UINT_PTR subclass_id = 0x53554950;
 constexpr UINT deferred_input = WM_APP + 581;
+struct AlphaMask {
+  std::vector<uint32_t> pixels;
+  Bitmap bitmap;
+  AlphaMask(const uint8_t *alpha, int width, int height)
+      : pixels(size_t(width) * height),
+        bitmap(width, height, width * 4, PixelFormat32bppPARGB,
+               reinterpret_cast<BYTE *>(pixels.data())) {
+    for (size_t i = 0; i < pixels.size(); ++i)
+      pixels[i] = uint32_t(alpha[i]) * 0x01010101u;
+  }
+};
+using MaskHandle = std::shared_ptr<AlphaMask>;
 struct Command {
   int kind = 0; // shape, text, clip, restore
   RectF rect;
@@ -29,6 +41,7 @@ struct Command {
   std::vector<double> path;
   std::vector<uint32_t> colors;
   PointF start, end;
+  MaskHandle mask;
   size_t clip_end = 0;
   bool operator==(const Command &c) const {
     return kind == c.kind && rect.Equals(c.rect) && radius == c.radius &&
@@ -37,7 +50,7 @@ struct Command {
            fill == c.fill && stroke == c.stroke && text == c.text &&
            family == c.family && path == c.path && colors == c.colors &&
            start.X == c.start.X && start.Y == c.start.Y && end.X == c.end.X &&
-           end.Y == c.end.Y;
+           end.Y == c.end.Y && mask == c.mask;
   }
 };
 struct ButtonHook {
@@ -394,6 +407,20 @@ void RenderFrame(Surface *s) {
     } else if (c.kind == 9) {
       clips.push_back(g.Save());
       g.TranslateTransform(c.rect.X, c.rect.Y);
+    } else if (c.kind == 10 && c.mask) {
+      if (!g.IsVisible(c.rect))
+        continue;
+      ColorMatrix tint{};
+      tint.m[0][0] = ((c.fill >> 16) & 255) / 255.f;
+      tint.m[1][1] = ((c.fill >> 8) & 255) / 255.f;
+      tint.m[2][2] = (c.fill & 255) / 255.f;
+      tint.m[3][3] = (c.fill >> 24) / 255.f;
+      tint.m[4][4] = 1;
+      ImageAttributes attributes;
+      attributes.SetColorMatrix(&tint);
+      g.DrawImage(&c.mask->bitmap, c.rect, 0, 0,
+                  REAL(c.mask->bitmap.GetWidth()), REAL(c.mask->bitmap.GetHeight()),
+                  UnitPixel, &attributes);
     } else if (c.kind == 8) {
       if (!g.IsVisible(c.rect))
         continue;
@@ -847,7 +874,7 @@ bool Translates(const Command &a, const Command &b, double dx, double dy,
       a.weight != b.weight || a.line_spacing != b.line_spacing ||
       (!allow_color_change && (a.fill != b.fill || a.stroke != b.stroke)) ||
       a.text != b.text || a.family != b.family || a.colors != b.colors ||
-      a.path.size() != b.path.size())
+      a.path.size() != b.path.size() || a.mask != b.mask)
     return false;
   if (a.kind == 7 &&
       (!Near(a.start.X + dx, b.start.X) || !Near(a.start.Y + dy, b.start.Y) ||
@@ -1395,6 +1422,24 @@ void sui_surface_shape(void *h, double x, double y, double w, double height,
   c.fill = fill;
   c.stroke = stroke;
   c.stroke_width = float(width);
+  static_cast<Surface *>(h)->pending.push_back(std::move(c));
+}
+double sui_surface_scale(void *h) {
+  return GetDpiForWindow(static_cast<Surface *>(h)->host) / 96.;
+}
+void *sui_mask_create(const uint8_t *alpha, int width, int height) {
+  if (!alpha || width <= 0 || height <= 0 || width > 2048 || height > 2048)
+    return nullptr;
+  InitializeGraphics();
+  return new MaskHandle(std::make_shared<AlphaMask>(alpha, width, height));
+}
+void sui_mask_destroy(void *mask) { delete static_cast<MaskHandle *>(mask); }
+void sui_surface_mask(void *h, void *mask, double x, double y,
+                      double width, double height, uint32_t color) {
+  if (!mask) return;
+  auto c = Box(10, x, y, width, height, 0);
+  c.fill = color;
+  c.mask = *static_cast<MaskHandle *>(mask);
   static_cast<Surface *>(h)->pending.push_back(std::move(c));
 }
 void sui_surface_text(void *h, double x, double y, double w, double height,

@@ -35,6 +35,12 @@ void sui_surface_begin(void *surface);
 void sui_surface_shape(void *surface, double x, double y, double width,
                        double height, double radius, uint32_t fill,
                        uint32_t stroke, double stroke_width);
+double sui_surface_scale(void *surface);
+// Immutable masks are retained by published display lists after release.
+void *sui_mask_create(const uint8_t *alpha, int width, int height);
+void sui_mask_destroy(void *mask);
+void sui_surface_mask(void *surface, void *mask, double x, double y,
+                      double width, double height, uint32_t color);
 void sui_surface_text(void *surface, double x, double y, double width,
                       double height, const char *text, const char *family,
                       double size, double weight, double line_spacing,

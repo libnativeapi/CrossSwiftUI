@@ -28,6 +28,17 @@
     private var desiredFocus: NodeID?
     private var edits: [NodeID: UnsafeMutableRawPointer] = [:]
     private var root: Element?
+    private final class NativeShadowMask {
+      let handle: UnsafeMutableRawPointer
+      init?(_ mask: ShadowMask) {
+        guard let handle = mask.alpha.withUnsafeBufferPointer({
+          sui_mask_create($0.baseAddress, Int32(mask.width), Int32(mask.height))
+        }) else { return nil }
+        self.handle = handle
+      }
+      deinit { sui_mask_destroy(handle) }
+    }
+    private let shadowCache = ShadowCache<NativeShadowMask>()
     private struct AnimatedValues: Equatable {
       let rotation, scaleX, scaleY, opacity, offsetX, offsetY: Double
       init(_ p: NodeProps) {
@@ -620,15 +631,17 @@
       }
       let bounds = CGRect(x: r.minX, y: r.minY, width: r.width, height: r.height)
       for shadow in p.shadows where shadow.color.opacity > 0 {
-        // A finite layered approximation, not a blur filter. It never changes
-        // the view's layout or native hit rectangle.
-        let steps = max(1, min(16, Int(ceil(shadow.radius))))
-        for step in (0..<steps).reversed() {
-          let spread = Double(step) / 2
+        if shadow.radius <= 0 {
           sui_surface_shape(
-            surface, r.minX + shadow.x - spread, r.minY + shadow.y - spread,
-            r.width + spread * 2, r.height + spread * 2, p.cornerRadius + spread,
-            shadow.color.opacity(p.opacity / Double(steps)).argb, 0, 0)
+            surface, r.minX + shadow.x, r.minY + shadow.y, r.width, r.height,
+            p.cornerRadius, shadow.color.opacity(p.opacity).argb, 0, 0)
+        } else if let (mask, native) = shadowCache.value(
+          width: r.width, height: r.height, corner: p.cornerRadius, radius: shadow.radius,
+          scale: sui_surface_scale(surface), create: { NativeShadowMask($0) }) {
+          sui_surface_mask(
+            surface, native.handle, r.minX + shadow.x - mask.inset, r.minY + shadow.y - mask.inset,
+            Double(mask.width) / mask.scale, Double(mask.height) / mask.scale,
+            shadow.color.opacity(p.opacity).argb)
         }
       }
       if p.clipped { sui_surface_clip(surface, r.minX, r.minY, r.width, r.height, p.cornerRadius) }

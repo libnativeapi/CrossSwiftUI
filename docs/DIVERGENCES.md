@@ -47,8 +47,10 @@ implemented. Gradients use evenly spaced stops. Canvas supports path fills,
 clipping and scale/translation. Circular trim is supported. Arbitrary path trim
 is incomplete. Linux supports dashed strokes.
 
-Rounded corners use circular arcs for both styles. Shadows are finite layered
-approximations. Windows applies alpha per primitive; Linux composites Cairo
+Rounded corners use circular arcs for both styles. Desktop shadows blur a
+rounded-rectangle alpha mask with three box filters approximating a Gaussian;
+they do not yet follow arbitrary paths or the alpha of view content.
+Windows applies alpha per primitive; Linux composites Cairo
 groups. Arbitrary clip paths constrain drawing; native controls use rectangular
 viewport clipping.
 
