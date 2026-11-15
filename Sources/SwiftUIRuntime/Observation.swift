@@ -3,7 +3,7 @@ import Foundation
 public protocol ObservableObject: AnyObject {}
 public final class ObservableObjectPublisher {
   public init() {}
-  public func send() { StateRegistry.shared.onChange?() }
+  public func send() { StateRegistry.shared.notifyChange() }
 }
 extension ObservableObject {
   public var objectWillChange: ObservableObjectPublisher { ObservableObjectPublisher() }
@@ -18,7 +18,7 @@ extension ObservableObject {
     get { storage.value }
     nonmutating set {
       storage.value = newValue
-      StateRegistry.shared.onChange?()
+      StateRegistry.shared.notifyChange()
     }
   }
   public init(wrappedValue: Value) { storage = Storage(wrappedValue) }
