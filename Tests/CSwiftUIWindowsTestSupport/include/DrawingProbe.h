@@ -19,6 +19,8 @@ typedef struct {
 scroll_probe_result scroll_probe(void);
 int shadow_probe(const uint8_t *alpha, int width, int height, double inset,
                  double scale);
+int editor_resize_probe(void);
+int control_visible(void *control);
 #ifdef __cplusplus
 }
 #endif

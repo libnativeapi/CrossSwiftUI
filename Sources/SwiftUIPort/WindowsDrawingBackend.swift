@@ -522,7 +522,10 @@
           controlHitRadii[node.id] = hitRadius(node)
         }
         if !geometryOnly || !retained || nativeClip == nil {
-          let visible = node.props.visible && controlAllowed && (nativeClip != nil || inViewport)
+          // Opacity-zero shortcut buttons still participate in the renderer's
+          // key handling, but their HWND must not paint or occlude the canvas.
+          let visible = node.props.visible && node.props.opacity > 0
+            && controlAllowed && (nativeClip != nil || inViewport)
           if button.isVisible != visible { button.setVisible(visible) }
         }
         if let surface, let handle = button.nativeObject {

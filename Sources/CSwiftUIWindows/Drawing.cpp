@@ -1338,7 +1338,7 @@ void sui_edit_update(void *handle, void *control, const char *text,
   if (focus && enabled && GetFocus() != hwnd)
     SetFocus(hwnd);
   if (colors_changed)
-    InvalidateRect(hwnd, nullptr, FALSE);
+    RedrawWindow(hwnd, nullptr, nullptr, RDW_INVALIDATE | RDW_ERASE | RDW_FRAME);
   hook.updating = false;
 }
 void sui_edit_destroy(void *handle, void *edit) {
@@ -1617,7 +1617,11 @@ void sui_surface_end(void *h) {
       GetWindowRect(entry.first, &r);
       MapWindowPoints(nullptr, s->host, reinterpret_cast<POINT *>(&r), 2);
       if (IntersectRect(&r, &r, &s->damage))
-        InvalidateRect(entry.first, nullptr, FALSE);
+        // Multiline EDIT leaves unused line space in its non-client frame.
+        // A deferred move/resize must erase that area too, otherwise it keeps
+        // pixels from the sidebar or other content previously underneath it.
+        RedrawWindow(entry.first, nullptr, nullptr,
+                     RDW_INVALIDATE | RDW_ERASE | RDW_FRAME);
     }
     RedrawWindow(s->host, &s->damage, nullptr, RDW_INVALIDATE | RDW_NOCHILDREN);
   }
