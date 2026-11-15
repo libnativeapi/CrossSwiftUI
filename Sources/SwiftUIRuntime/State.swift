@@ -30,6 +30,8 @@ final class ViewPath: Hashable {
     if let component { parent?.children.removeValue(forKey: component) }
   }
 
+  var root: ViewPath { parent?.root ?? self }
+
   func appending(index: Int) -> ViewPath { child(.index(index)) }
   func appending(id: AnyHashable) -> ViewPath { child(.id(id)) }
 
@@ -56,6 +58,24 @@ public final class StateRegistry {
   private var live: Set<StateKey> = []
   public var onChange: (() -> Void)?
   var onStateChange: ((StateKey) -> Void)?
+  private struct Observer {
+    let change: () -> Void
+    let stateChange: (StateKey) -> Void
+  }
+  private var observers: [ObjectIdentifier: Observer] = [:]
+  func observe(_ root: ViewPath, change: @escaping () -> Void, stateChange: @escaping (StateKey) -> Void) {
+    observers[ObjectIdentifier(root)] = Observer(change: change, stateChange: stateChange)
+  }
+  func removeObserver(_ root: ViewPath) {
+    observers.removeValue(forKey: ObjectIdentifier(root))
+    values = values.filter { $0.key.path.root !== root }
+    live = live.filter { $0.path.root !== root }
+    LifecycleRegistry.shared.remove(root)
+  }
+  func notifyChange() {
+    onChange?()
+    for observer in Array(observers.values) { observer.change() }
+  }
   private init() {}
   public func reset() {
     LifecycleRegistry.shared.reset()
@@ -63,13 +83,16 @@ public final class StateRegistry {
     live.removeAll()
     onChange = nil
     onStateChange = nil
+    observers.removeAll()
   }
   func begin() { live.removeAll() }
   func retain(_ keys: Set<StateKey>) {
     live.formUnion(keys)
     GeometrySnapshot.active?.state.formUnion(keys)
   }
-  func end() { values = values.filter { live.contains($0.key) } }
+  func end(root: ViewPath) {
+    values = values.filter { $0.key.path.root !== root || live.contains($0.key) }
+  }
   func install<Value>(_ key: StateKey, initial: Value) {
     EvaluationGraph.active?.installState(key)
     GeometrySnapshot.active?.state.insert(key)
@@ -93,7 +116,13 @@ public final class StateRegistry {
     func equal<T: Equatable>(_ lhs: T, _ rhs: Any) -> Bool { (rhs as? T) == lhs }
     if let old = values[key] as? any Equatable, equal(old, value) { return }
     values[key] = value
-    if let onStateChange { onStateChange(key) } else { onChange?() }
+    if let observer = observers[ObjectIdentifier(key.path.root)] {
+      observer.stateChange(key)
+    } else if let onStateChange {
+      onStateChange(key)
+    } else {
+      onChange?()
+    }
   }
 }
 @propertyWrapper public struct State<Value>: _StateProperty {

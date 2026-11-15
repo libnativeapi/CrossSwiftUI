@@ -65,6 +65,68 @@ struct Capture {
   }
 };
 } // namespace
+int control_visible(void *control) {
+  return (GetWindowLongPtrW(static_cast<HWND>(control), GWL_STYLE) & WS_VISIBLE) != 0;
+}
+
+int editor_resize_probe(void) {
+  HWND host = CreateWindowExW(0, L"STATIC", L"Editor resize regression",
+                              WS_OVERLAPPEDWINDOW, 0, 0, 1000, 500, nullptr,
+                              nullptr, GetModuleHandleW(nullptr), nullptr);
+  void *surface = sui_surface_create(host, nullptr, nullptr, 0);
+  auto editor = static_cast<HWND>(sui_edit_create(surface, 10, 1, 0));
+  HWND sidebar_button = nullptr;
+  const double scale = sui_surface_scale(surface);
+  auto px = [scale](double value) { return int(std::round(value * scale)); };
+  auto frame = [&](double sidebar) {
+    // Collapsing navigation replaces labelled controls with icon controls.
+    // That publication validates stale child damage before scheduling repaint.
+    if (sidebar_button) {
+      sui_surface_remove_button(surface, sidebar_button);
+      DestroyWindow(sidebar_button);
+    }
+    sidebar_button = CreateWindowExW(0, L"BUTTON", L"", WS_CHILD | WS_VISIBLE,
+                                     0, 0, px(sidebar), px(30), host, nullptr,
+                                     GetModuleHandleW(nullptr), nullptr);
+    sui_surface_button(surface, sidebar_button, 12, 1, 0);
+    sui_surface_begin(surface);
+    sui_surface_shape(surface, 0, 0, 1000, 500, 0, 0xFFFAF9F6, 0, 0);
+    sui_surface_shape(surface, 0, 0, sidebar, 300, 0, 0xFF102030, 0, 0);
+    sui_controls_begin(surface);
+    sui_controls_push(surface, 11, sidebar, 0, 600 - sidebar, 300,
+                       sidebar, 0, 600 - sidebar, 300);
+    sui_edit_update(surface, editor, "", "", sidebar + 20, 40,
+                     560 - sidebar, 60, "Segoe UI", 16, 400,
+                     0xFF102030, 0xFFFAF9F6, 1, 0);
+    sui_control_clip(editor, 0, 0, 560 - sidebar, 60);
+    sui_controls_pop(surface);
+    sui_surface_end(surface);
+  };
+  frame(172);
+  ShowWindow(host, SW_SHOWNOACTIVATE);
+  SetWindowPos(host, HWND_TOPMOST, 0, 0, 0, 0,
+               SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+  RedrawWindow(host, nullptr, nullptr,
+               RDW_INVALIDATE | RDW_ERASE | RDW_FRAME | RDW_ALLCHILDREN | RDW_UPDATENOW);
+  int errors = 0;
+  const double sidebars[] = {48., 172., 48.};
+  for (double sidebar : sidebars) {
+    frame(sidebar);
+    // Process only the damage published by the renderer, not a full expose.
+    RedrawWindow(host, nullptr, nullptr, RDW_UPDATENOW | RDW_ALLCHILDREN);
+    HDC screen = GetDC(host);
+    for (int y = px(42); y < px(98); ++y)
+      for (int x = px(sidebar + 22); x < px(190); ++x)
+        if (GetPixel(screen, x, y) != RGB(250, 249, 246)) ++errors;
+    ReleaseDC(host, screen);
+  }
+  sui_surface_remove_button(surface, sidebar_button);
+  DestroyWindow(sidebar_button);
+  sui_surface_destroy(surface);
+  DestroyWindow(host);
+  return errors;
+}
+
 int shadow_probe(const uint8_t *alpha, int width, int height, double inset,
                  double mask_scale) {
   HWND host = CreateWindowExW(0, L"STATIC", L"Shadow regression", WS_OVERLAPPEDWINDOW,

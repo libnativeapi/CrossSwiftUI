@@ -1,9 +1,62 @@
 import CSwiftUIWindowsTestSupport
+import NativeAPI
 import SwiftUIPort
 import SwiftUIRuntime
 import XCTest
 
 final class WindowsDrawingTests: XCTestCase {
+  func testTransparentNativeButtonKeepsShortcutWithoutCoveringCanvas() throws {
+    final class Model: ObservableObject {
+      @Published var opacity = 0.0
+      var clicks = 0
+    }
+    struct Content: SwiftUIRuntime.View {
+      @ObservedObject var model: Model
+      var body: some SwiftUIRuntime.View {
+        SwiftUIRuntime.Button("Shortcut") { model.clicks += 1 }
+          .keyboardShortcut(.return, modifiers: .option)
+          .opacity(model.opacity)
+      }
+    }
+    WindowsDrawingBackend.prepareApplication()
+    _ = NativeAPI.Application.shared.isRunning()
+    let window = try XCTUnwrap(NativeAPI.Window.create())
+    let backend = try XCTUnwrap(WindowsDrawingBackend(window: window))
+    let model = Model()
+    let renderer = Renderer(backend: backend, root: AnyView(Content(model: model)),
+                            size: .init(width: 300, height: 200))
+    renderer.mount()
+    func buttonID(_ element: Element) -> NodeID? {
+      if element.kind == .button { return element.id }
+      return element.children.lazy.compactMap(buttonID).first
+    }
+    let id = try XCTUnwrap(buttonID(try XCTUnwrap(renderer.tree)))
+    let button = try XCTUnwrap(backend.nativeButton(id))
+    let handle = try XCTUnwrap(button.nativeObject)
+    func opacity(_ element: Element) -> Double? {
+      if element.id == id { return element.props.opacity }
+      return element.children.lazy.compactMap(opacity).first
+    }
+    XCTAssertEqual(opacity(try XCTUnwrap(renderer.tree)), 0)
+    XCTAssertEqual(control_visible(handle), 0)
+    XCTAssertTrue(renderer.input(id: nil, event: 6, point: .zero, value: 13,
+                                 modifiers: .option))
+    XCTAssertEqual(model.clicks, 1)
+    model.opacity = 1
+    renderer.renderIfNeeded()
+    XCTAssertEqual(control_visible(handle), 1)
+    model.opacity = 0
+    renderer.renderIfNeeded()
+    XCTAssertEqual(control_visible(handle), 0)
+    XCTAssertTrue(renderer.input(id: nil, event: 6, point: .zero, value: 13,
+                                 modifiers: .option))
+    XCTAssertEqual(model.clicks, 2)
+  }
+  func testResizingMultilineEditorClearsPixelsExposedBySidebarCollapse() {
+    WindowsDrawingBackend.prepareApplication()
+    XCTAssertEqual(editor_resize_probe(), 0,
+      "A moved multiline editor must erase its full native frame, including unused line space")
+  }
   func testShadowMaskFalloffTintOpacityClippingAndRetainedLifetime() throws {
     WindowsDrawingBackend.prepareApplication()
     for scale in [1.0, 2.0] {

@@ -60,16 +60,15 @@ import Foundation
     self.root = root
     self.contentSize = size
     self.layoutEngine = layoutEngine
-    StateRegistry.shared.onChange = { [weak self] in
+    StateRegistry.shared.observe(rootPath, change: { [weak self] in
       self?.pendingScroll = nil
       self?.evaluations.invalidateAll()
       self?.scheduleRender()
-    }
-    StateRegistry.shared.onStateChange = { [weak self] key in
+    }, stateChange: { [weak self] key in
       if self?.pendingScroll?.key != key { self?.pendingScroll = nil }
       self?.evaluations.invalidate(key)
       self?.scheduleRender()
-    }
+    })
     backend.tapHandler = { [weak self] id in
       self?.performTap(id)
     }
@@ -83,6 +82,8 @@ import Foundation
       action()
     }
   }
+
+  deinit { StateRegistry.shared.removeObserver(rootPath) }
 
   /// Builds and mounts the initial tree.
   public func mount() {
@@ -107,7 +108,7 @@ import Foundation
     lastCommands = commands ?? []
     if let commands { backend.perform(commands) }
     backend.didRender(mountedTree)
-    LifecycleRegistry.shared.commit()
+    LifecycleRegistry.shared.commit(root: rootPath)
     isRendering = false
 
     if needsRender {
@@ -579,7 +580,7 @@ import Foundation
     start = Date.timeIntervalSinceReferenceDate
     element = resolvePresentations(element, in: contentSize)
     assignKeys(&element)
-    StateRegistry.shared.end()
+    StateRegistry.shared.end(root: rootPath)
     _ = resolvePreferences(element)
     lastTimings["finalize"] = (Date.timeIntervalSinceReferenceDate - start) * 1000
     return element
@@ -613,7 +614,7 @@ import Foundation
     if let commands { backend.perform(commands) }
     backend.didRender(mountedTree)
     lastTimings["backend"] = (Date.timeIntervalSinceReferenceDate - start) * 1000
-    LifecycleRegistry.shared.commit()
+    LifecycleRegistry.shared.commit(root: rootPath)
     isRendering = false
   }
   private func refreshHoverActions() {

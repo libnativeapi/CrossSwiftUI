@@ -42,8 +42,8 @@ final class LifecycleRegistry {
       entries[key]?.disappear = disappear
     }
   }
-  func commit() {
-    for key in Set(entries.keys).subtracting(live) {
+  func commit(root: ViewPath) {
+    for key in Set(entries.keys).subtracting(live) where key.path.root === root {
       LifecycleSnapshots.shared.values.removeValue(forKey: key)
       LifecycleSnapshots.shared.versions.removeValue(forKey: key)
       let old = entries.removeValue(forKey: key)
@@ -53,6 +53,15 @@ final class LifecycleRegistry {
     let work = pending
     pending.removeAll()
     work.forEach { $0() }
+  }
+  func remove(_ root: ViewPath) {
+    for key in Array(entries.keys) where key.path.root === root {
+      let old = entries.removeValue(forKey: key)
+      old?.task?.cancel()
+      LifecycleSnapshots.shared.values.removeValue(forKey: key)
+      LifecycleSnapshots.shared.versions.removeValue(forKey: key)
+    }
+    live = live.filter { $0.path.root !== root }
   }
   func reset() {
     entries.values.forEach { $0.task?.cancel() }
