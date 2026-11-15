@@ -70,6 +70,36 @@ def selected(nodes, key):
     return (control(nodes, key) or {}).get("selected") == "true"
 
 
+def start_gallery():
+    run("shell", f"aa force-stop {bundle}")
+    response = run("shell", f"aa start -b {bundle} -a EntryAbility --ps gallery true")
+    assert "start ability successfully" in response, response
+
+
+def search_editor(nodes):
+    return next((node for node in nodes if node.get("type") == "TextInput" and
+                 node.get("hint") == "Search" and visible(node)), None)
+
+
+def verify_clipboard(local):
+    click(wait(local, "Code in the sidebar", lambda nodes: control(nodes, "swift-action-Code")))
+    copy = wait(local, "Copy on the Code page", lambda nodes: control(nodes, "swift-action-Copy"))
+    click(copy)
+    wait(local, "Copied feedback", lambda nodes: control(nodes, "swift-action-Copied"))
+
+    click(wait(local, "Search editor for paste", search_editor))
+    wait(local, "Search focused for paste", lambda nodes:
+         (search_editor(nodes) or {}).get("focused") == "true")
+    # KEYCODE_CTRL_LEFT + KEYCODE_V. Let ArkUI read the system pasteboard
+    # through the focused editor's normal paste command.
+    run("shell", "uitest uiInput keyEvent 2072 2038")
+    expected = ('import { Button } from \'@dazzlabs/dazzui\' export function Save() { '
+                'return <Button variant="filled">Save changes</Button> }')
+    wait(local, "pasted Code example", lambda nodes:
+         re.sub(r"\s+", " ", (search_editor(nodes) or {}).get("text", "")).strip() == expected)
+    print("SWIFT_GALLERY_PROBE PASS NativeAPI Copy -> ArkUI paste", flush=True)
+
+
 def screenshot(name):
     if screenshot_dir:
         output = Path(screenshot_dir)
@@ -94,9 +124,7 @@ def button_typography(nodes):
 
 with tempfile.TemporaryDirectory() as directory:
     local = Path(directory) / "layout.json"
-    run("shell", f"aa force-stop {bundle}")
-    response = run("shell", f"aa start -b {bundle} -a EntryAbility --ps gallery true")
-    assert "start ability successfully" in response, response
+    start_gallery()
 
     wait(local, "Button page", lambda nodes: text(nodes, "Variants"))
     wait(local, "single-line Theme heading and button label within its control", button_typography)
@@ -151,15 +179,14 @@ with tempfile.TemporaryDirectory() as directory:
          bounds(text(nodes, "Calendar")[0]) != bounds(before))
     print("SWIFT_GALLERY_PROBE PASS sidebar scroll", flush=True)
 
-    run("shell", f"aa force-stop {bundle}")
-    response = run("shell", f"aa start -b {bundle} -a EntryAbility --ps gallery true")
-    assert "start ability successfully" in response, response
-    editor = wait(local, "Search editor", lambda nodes: next(
-        (node for node in nodes if node.get("type") == "TextInput" and
-         node.get("hint") == "Search" and visible(node)), None))
+    start_gallery()
+    editor = wait(local, "Search editor", search_editor)
     x1, y1, x2, y2 = bounds(editor)
     run("shell", f"uitest uiInput inputText {(x1 + x2) // 2} {(y1 + y2) // 2} Calendar")
     wait(local, "Swift search filter", lambda nodes: text(nodes, "Calendar") and
          not text(nodes, "Accordion") and any(node.get("type") == "TextInput" and
          node.get("text") == "Calendar" for node in nodes))
     print("SWIFT_GALLERY_PROBE PASS native search input filters Swift views", flush=True)
+
+    start_gallery()
+    verify_clipboard(local)

@@ -2,6 +2,7 @@
 #include <cstdint>
 #include <spawn.h>
 #include <napi/native_api.h>
+#include "ohos_runtime.h"
 
 extern "C" std::int32_t swift_runtime_probe(std::int32_t seed);
 extern "C" std::int32_t swift_foundation_probe();
@@ -97,8 +98,34 @@ static napi_value Concurrency(napi_env env, napi_callback_info info) {
   return napi_get_undefined(env, &undefined) == napi_ok ? undefined : nullptr;
 }
 
+static napi_value SetAbilityContext(napi_env env, napi_callback_info info, bool attach) {
+  napi_value context, result;
+  size_t count = 1;
+  if (napi_get_cb_info(env, info, &count, &context, nullptr, nullptr) != napi_ok || count != 1) {
+    napi_throw_type_error(env, nullptr, "Expected the owning UIAbility context");
+    return nullptr;
+  }
+  const bool ok = attach ? nativeapi::ohos::AttachContext(env, context)
+                         : nativeapi::ohos::DetachContext(env, context);
+  return napi_get_boolean(env, ok, &result) == napi_ok ? result : nullptr;
+}
+
+static napi_value AttachNativeAPI(napi_env env, napi_callback_info info) {
+  return SetAbilityContext(env, info, true);
+}
+
+static napi_value DetachNativeAPI(napi_env env, napi_callback_info info) {
+  return SetAbilityContext(env, info, false);
+}
+
 static napi_value Init(napi_env env, napi_value exports) {
+  if (!nativeapi::ohos::Initialize(env)) {
+    napi_throw_error(env, nullptr, "Cannot initialize NativeAPI on the ArkTS UI thread");
+    return nullptr;
+  }
   const napi_property_descriptor properties[] = {
+      {"attachNativeAPI", nullptr, AttachNativeAPI, nullptr, nullptr, nullptr, napi_default, nullptr},
+      {"detachNativeAPI", nullptr, DetachNativeAPI, nullptr, nullptr, nullptr, napi_default, nullptr},
       {"run", nullptr, Run, nullptr, nullptr, nullptr, napi_default, nullptr},
       {"foundation", nullptr, Foundation, nullptr, nullptr, nullptr, napi_default, nullptr},
       {"concurrency", nullptr, Concurrency, nullptr, nullptr, nullptr, napi_default, nullptr},

@@ -7,6 +7,9 @@ export default class EntryAbility extends UIAbility {
   private gallery: boolean = false;
 
   onCreate(want: Want): void {
+    if (!swiftProbe.attachNativeAPI(this.context)) {
+      throw new Error('Could not attach the UIAbility context to NativeAPI');
+    }
     this.gallery = want.parameters?.['gallery'] === 'true';
     if (this.gallery) return;
     try {
@@ -29,6 +32,10 @@ export default class EntryAbility extends UIAbility {
       AppStorage.setOrCreate('probeResult', result);
       hilog.error(0x0000, 'SwiftRuntimeProbe', '%{public}s', result);
     }
+  }
+
+  onDestroy(): void {
+    swiftProbe.detachNativeAPI(this.context);
   }
 
   private report(name: string, value: number, expected: number): void {

@@ -26,6 +26,8 @@ fi
 export DEVECO_SDK_HOME="$deveco/sdk"
 export JAVA_HOME="$deveco/jbr/Contents/Home"
 export PATH="$deveco/tools/node/bin:$deveco/tools/ohpm/bin:$JAVA_HOME/bin:$PATH"
+export NATIVEAPI_SWIFT_PATH="${NATIVEAPI_SWIFT_PATH:-$PWD/../../../nativeapi/bindings/swift}"
+NATIVEAPI_SWIFT_PATH="$(cd "$NATIVEAPI_SWIFT_PATH" && pwd)"
 if [[ "${SWIFT_RUNTIME_PREPARED:-0}" != 1 ]]; then ./prepare-runtime.sh; fi
 ohpm install --all
 node "$deveco/tools/hvigor/bin/hvigorw.js" --mode module -p product=default assembleHap --no-daemon

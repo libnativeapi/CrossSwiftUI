@@ -35,10 +35,6 @@ fi
 
 resources="$sdk/usr/lib/swift_static"
 libraries="$resources/linux-static"
-# This SDK's serialized modules reference this placeholder VFS path.
-if [[ ! -e "$resources/<clang-system-vfs-overlay>" ]]; then
-  printf '%s\n' '{"version":0,"roots":[]}' > "$resources/<clang-system-vfs-overlay>"
-fi
 compile() {
   local module="$1" output="$2"
   shift 2
@@ -49,10 +45,17 @@ compile() {
 }
 
 dazzui="${DAZZUI_SWIFT_PATH:-$PWD/../../../../dazzlabs/dazzui/packages/swift/DazzUI}"
+nativeapi="${NATIVEAPI_SWIFT_PATH:-$PWD/../../../nativeapi/bindings/swift}"
 if [[ ! -f "$dazzui/Example/Sources/Example/App.swift" ]]; then
   echo "Set DAZZUI_SWIFT_PATH to the DazzUI Swift package directory." >&2
   exit 1
 fi
+if [[ ! -f "$nativeapi/scripts/build-ohos.sh" ]]; then
+  echo "Set NATIVEAPI_SWIFT_PATH to the NativeAPI Swift binding with HarmonyOS build support." >&2
+  exit 1
+fi
+nativeapi_headers="$nativeapi/Sources/CNativeAPI/include"
+bash "$nativeapi/scripts/build-ohos.sh" "$sdk" "$inputs"
 compile SwiftUIRuntime SwiftUIRuntime -package-name SwiftUIPort ../../Sources/SwiftUIRuntime/*.swift
 compile SwiftUI SwiftUI ../../Sources/SwiftUI/SwiftUI.swift
 compile FluentIcons FluentIcons "$dazzui/Windows/FluentIcons/FluentIcon.swift"
@@ -64,10 +67,11 @@ swift_sources() {
 }
 sources=()
 swift_sources "$dazzui/Sources/DazzUI"
-compile DazzUI DazzUI "${sources[@]}"
+compile DazzUI DazzUI -I "$nativeapi_headers" "${sources[@]}"
 sources=()
 swift_sources "$dazzui/Example/Sources/Example"
-compile HarmonyRuntimeProbe Probe entry/src/main/cpp/{Probe,HarmonyBackend,GalleryHost}.swift "${sources[@]}"
+compile HarmonyRuntimeProbe Probe -I "$nativeapi_headers" \
+  entry/src/main/cpp/{Probe,HarmonyBackend,GalleryHost}.swift "${sources[@]}"
 
 mkdir -p entry/src/main/resources/rawfile/fluent
 cp "$dazzui/Windows/FluentIcons/Resources/"*.svg entry/src/main/resources/rawfile/fluent/

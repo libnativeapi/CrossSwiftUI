@@ -1,5 +1,8 @@
 import { NodeContent } from '@kit.ArkUI';
+import { common } from '@kit.AbilityKit';
 
+export const attachNativeAPI: (context: common.UIAbilityContext) => boolean;
+export const detachNativeAPI: (context: common.UIAbilityContext) => boolean;
 export const run: (seed: number) => number;
 export const foundation: () => number;
 export const concurrency: (callback: (value: number) => void) => void;

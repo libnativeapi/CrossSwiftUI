@@ -15,6 +15,9 @@ The same HAP also has a Gallery mode that compiles the real DazzUI SwiftUI
 `AppView`, component stories and theme panel. The Swift renderer resolves
 state and layout. A JSON bridge publishes the tree to ArkUI, which displays
 native text, buttons, editors, scroll containers, SVG icons and paths.
+The host initializes NativeAPI on the ArkTS thread and attaches the owning
+`UIAbilityContext`. DazzUI's Code example writes to the system pasteboard
+through `NativeAPI.Clipboard.shared.writeText`.
 
 ## Build and run
 
@@ -53,14 +56,21 @@ Set `HARMONY_GALLERY_SCREENSHOTS` to a directory when running
 `verify-gallery.py` to save emulator screenshots of Button in both
 appearances, Calendar, Overview, and the open Collapsible example.
 
-The preparation script also needs a DazzUI checkout that includes
-[the SwiftUI HarmonyOS packaging changes](https://github.com/dazzlabs/dazzui/pull/13).
+The preparation script also needs a DazzUI checkout with the SwiftUI HarmonyOS
+resource paths and the Code example wired to the NativeAPI clipboard.
 It defaults to a checkout in
 `dazzlabs/dazzui` alongside the `libnativeapi` directory. Set
 `DAZZUI_SWIFT_PATH` to override the path to `packages/swift/DazzUI`.
 For a separate build host, also copy
 `entry/src/main/resources/rawfile/fluent/` alongside the generated runtime
 objects before assembling the HAP.
+
+The example also requires the NativeAPI workspace with the core submodule and
+the Swift binding's HarmonyOS build support. Set `NATIVEAPI_SWIFT_PATH` to
+`nativeapi/bindings/swift` if the workspace is outside the default sibling
+checkout. The Swift build uses the binding's `scripts/build-ohos.sh` to produce
+`NativeAPI.o`. The DevEco build host needs the same binding's `ohos/` CMake
+directory and `core/` source tree to link the OHOS backend.
 
 ```text
 SWIFT_RUNTIME_PROBE PASS values=217,225
@@ -91,6 +101,7 @@ layout uses HarmonyOS Native Drawing to measure fonts. Frames use ArkUI
 viewport units, while path and clip commands are converted to physical
 pixels. The emulator check covers Button typography, Button → Calendar →
 Overview, selecting Bright and Studio, light → dark → light, opening and
-closing Collapsible, sidebar scrolling, and filtering through the native
-search field. Context menus, clipboard copying, visual parity across the
-full gallery, and physical devices still need integration and validation.
+closing Collapsible, sidebar scrolling, filtering through the native search
+field, and copying the Code example through NativeAPI and pasting into
+ArkUI. Context menus, visual parity across the full gallery, and physical
+devices still need integration and validation.
