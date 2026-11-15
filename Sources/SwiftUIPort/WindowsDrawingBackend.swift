@@ -9,7 +9,7 @@
   public final class WindowsDrawingBackend: RenderBackend {
     /// Ensures NativeAPI's early Per-Monitor V2 DPI setup has run before any
     /// standalone HWNDs are created outside `Application`.
-    public static func prepareApplication() { _ = NativeAPI.Application.shared }
+    public static func prepareApplication() { _ = NativeAPI.Application.shared.isRunning() }
 
     public var tapHandler: ((NodeID) -> Void)?
     public var transactionHandler: ((() -> Void) -> Void)?

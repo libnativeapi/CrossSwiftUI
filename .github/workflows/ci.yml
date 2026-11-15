@@ -12,7 +12,7 @@ permissions:
 # borderless TextField styling, typography, accessibility, and view resize events.
 env:
   NATIVEAPI_REPOSITORY: libnativeapi/nativeapi
-  NATIVEAPI_REF: b9b612a2907fe9c27d8fc87a93422cacf98b608b
+  NATIVEAPI_REF: d2af2ffdbaa34379af3076704c34a9410611b77e
 
 jobs:
   runtime-macos:
