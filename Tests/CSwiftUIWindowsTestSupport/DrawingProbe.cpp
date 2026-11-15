@@ -1,5 +1,6 @@
 #include "DrawingProbe.h"
 #include "SwiftUIWindows.h"
+#include <nativeapi.h>
 #include <windows.h>
 
 #include <cmath>
@@ -74,7 +75,16 @@ int editor_resize_probe(void) {
                               WS_OVERLAPPEDWINDOW, 0, 0, 1000, 500, nullptr,
                               nullptr, GetModuleHandleW(nullptr), nullptr);
   void *surface = sui_surface_create(host, nullptr, nullptr, 0);
-  auto editor = static_cast<HWND>(sui_edit_create(surface, 10, 1, 0));
+  native_text_field_t field = native_text_field_create("");
+  native_text_field_set_multiline(field, true);
+  native_text_field_set_bordered(field, false);
+  native_text_field_set_font_family(field, "Segoe UI");
+  native_text_field_set_font_size(field, 16.0 * 72.0 / 96.0);
+  native_text_field_set_font_weight(field, 400);
+  native_text_field_set_text_color(field, {0x10, 0x20, 0x30, 0xFF});
+  native_view_set_background_color(field, {0xFA, 0xF9, 0xF6, 0xFF});
+  auto editor = static_cast<HWND>(native_view_get_native_object(field));
+  sui_surface_edit(surface, editor, 10, field);
   HWND sidebar_button = nullptr;
   const double scale = sui_surface_scale(surface);
   auto px = [scale](double value) { return int(std::round(value * scale)); };
@@ -85,9 +95,9 @@ int editor_resize_probe(void) {
       sui_surface_remove_button(surface, sidebar_button);
       DestroyWindow(sidebar_button);
     }
-    sidebar_button = CreateWindowExW(0, L"BUTTON", L"", WS_CHILD | WS_VISIBLE,
-                                     0, 0, px(sidebar), px(30), host, nullptr,
-                                     GetModuleHandleW(nullptr), nullptr);
+    sidebar_button = CreateWindowExW(
+        0, L"BUTTON", L"", WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS, 0, 0,
+        px(sidebar), px(30), host, nullptr, GetModuleHandleW(nullptr), nullptr);
     sui_surface_button(surface, sidebar_button, 12, 1, 0);
     sui_surface_begin(surface);
     sui_surface_shape(surface, 0, 0, 1000, 500, 0, 0xFFFAF9F6, 0, 0);
@@ -95,9 +105,8 @@ int editor_resize_probe(void) {
     sui_controls_begin(surface);
     sui_controls_push(surface, 11, sidebar, 0, 600 - sidebar, 300,
                        sidebar, 0, 600 - sidebar, 300);
-    sui_edit_update(surface, editor, "", "", sidebar + 20, 40,
-                     560 - sidebar, 60, "Segoe UI", 16, 400,
-                     0xFF102030, 0xFFFAF9F6, 1, 0);
+    sui_control_frame(surface, editor, sidebar + 20, 40, 560 - sidebar, 60);
+    sui_edit_order(surface, editor);
     sui_control_clip(editor, 0, 0, 560 - sidebar, 60);
     sui_controls_pop(surface);
     sui_surface_end(surface);
@@ -122,6 +131,8 @@ int editor_resize_probe(void) {
   }
   sui_surface_remove_button(surface, sidebar_button);
   DestroyWindow(sidebar_button);
+  sui_surface_remove_edit(surface, editor);
+  native_text_field_free(field);
   sui_surface_destroy(surface);
   DestroyWindow(host);
   return errors;
@@ -204,10 +215,10 @@ drawing_probe_result drawing_probe(void) {
   const double scale = p.result.dpi / 96.;
   auto px = [scale](double value) { return int(std::round(value * scale)); };
   p.surface = sui_surface_create(p.host, Event, &p, 0);
-  p.button = CreateWindowExW(0, L"BUTTON", L"Hover",
-                             WS_CHILD | WS_VISIBLE | WS_TABSTOP, px(20), px(20),
-                             px(80), px(30), p.host, nullptr,
-                             GetModuleHandleW(nullptr), nullptr);
+  p.button = CreateWindowExW(
+      0, L"BUTTON", L"Hover", WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_CLIPSIBLINGS,
+      px(20), px(20), px(80), px(30), p.host, nullptr, GetModuleHandleW(nullptr),
+      nullptr);
   sui_surface_button(p.surface, p.button, 1, 1, 0);
   Frame(p, false);
   ShowWindow(p.host, SW_SHOWNOACTIVATE);
@@ -224,7 +235,10 @@ drawing_probe_result drawing_probe(void) {
     ++p.result.expose_errors;
   // A styled control above a real native editor still needs its own paint:
   // the canvas deliberately leaves that editor's rectangle untouched.
-  auto editor = sui_edit_create(p.surface, 9, 0, 0);
+  native_text_field_t field = native_text_field_create("");
+  native_text_field_set_bordered(field, false);
+  auto editor = native_view_get_native_object(field);
+  sui_surface_edit(p.surface, editor, 9, field);
   SetWindowPos(static_cast<HWND>(editor), HWND_BOTTOM, px(20), px(20), px(80),
                px(30), SWP_NOACTIVATE);
   RedrawWindow(p.host, nullptr, nullptr,
@@ -233,7 +247,8 @@ drawing_probe_result drawing_probe(void) {
   if (GetPixel(visible, px(22), px(22)) != RGB(32, 128, 64))
     ++p.result.expose_errors;
   ReleaseDC(p.host, visible);
-  sui_edit_destroy(p.surface, editor);
+  sui_surface_remove_edit(p.surface, editor);
+  native_text_field_free(field);
   SetWindowSubclass(p.button, Observe, 1, reinterpret_cast<DWORD_PTR>(&p));
   p.track = true;
   for (int i = 0; i < 20; ++i) {
@@ -335,10 +350,10 @@ drawing_probe_result drawing_probe(void) {
   if (p.result.position_changes != hover_positions + 1)
     ++p.result.scope_errors;
   p.result.position_changes = hover_positions;
-  HWND outside = CreateWindowExW(0, L"BUTTON", L"Outside",
-                                 WS_CHILD | WS_VISIBLE | WS_TABSTOP, px(210),
-                                 px(140), px(40), px(20), p.host, nullptr,
-                                 GetModuleHandleW(nullptr), nullptr);
+  HWND outside = CreateWindowExW(
+      0, L"BUTTON", L"Outside", WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_CLIPSIBLINGS,
+      px(210), px(140), px(40), px(20), p.host, nullptr, GetModuleHandleW(nullptr),
+      nullptr);
   sui_surface_button(p.surface, outside, 2, 1, 0);
   SetWindowSubclass(p.host, Observe, 2, reinterpret_cast<DWORD_PTR>(&p));
   auto grouped = [&](int outer, int inner) {

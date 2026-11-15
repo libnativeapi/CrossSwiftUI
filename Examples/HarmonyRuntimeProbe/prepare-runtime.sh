@@ -24,17 +24,14 @@ fi
 
 if [[ -n "${SWIFT_TOOLCHAIN_BIN:-}" ]]; then
   swiftc=("$SWIFT_TOOLCHAIN_BIN/swiftc")
-  ar=("$SWIFT_TOOLCHAIN_BIN/llvm-ar")
   sdk_args=()
 else
   swiftc=(swiftly run swiftc)
-  ar=(swiftly run llvm-ar)
   sdk_args=(+6.4.2)
 fi
 "${swiftc[@]}" --version ${sdk_args[@]+"${sdk_args[@]}"} | grep -F '(swift-6.4.2-RELEASE)'
 
 resources="$sdk/usr/lib/swift_static"
-libraries="$resources/linux-static"
 compile() {
   local module="$1" output="$2"
   shift 2
@@ -75,15 +72,3 @@ compile HarmonyRuntimeProbe Probe -I "$nativeapi_headers" \
 
 mkdir -p entry/src/main/resources/rawfile/fluent
 cp "$dazzui/Windows/FluentIcons/Resources/"*.svg entry/src/main/resources/rawfile/fluent/
-
-for name in swiftCore swift_Concurrency swift_StringProcessing swift_RegexParser \
-  swiftMusl swiftSynchronization swiftDispatch dispatch BlocksRuntime \
-  Foundation FoundationEssentials FoundationInternationalization CoreFoundation \
-  _FoundationCShims _FoundationCollections _FoundationICU; do
-  cp "$libraries/lib$name.a" "$inputs/"
-done
-cp "$libraries/aarch64/swiftrt.o" "$sdk/usr/lib/libc++.a" "$sdk/usr/lib/libc++abi.a" "$inputs/"
-cp "$sdk/usr/lib/libfts.a" "$inputs/"
-# Use the OHOS C++ library's exception TLS implementation. The Linux archive
-# uses local-exec TLS for this member, which cannot be linked into a shared object.
-"${ar[@]}" d "$inputs/libc++abi.a" cxa_exception_storage.cpp.o ${sdk_args[@]+"${sdk_args[@]}"}

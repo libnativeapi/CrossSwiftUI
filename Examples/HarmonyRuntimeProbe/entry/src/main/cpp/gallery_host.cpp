@@ -1,4 +1,3 @@
-#include <cerrno>
 #include <cmath>
 #include <cstdint>
 #include <memory>
@@ -6,8 +5,6 @@
 #include <napi/native_api.h>
 #include <native_drawing/drawing_font_collection.h>
 #include <native_drawing/drawing_text_typography.h>
-#include <uv.h>
-#include <unistd.h>
 
 using Update = void (*)(void*, const char*);
 extern "C" void swift_mount_gallery(void* context, Update update, double width, double height,
@@ -15,41 +12,12 @@ extern "C" void swift_mount_gallery(void* context, Update update, double width, 
 extern "C" void swift_resize_gallery(double width, double height);
 extern "C" void swift_gallery_event(std::intptr_t id, std::int32_t event, const char* text);
 extern "C" void swift_unmount_gallery();
-extern "C" int _dispatch_get_main_queue_port_4CF();
-extern "C" void _dispatch_main_queue_callback_4CF(void*);
 
 namespace {
 struct Gallery {
   napi_env env = nullptr;
   napi_ref callback = nullptr;
-  uv_poll_t* mainQueue = nullptr;
 } gallery;
-
-struct MainQueueWatch {
-  uv_poll_t poll{};
-  int descriptor;
-};
-
-bool WatchMainQueue(napi_env env) {
-  uv_loop_t* loop;
-  const int descriptor = _dispatch_get_main_queue_port_4CF();
-  if (descriptor < 0 || napi_get_uv_event_loop(env, &loop) != napi_ok) return false;
-  auto* watch = new MainQueueWatch{{}, descriptor};
-  if (uv_poll_init(loop, &watch->poll, descriptor) != 0) {
-    delete watch;
-    return false;
-  }
-  watch->poll.data = watch;
-  gallery.mainQueue = &watch->poll;
-  return uv_poll_start(&watch->poll, UV_READABLE, [](uv_poll_t* handle, int status, int events) {
-    if (status != 0 || (events & UV_READABLE) == 0) return;
-    const auto* watch = static_cast<MainQueueWatch*>(handle->data);
-    std::uint64_t wakeup;
-    ssize_t count;
-    do { count = read(watch->descriptor, &wakeup, sizeof(wakeup)); } while (count < 0 && errno == EINTR);
-    if (count == sizeof(wakeup)) _dispatch_main_queue_callback_4CF(nullptr);
-  }) == 0;
-}
 
 void UpdateTree(void* context, const char* json) {
   auto& host = *static_cast<Gallery*>(context);
@@ -67,12 +35,6 @@ napi_value Undefined(napi_env env) {
 
 void Unmount(void*) {
   swift_unmount_gallery();
-  if (gallery.mainQueue != nullptr) {
-    uv_poll_stop(gallery.mainQueue);
-    uv_close(reinterpret_cast<uv_handle_t*>(gallery.mainQueue), [](uv_handle_t* handle) {
-      delete static_cast<MainQueueWatch*>(handle->data);
-    });
-  }
   if (gallery.callback != nullptr) napi_delete_reference(gallery.env, gallery.callback);
   gallery = {};
 }
@@ -132,12 +94,6 @@ napi_value MountGallery(napi_env env, napi_callback_info info) {
   gallery.env = env;
   if (napi_add_env_cleanup_hook(env, Unmount, nullptr) != napi_ok) {
     Unmount(nullptr);
-    return nullptr;
-  }
-  if (!WatchMainQueue(env)) {
-    napi_remove_env_cleanup_hook(env, Unmount, nullptr);
-    Unmount(nullptr);
-    napi_throw_error(env, nullptr, "Cannot attach Swift's main queue to the UI loop");
     return nullptr;
   }
   swift_mount_gallery(&gallery, UpdateTree, width, height, pixelsPerPoint);

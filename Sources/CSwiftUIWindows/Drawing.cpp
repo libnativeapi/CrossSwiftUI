@@ -64,11 +64,6 @@ struct ButtonHook {
 };
 struct EditHook {
   int64_t id;
-  HFONT font = nullptr;
-  HBRUSH brush = nullptr;
-  COLORREF foreground = 0, background = RGB(255, 255, 255);
-  bool updating = false;
-  std::wstring fontKey;
 };
 struct Framebuffer {
   UINT width, height;
@@ -624,8 +619,6 @@ LRESULT CALLBACK EditProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp, UINT_PTR,
     sui_surface_focus_next(s, hwnd, (Modifiers() & 1) != 0);
     return 0;
   }
-  if (msg == WM_SETFOCUS || msg == WM_KILLFOCUS)
-    s->callback(s->context, id, msg == WM_SETFOCUS ? 5 : 6);
   if ((msg == WM_KEYDOWN || msg == WM_SYSKEYDOWN || msg == WM_MOUSEWHEEL) &&
       Input(s, hwnd, id, msg, wp, lp))
     return 0;
@@ -652,20 +645,12 @@ LRESULT CALLBACK HostProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp, UINT_PTR,
   }
   if (msg == deferred_input) {
     if (s->input)
-      s->input(s->context, static_cast<int64_t>(wp), wp ? 7 : 11, 0, 0, 0, 0);
+      s->input(s->context, 0, 11, 0, 0, 0, 0);
     return 0;
   }
   if (msg == WM_PAINT || msg == WM_PRINTCLIENT || msg == WM_ERASEBKGND)
     return Paint(s, hwnd, msg, wp);
-  if (msg == WM_TIMER &&
-      wp == subclass_id) { // NativeAPI owns GetMessage; Swift's main queue must
-                           // also be serviced.
-    using Pump = void (*)(void *);
-    static auto pump = reinterpret_cast<Pump>(
-        GetProcAddress(GetModuleHandleW(L"dispatch.dll"),
-                       "_dispatch_main_queue_callback_4CF"));
-    if (pump)
-      pump(nullptr);
+  if (msg == WM_TIMER && wp == subclass_id) {
     if (s->input)
       s->input(s->context, 0, 8, 0, 0, 0, 0);
     return 0;
@@ -676,21 +661,6 @@ LRESULT CALLBACK HostProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp, UINT_PTR,
     if (found != s->buttons.end() && found->second.custom_draw) {
       Draw(s, item->hwndItem, item->hDC);
       return TRUE;
-    }
-  }
-  if (msg == WM_COMMAND && HIWORD(wp) == EN_CHANGE) {
-    auto found = s->edits.find(reinterpret_cast<HWND>(lp));
-    if (found != s->edits.end() && !found->second.updating)
-      PostMessageW(s->host, deferred_input,
-                   static_cast<WPARAM>(found->second.id), 0);
-  }
-
-  if (msg == WM_CTLCOLOREDIT || msg == WM_CTLCOLORSTATIC) {
-    auto found = s->edits.find(reinterpret_cast<HWND>(lp));
-    if (found != s->edits.end()) {
-      SetTextColor(reinterpret_cast<HDC>(wp), found->second.foreground);
-      SetBkColor(reinterpret_cast<HDC>(wp), found->second.background);
-      return reinterpret_cast<LRESULT>(found->second.brush);
     }
   }
   if (msg == WM_LBUTTONDOWN) {
@@ -1178,11 +1148,6 @@ RECT Damage(Surface *s) {
 }
 } // namespace
 extern "C" {
-void sui_prepare_application(void) {
-  // Must precede Application initialization, which can create hidden HWNDs.
-  // An embedding host with an existing manifest/context remains in charge.
-  SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
-}
 void *sui_surface_create(void *host, sui_event_callback callback, void *context,
                          uint64_t native_view) {
   InitializeGraphics();
@@ -1208,7 +1173,7 @@ void sui_surface_destroy(void *handle) {
   auto *s = static_cast<Surface *>(handle);
   KillTimer(s->host, subclass_id);
   while (!s->edits.empty())
-    sui_edit_destroy(s, s->edits.begin()->first);
+    sui_surface_remove_edit(s, s->edits.begin()->first);
   for (const auto &entry : s->buttons)
     RemoveWindowSubclass(entry.first, ButtonProc, subclass_id);
   for (const auto &entry : s->buttons)
@@ -1226,9 +1191,6 @@ void sui_surface_destroy(void *handle) {
   if (s->tooltip)
     DestroyWindow(s->tooltip);
   delete s;
-}
-int sui_control_focused(void *control) {
-  return GetFocus() == static_cast<HWND>(control);
 }
 void sui_surface_trace_duration(void *handle, int stage, double milliseconds) {
   auto *s = static_cast<Surface *>(handle);
@@ -1254,108 +1216,33 @@ void sui_surface_flush(void *handle) {
 void sui_surface_input(void *handle, sui_input_callback callback) {
   static_cast<Surface *>(handle)->input = callback;
 }
-void *sui_edit_create(void *handle, int64_t id, int multiline, int secure) {
+void sui_surface_edit(void *handle, void *edit, int64_t id,
+                      uint64_t native_view) {
   auto *s = static_cast<Surface *>(handle);
-  DWORD style = WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_CLIPSIBLINGS |
-                (multiline ? (ES_MULTILINE | ES_AUTOVSCROLL | ES_WANTRETURN)
-                           : ES_AUTOHSCROLL) |
-                (secure ? ES_PASSWORD : 0);
-  HWND edit = CreateWindowExW(0, L"EDIT", L"", style, 0, 0, 1, 1, s->host,
-                              nullptr, GetModuleHandleW(nullptr), nullptr);
-  if (!edit)
-    return nullptr;
-  s->edits.emplace(edit, EditHook{id});
-  SetWindowSubclass(edit, EditProc, subclass_id,
-                    reinterpret_cast<DWORD_PTR>(s));
-  SendMessageW(edit, EM_SETMARGINS, EC_LEFTMARGIN | EC_RIGHTMARGIN, 0);
-  return edit;
-}
-int sui_edit_text(void *edit, char *output, int capacity) {
   HWND hwnd = static_cast<HWND>(edit);
-  std::wstring text(GetWindowTextLengthW(hwnd) + 1, L'\0');
-  GetWindowTextW(hwnd, text.data(), int(text.size()));
-  int size = WideCharToMultiByte(CP_UTF8, 0, text.c_str(), -1, nullptr, 0,
-                                 nullptr, nullptr);
-  if (output && capacity >= size)
-    WideCharToMultiByte(CP_UTF8, 0, text.c_str(), -1, output, capacity, nullptr,
-                        nullptr);
-  return size;
+  s->native_state_changed = true;
+  if (native_view)
+    s->native_views.emplace(hwnd, native_handle_retain(native_view));
+  ParentControl(s, hwnd);
+  s->edits.emplace(hwnd, EditHook{id});
+  SetWindowSubclass(hwnd, EditProc, subclass_id,
+                    reinterpret_cast<DWORD_PTR>(s));
 }
-void sui_edit_update(void *handle, void *control, const char *text,
-                     const char *placeholder, double x, double y, double w,
-                     double h, const char *family, double size, double weight,
-                     uint32_t foreground, uint32_t background, int enabled,
-                     int focus) {
-  auto *s = static_cast<Surface *>(handle);
-  HWND hwnd = static_cast<HWND>(control);
-  auto &hook = s->edits.at(hwnd);
-  hook.updating = true;
-  auto value = Wide(text);
-  std::wstring current(GetWindowTextLengthW(hwnd) + 1, L'\0');
-  GetWindowTextW(hwnd, current.data(), int(current.size()));
-  current.resize(wcslen(current.c_str()));
-  if (value != current) {
-    DWORD start = 0, end = 0;
-    SendMessageW(hwnd, EM_GETSEL, reinterpret_cast<WPARAM>(&start),
-                 reinterpret_cast<LPARAM>(&end));
-    SetWindowTextW(hwnd, value.c_str());
-    SendMessageW(hwnd, EM_SETSEL, min(start, DWORD(value.size())),
-                 min(end, DWORD(value.size())));
-  }
-  auto cue = Wide(placeholder);
-  SendMessageW(hwnd, EM_SETCUEBANNER, TRUE,
-               reinterpret_cast<LPARAM>(cue.c_str()));
-  double scale = GetDpiForWindow(s->host) / 96.;
-  auto fontKey = Wide(family) + std::to_wstring(size * scale) + L":" +
-                 std::to_wstring(weight);
-  if (hook.fontKey != fontKey) {
-    auto font = CreateFontW(
-        -int(std::round(size * scale)), 0, 0, 0, int(weight), FALSE, FALSE,
-        FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-        CLEARTYPE_QUALITY, DEFAULT_PITCH, Wide(family).c_str());
-    SendMessageW(hwnd, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
-    if (hook.font)
-      DeleteObject(hook.font);
-    hook.font = font;
-    hook.fontKey = fontKey;
-  }
-  auto rgb = [](uint32_t color) {
-    return RGB((color >> 16) & 255, (color >> 8) & 255, color & 255);
-  };
-  const bool colors_changed =
-      hook.foreground != rgb(foreground) || hook.background != rgb(background);
-  hook.foreground = rgb(foreground);
-  if (!hook.brush || hook.background != rgb(background)) {
-    if (hook.brush)
-      DeleteObject(hook.brush);
-    hook.background = rgb(background);
-    hook.brush = CreateSolidBrush(hook.background);
-  }
-  sui_control_frame(s, hwnd, x, y, w, h);
-  OrderControl(s, hwnd);
-  if (IsWindowEnabled(hwnd) != (enabled != 0))
-    EnableWindow(hwnd, enabled);
-  if (focus && enabled && GetFocus() != hwnd)
-    SetFocus(hwnd);
-  if (colors_changed)
-    RedrawWindow(hwnd, nullptr, nullptr, RDW_INVALIDATE | RDW_ERASE | RDW_FRAME);
-  hook.updating = false;
-}
-void sui_edit_destroy(void *handle, void *edit) {
+void sui_surface_remove_edit(void *handle, void *edit) {
   auto *s = static_cast<Surface *>(handle);
   HWND hwnd = static_cast<HWND>(edit);
   auto found = s->edits.find(hwnd);
   if (found == s->edits.end())
     return;
-  auto hook = found->second;
   s->edits.erase(found);
   RemoveWindowSubclass(hwnd, EditProc, subclass_id);
   ReleaseControl(s, hwnd);
-  DestroyWindow(hwnd);
-  if (hook.font)
-    DeleteObject(hook.font);
-  if (hook.brush)
-    DeleteObject(hook.brush);
+}
+void sui_edit_order(void *handle, void *edit) {
+  auto *s = static_cast<Surface *>(handle);
+  HWND hwnd = static_cast<HWND>(edit);
+  ParentControl(s, hwnd);
+  OrderControl(s, hwnd);
 }
 void sui_control_clip(void *control, double x, double y, double w, double h) {
   HWND hwnd = static_cast<HWND>(control);
@@ -1378,10 +1265,6 @@ void sui_control_opacity(void *control, double opacity) {
                                LWA_ALPHA);
   } else if (style & WS_EX_LAYERED)
     SetWindowLongPtrW(hwnd, GWL_EXSTYLE, style & ~WS_EX_LAYERED);
-}
-void sui_control_focus(void *control) { SetFocus(static_cast<HWND>(control)); }
-void sui_edit_replace_text(void *edit, const char *text) {
-  SetWindowTextW(static_cast<HWND>(edit), Wide(text).c_str());
 }
 void sui_surface_pointer(void *handle, int event, double x, double y,
                          int value) {
@@ -1764,8 +1647,6 @@ void sui_surface_button(void *h, void *button, int64_t id, int custom_draw,
   if (native_view)
     s->native_views.emplace(hwnd, native_handle_retain(native_view));
   ParentControl(s, hwnd);
-  SetWindowLongPtrW(hwnd, GWL_STYLE,
-                    GetWindowLongPtrW(hwnd, GWL_STYLE) | WS_CLIPSIBLINGS);
   s->buttons.emplace(hwnd, ButtonHook{id, custom_draw != 0});
   if (custom_draw)
     SetWindowLongPtrW(hwnd, GWL_STYLE,

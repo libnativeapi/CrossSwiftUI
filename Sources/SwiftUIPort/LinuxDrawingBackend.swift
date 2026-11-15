@@ -15,6 +15,7 @@ public final class LinuxDrawingBackend: RenderBackend {
   private let window: NativeAPI.Window
   public var environment: EnvironmentValues { .hosting(window) }
   private let content: NativeAPI.View
+  private let hostView: NativeAPI.View
   private let canvas: Widget
   private let host: Widget
   private let surface: Widget
@@ -25,7 +26,6 @@ public final class LinuxDrawingBackend: RenderBackend {
   private var canvasDamage: Rect?
   private var listener: ListenerId?
   private var queuedRender: (() -> Void)?
-  private var updateSource: UInt32 = 0
   private var pointerSource: UInt32 = 0
   private var pendingPointer: (event: Int, point: CGPoint, modifiers: EventModifiers)?
   private var controls: [NodeID: Editor] = [:]
@@ -49,14 +49,22 @@ public final class LinuxDrawingBackend: RenderBackend {
     guard let content = window.contentView, let native = content.nativeObject,
           let canvas = gtk_drawing_area_new(), let host = gtk_fixed_new(),
           let surface = gtk_overlay_new() else { return nil }
-    self.window = window
-    self.content = content
-    self.canvas = canvas
-    self.host = host
-    self.surface = surface
     g_object_ref_sink(surface)
     g_object_ref_sink(host)
     g_object_ref_sink(canvas)
+    guard let hostView = NativeAPI.View.createWithNativeView(UnsafeMutableRawPointer(host)) else {
+      g_object_unref(canvas)
+      g_object_unref(host)
+      g_object_unref(surface)
+      return nil
+    }
+    hostView.setLayout(.absolute)
+    self.window = window
+    self.content = content
+    self.hostView = hostView
+    self.canvas = canvas
+    self.host = host
+    self.surface = surface
     let container = native.assumingMemoryBound(to: GtkFixed.self)
     gtk_container_add(typed(surface, GtkContainer.self), canvas)
     gtk_overlay_add_overlay(typed(surface, GtkOverlay.self), host)
@@ -108,19 +116,27 @@ public final class LinuxDrawingBackend: RenderBackend {
     signals.append(g_signal_connect_data(canvas, "key-press-event", unsafeBitCast(key, to: GCallback.self), context, nil, .init(rawValue: 0)))
     gtk_widget_show(canvas)
     gtk_widget_show(surface)
-    listener = window.addListener { [weak self] event in
-      guard let self, case .resized = event else { return }
-      let size = self.window.contentSize
-      self.onResize?(SwiftUIRuntime.Size(width: size.width, height: size.height))
+    listener = content.addListener { [weak self] event in
+      guard let self else { return }
+      switch event {
+      case .resized(_, let size):
+        self.onResize?(SwiftUIRuntime.Size(width: size.width, height: size.height))
+      case .updating:
+        let update = self.queuedRender
+        self.queuedRender = nil
+        update?()
+      default:
+        break
+      }
     }
   }
 
   deinit {
     if let canvasImage { cairo_surface_destroy(canvasImage) }
-    if updateSource != 0 { g_source_remove(updateSource) }
+    content.cancelUpdate()
     if pointerSource != 0 { g_source_remove(pointerSource) }
     if tick != 0 { gtk_widget_remove_tick_callback(canvas, tick) }
-    if let listener { _ = window.removeListener(listener) }
+    if let listener { _ = content.removeListener(listener) }
     if let native = content.nativeObject, allocationSignal != 0,
        g_signal_handler_is_connected(native, allocationSignal) != 0 {
       g_signal_handler_disconnect(native, allocationSignal)
@@ -131,6 +147,7 @@ public final class LinuxDrawingBackend: RenderBackend {
     }
     controls.removeAll()
     buttons.removeAll()
+    hostView.dispose()
     for signal in signals where g_signal_handler_is_connected(canvas, signal) != 0 {
       g_signal_handler_disconnect(canvas, signal)
     }
@@ -146,20 +163,8 @@ public final class LinuxDrawingBackend: RenderBackend {
 
   public func requestRender(_ render: @escaping () -> Void) -> Bool {
     queuedRender = render
-    if updateSource == 0 {
-      // Publish pending state ahead of GTK's animation redraws. Input and
-      // pointer coalescing still run first at the normal event priority.
-      updateSource = g_idle_add_full(G_PRIORITY_HIGH_IDLE, { data in
-        guard let data else { return 0 }
-        let backend = Unmanaged<LinuxDrawingBackend>.fromOpaque(data).takeUnretainedValue()
-        backend.updateSource = 0
-        let update = backend.queuedRender
-        backend.queuedRender = nil
-        update?()
-        return 0
-      }, Unmanaged.passUnretained(self).toOpaque(), nil)
-    }
-    return updateSource != 0
+    content.requestUpdate()
+    return true
   }
 
   public func perform(_ commands: [RenderCommand]) {}
@@ -269,7 +274,7 @@ public final class LinuxDrawingBackend: RenderBackend {
     for id in buttons.keys.filter({ !liveButtons.contains($0) }) { buttons.removeValue(forKey: id) }
     if let focus {
       if let edit = controls[focus] {
-        if gtk_widget_has_focus(edit.input) == 0 { gtk_widget_grab_focus(edit.input) }
+        if !edit.field.isFocused { edit.field.focus() }
       } else if let button = buttons[focus], gtk_widget_has_focus(button.widget) == 0 {
         gtk_widget_grab_focus(button.widget)
       }
@@ -385,9 +390,12 @@ public final class LinuxDrawingBackend: RenderBackend {
     let active = allowed && (modal == nil || inModal) && !visible.isEmpty
     if node.kind == .textField, active || controls[node.id] != nil {
       live.insert(node.id)
+      if let existing = controls[node.id], existing.multiline != props.multiline {
+        controls.removeValue(forKey: node.id)
+      }
       let isNew = controls[node.id] == nil
       if isNew {
-        controls[node.id] = Editor(node.id, props: props, host: typed(host, GtkFixed.self), backend: self)
+        controls[node.id] = Editor(node.id, props: props, hostView: hostView, backend: self)
       }
       if let editor = controls[node.id] {
         if refreshContent || isNew { editor.updateContent(props, background: background, label: accessibilityLabel) }
@@ -665,170 +673,107 @@ private final class Activation {
 }
 
 private final class Editor {
+  let field: NativeAPI.TextField
   let input: Widget
+  let multiline: Bool
   private let widget: Widget
-  private let host: UnsafeMutablePointer<GtkFixed>
+  private let hostView: NativeAPI.View
   private let id: NodeID
-  private let multiline: Bool
-  private let editable: UnsafeMutableRawPointer
-  private let placeholder: Widget?
   private weak var backend: LinuxDrawingBackend?
-  private var signals: [(UnsafeMutableRawPointer, gulong)] = []
-  private var style: String?
-  private let provider = gtk_css_provider_new()!
+  private var listener: ListenerId?
+  private var keySignal: gulong = 0
   private var placement = Rect.zero
-  private var label: String?
 
-  init?(_ id: NodeID, props: NodeProps, host: UnsafeMutablePointer<GtkFixed>, backend: LinuxDrawingBackend) {
+  init?(_ id: NodeID, props: NodeProps, hostView: NativeAPI.View, backend: LinuxDrawingBackend) {
+    guard let field = NativeAPI.TextField.create(props.text) else { return nil }
     self.id = id
-    self.host = host
+    self.field = field
+    self.hostView = hostView
     self.backend = backend
-    multiline = props.multiline
-    guard let input = props.multiline ? gtk_text_view_new() : gtk_entry_new() else { return nil }
-    self.input = input
+    self.multiline = props.multiline
+    if props.multiline { field.setMultiline(true) }
+    if props.secure { field.setSecure(true) }
+    field.setBordered(false)
+    guard let raw = field.nativeObject else {
+      field.dispose()
+      return nil
+    }
+    let widget = raw.assumingMemoryBound(to: GtkWidget.self)
+    let input: Widget
     if props.multiline {
-      guard let scrolled = gtk_scrolled_window_new(nil, nil),
-            let buffer = gtk_text_view_get_buffer(typed(input, GtkTextView.self)) else {
-        g_object_ref_sink(input)
-        g_object_unref(input)
+      guard let scrolled = gtk_bin_get_child(typed(widget, GtkBin.self)),
+            let textView = gtk_bin_get_child(typed(scrolled, GtkBin.self)) else {
+        field.dispose()
         return nil
       }
-      guard let overlay = gtk_overlay_new(), let label = gtk_label_new(nil) else { return nil }
-      widget = overlay
-      placeholder = label
-      gtk_container_add(typed(overlay, GtkContainer.self), scrolled)
-      gtk_widget_show(scrolled)
-      gtk_widget_set_halign(label, GTK_ALIGN_START)
-      gtk_widget_set_valign(label, GTK_ALIGN_START)
-      gtk_widget_set_opacity(label, 0.45)
-      gtk_label_set_line_wrap(typed(label, GtkLabel.self), 1)
-      gtk_overlay_add_overlay(typed(overlay, GtkOverlay.self), label)
-      gtk_overlay_set_overlay_pass_through(typed(overlay, GtkOverlay.self), label, 1)
-      editable = UnsafeMutableRawPointer(buffer)
-      g_object_ref(editable)
-      g_object_ref_sink(input)
       gtk_scrolled_window_set_policy(typed(scrolled, GtkScrolledWindow.self), GTK_POLICY_NEVER, GTK_POLICY_AUTOMATIC)
-      gtk_container_add(typed(scrolled, GtkContainer.self), input)
-      gtk_text_view_set_wrap_mode(typed(input, GtkTextView.self), GTK_WRAP_WORD_CHAR)
-      gtk_widget_show(input)
+      input = textView
     } else {
-      widget = input
-      placeholder = nil
-      editable = UnsafeMutableRawPointer(input)
-      gtk_entry_set_has_frame(typed(input, GtkEntry.self), 0)
-      gtk_entry_set_width_chars(typed(input, GtkEntry.self), 1)
-      gtk_entry_set_visibility(typed(input, GtkEntry.self), props.secure ? 0 : 1)
+      gtk_entry_set_width_chars(typed(widget, GtkEntry.self), 1)
+      input = widget
     }
-    g_object_ref_sink(widget)
-    gtk_fixed_put(host, widget, 0, 0)
-    gtk_style_context_add_provider(gtk_widget_get_style_context(input), OpaquePointer(provider), 700)
-    if let placeholder {
-      gtk_style_context_add_provider(gtk_widget_get_style_context(placeholder), OpaquePointer(provider), 700)
+    self.widget = widget
+    self.input = input
+    hostView.addSubview(field)
+    listener = field.addListener { [weak self] event in
+      guard let self else { return }
+      switch event {
+      case .textFieldChanged(_, let text):
+        self.backend?.sendText(text ?? "", from: self.id)
+      case .focused:
+        self.backend?.focus(self.id, gained: true)
+      case .blurred:
+        self.backend?.focus(self.id, gained: false)
+      default:
+        break
+      }
     }
     let data = Unmanaged.passUnretained(self).toOpaque()
-    let changed: @convention(c) (UnsafeMutableRawPointer?, UnsafeMutableRawPointer?) -> Void = { _, data in
-      guard let data else { return }
-      let editor = Unmanaged<Editor>.fromOpaque(data).takeUnretainedValue()
-      editor.backend?.sendText(editor.text(), from: editor.id)
-    }
-    signals.append((editable, g_signal_connect_data(editable, "changed", unsafeBitCast(changed, to: GCallback.self), data, nil, .init(rawValue: 0))))
     let key: @convention(c) (Widget?, UnsafeMutablePointer<GdkEventKey>?, UnsafeMutableRawPointer?) -> gboolean = { _, event, data in
       guard let event, let data else { return 0 }
       let editor = Unmanaged<Editor>.fromOpaque(data).takeUnretainedValue()
       return editor.backend?.key(event.pointee, id: editor.id) ?? 0
     }
-    signals.append((UnsafeMutableRawPointer(input),
-                    g_signal_connect_data(input, "key-press-event", unsafeBitCast(key, to: GCallback.self), data, nil, .init(rawValue: 0))))
-    let focus: @convention(c) (Widget?, UnsafeMutablePointer<GdkEventFocus>?, UnsafeMutableRawPointer?) -> gboolean = { _, event, data in
-      guard let event, let data else { return 0 }
-      let editor = Unmanaged<Editor>.fromOpaque(data).takeUnretainedValue()
-      editor.backend?.focus(editor.id, gained: event.pointee.in != 0)
-      return 0
-    }
-    for signal in ["focus-in-event", "focus-out-event"] {
-      signals.append((UnsafeMutableRawPointer(input),
-                      g_signal_connect_data(input, signal, unsafeBitCast(focus, to: GCallback.self), data, nil, .init(rawValue: 0))))
-    }
+    keySignal = g_signal_connect_data(input, "key-press-event", unsafeBitCast(key, to: GCallback.self), data, nil, .init(rawValue: 0))
   }
 
   deinit {
-    for (object, signal) in signals where g_signal_handler_is_connected(object, signal) != 0 {
-      g_signal_handler_disconnect(object, signal)
+    if keySignal != 0, g_signal_handler_is_connected(UnsafeMutableRawPointer(input), keySignal) != 0 {
+      g_signal_handler_disconnect(UnsafeMutableRawPointer(input), keySignal)
     }
-    gtk_style_context_remove_provider(gtk_widget_get_style_context(input), OpaquePointer(provider))
-    if let placeholder {
-      gtk_style_context_remove_provider(gtk_widget_get_style_context(placeholder), OpaquePointer(provider))
-    }
-    g_object_unref(provider)
-    gtk_widget_destroy(widget)
-    if multiline {
-      g_object_unref(input)
-      g_object_unref(editable)
-    }
-    g_object_unref(widget)
+    if let listener { _ = field.removeListener(listener) }
+    hostView.removeSubview(field)
+    field.dispose()
   }
 
   func updateContent(_ props: NodeProps, background: SwiftUIRuntime.Color, label: String) {
-    if text() != props.text {
-      if multiline {
-        gtk_text_buffer_set_text(gtk_text_view_get_buffer(typed(input, GtkTextView.self)), props.text, -1)
-      } else {
-        gtk_entry_set_text(typed(input, GtkEntry.self), props.text)
-      }
-    }
-    if !multiline {
-      let entry = typed(input, GtkEntry.self)
-      let placeholder = gtk_entry_get_placeholder_text(entry).map { String(cString: $0) } ?? ""
-      if placeholder != props.placeholder { gtk_entry_set_placeholder_text(entry, props.placeholder) }
-      let plain: gboolean = props.secure ? 0 : 1
-      if gtk_entry_get_visibility(entry) != plain { gtk_entry_set_visibility(entry, plain) }
-    }
-    if let placeholder {
-      gtk_label_set_text(typed(placeholder, GtkLabel.self), props.placeholder)
-      gtk_widget_set_visible(placeholder, props.text.isEmpty && !props.placeholder.isEmpty ? 1 : 0)
-    }
+    field.setText(props.text)
+    field.setPlaceholder(props.placeholder.isEmpty ? nil : props.placeholder)
+    if !multiline { field.setSecure(props.secure) }
     let name = label.isEmpty ? props.placeholder : label
-    if self.label != name {
-      self.label = name
-      atk_object_set_name(gtk_widget_get_accessible(input), name)
-    }
+    field.setAccessibilityLabel(name.isEmpty ? nil : name)
     let font = props.font ?? .body
     let fontFamily = font.family == "Consolas" ? "monospace" : font.family == "Segoe UI" ? "sans-serif" : font.family
-    let family = fontFamily.replacingOccurrences(of: "\"", with: "")
-    let foreground = props.foreground ?? .black
-    func css(_ c: SwiftUIRuntime.Color) -> String {
-      "rgba(\(Int(c.red * 255)),\(Int(c.green * 255)),\(Int(c.blue * 255)),\(c.opacity))"
-    }
-    let css = "entry, textview, textview text, label { border: none; box-shadow: none; outline: none; padding: 0; min-height: 0; min-width: 0; font-family: \"\(family)\"; font-size: \(font.size)px; font-weight: \(Int(font.weight.value)); color: \(css(foreground)); background: \(css(background)); } label { background: transparent; }"
-    if css != style {
-      style = css
-      gtk_css_provider_load_from_data(provider, css, -1, nil)
-    }
+    field.setFontFamily(fontFamily.isEmpty ? nil : fontFamily)
+    field.setFontSize(Double(font.size) * 72.0 / 96.0)
+    field.setFontWeight(CInt(font.weight.value.rounded()))
+    field.setTextColor((props.foreground ?? .black).nativeColor)
+    field.setBackgroundColor(background.nativeColor)
   }
 
   func updatePlacement(_ props: NodeProps, visible: Rect) {
-    if placement != visible {
+    let shown = !visible.isEmpty
+    if shown, placement != visible {
       placement = visible
-      gtk_fixed_move(host, widget, pixels(visible.minX), pixels(visible.minY))
-      gtk_widget_set_size_request(widget, pixels(visible.width), pixels(visible.height))
+      field.setFrame(NativeAPI.Rectangle(
+        x: Double(pixels(visible.minX)),
+        y: Double(pixels(visible.minY)),
+        width: Double(pixels(visible.width)),
+        height: Double(pixels(visible.height))))
     }
     if gtk_widget_get_opacity(widget) != props.opacity { gtk_widget_set_opacity(widget, props.opacity) }
-    let sensitive: gboolean = props.enabled ? 1 : 0
-    if gtk_widget_get_sensitive(widget) != sensitive { gtk_widget_set_sensitive(widget, sensitive) }
-    let shown: gboolean = visible.isEmpty ? 0 : 1
-    if gtk_widget_get_visible(widget) != shown { gtk_widget_set_visible(widget, shown) }
-  }
-
-  private func text() -> String {
-    if multiline {
-      let buffer = gtk_text_view_get_buffer(typed(input, GtkTextView.self))
-      var start = GtkTextIter(), end = GtkTextIter()
-      gtk_text_buffer_get_bounds(buffer, &start, &end)
-      guard let text = gtk_text_buffer_get_text(buffer, &start, &end, 0) else { return "" }
-      defer { g_free(text) }
-      return String(cString: text)
-    }
-    return gtk_entry_get_text(typed(input, GtkEntry.self)).map { String(cString: $0) } ?? ""
+    field.setEnabled(props.enabled)
+    field.setVisible(shown)
   }
 }
 #endif

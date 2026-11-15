@@ -1,10 +1,6 @@
 import Foundation
 
 import NativeAPI
-#if os(Linux)
-  import CGTK3
-  import Glibc
-#endif
 
 /// Runs an app: create the native window, mount the scene's root view, and
 /// enter the platform application loop.
@@ -17,9 +13,6 @@ import SwiftUIRuntime
 /// later, which is what CI uses to prove the window and event loop work.
 
 public func runApp<A: App>(_ app: A) {
-  #if os(Windows)
-    WindowsDrawingBackend.prepareApplication()
-  #endif
   let scene = app.body
   guard let windowScene = scene as? any _WindowScene else {
     fatalError("SwiftUIPort v0.1 requires WindowGroup as the top-level Scene")
@@ -120,59 +113,18 @@ public func runApp<A: App>(_ app: A) {
     startSmokeTimer()
   }
 
-  #if os(Linux)
-    let dispatchSource = watchMainDispatchQueue()
-    defer { if dispatchSource != 0 { g_source_remove(dispatchSource) } }
-  #endif
   withExtendedLifetime(renderer) { _ = application.runWithWindow(window) }
 }
 
-#if os(Linux)
-  // CoreFoundation's libdispatch bridge exposes the main queue's eventfd.
-  // Watching it from GLib lets Swift's MainActor run while GTK owns the loop.
-  private let drainMainDispatchQueue = dlsym(nil, "_dispatch_main_queue_callback_4CF").map {
-    unsafeBitCast($0, to: (@convention(c) (UnsafeMutableRawPointer?) -> Void).self)
-  }
-
-  private func watchMainDispatchQueue() -> UInt32 {
-    guard drainMainDispatchQueue != nil, let symbol = dlsym(nil, "_dispatch_get_main_queue_port_4CF")
-    else { return 0 }
-    let mainQueuePort = unsafeBitCast(symbol, to: (@convention(c) () -> Int32).self)
-    let descriptor = mainQueuePort()
-    guard descriptor >= 0, let channel = g_io_channel_unix_new(descriptor) else { return 0 }
-    defer { g_io_channel_unref(channel) }
-    return g_io_add_watch(channel, G_IO_IN, { channel, _, _ in
-      var wakeup: UInt64 = 0
-      let descriptor = g_io_channel_unix_get_fd(channel)
-      let size = MemoryLayout<UInt64>.size
-      var count: Int
-      repeat { count = read(descriptor, &wakeup, size) } while count < 0 && errno == EINTR
-      if count == size { drainMainDispatchQueue?(nil) }
-      return 1
-    }, nil)
-  }
-#endif
-
 private func startSmokeTimer() {
-  #if os(Linux)
-    g_timeout_add(3000, { _ in
-      NativeAPI.Application.shared.quit(0)
-      return 0
-    }, nil)
-  #else
-  Thread.detachNewThread {
-    Thread.sleep(forTimeInterval: 3)
+  DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
     NativeAPI.Application.shared.quit(0)
   }
-  #endif
 }
 extension App {
   /// The `@main` entry point. `SwiftUI` re-exports this extension, so an app
   /// only needs `import SwiftUI`.
   public static func main() {
-    #if os(Windows)
-      WindowsDrawingBackend.prepareApplication()
-    #endif
     runApp(Self())
   }
 }

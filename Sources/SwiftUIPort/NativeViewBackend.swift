@@ -26,24 +26,21 @@ public final class NativeViewBackend: RenderBackend {
   private var parentByID: [NodeID: NodeID] = [:]
   private var listeners: [NodeID: ListenerId] = [:]
   private var rootID: NodeID?
-  private var windowListener: ListenerId?
+  private var contentListener: ListenerId?
 
   public init?(window: NativeAPI.Window) {
     guard let contentView = window.contentView else { return nil }
     self.window = window
     self.contentView = contentView
-    self.windowListener = window.addListener { [weak self] event in
-      guard case .resized = event, let self else { return }
-      // The event payload is the frame size (decorations included); the
-      // renderer lays out the content area, so read that instead.
-      let content = self.window.contentSize
-      self.onResize?(SwiftUIRuntime.Size(width: content.width, height: content.height))
+    self.contentListener = contentView.addListener { [weak self] event in
+      guard case let .resized(_, newSize) = event else { return }
+      self?.onResize?(SwiftUIRuntime.Size(width: newSize.width, height: newSize.height))
     }
   }
 
   deinit {
-    if let windowListener {
-      _ = window.removeListener(windowListener)
+    if let contentListener {
+      _ = contentView.removeListener(contentListener)
     }
   }
 
@@ -125,6 +122,8 @@ public final class NativeViewBackend: RenderBackend {
     view.setVisible(props.visible)
     view.setEnabled(props.enabled)
     view.setBackgroundColor(props.background?.nativeColor ?? NativeAPI.Color.transparent)
+    view.setTooltip(props.help.isEmpty ? nil : props.help)
+    view.setAccessibilityLabel(props.accessibilityLabel.isEmpty ? nil : props.accessibilityLabel)
 
     if props.frameWidth != nil || props.frameHeight != nil {
       view.setPreferredSize(
@@ -143,14 +142,29 @@ public final class NativeViewBackend: RenderBackend {
       if let foreground = props.foreground {
         label.setTextColor(foreground.nativeColor)
       } else if previous?.foreground != nil {
-        // There is no "restore platform default" API; black is the neutral
-        // fallback when a previously colored Text loses its color.
-        label.setTextColor(.black)
+        label.setTextColor(.transparent)
+      }
+      if let font = props.font {
+        label.setFontSize(Double(font.size))
+        label.setFontFamily(font.family.isEmpty ? nil : font.family)
+        label.setFontWeight(CInt(font.weight.value.rounded()))
+      } else if previous?.font != nil {
+        label.setFontSize(0)
+        label.setFontFamily(nil)
+        label.setFontWeight(0)
       }
     case .button:
-      // nativeapi's Button exposes text but not a text color; .foregroundColor
-      // is documented as Text-only in v0.1.
-      (view as? NativeAPI.Button)?.setText(props.text)
+      guard let button = view as? NativeAPI.Button else { return }
+      button.setText(props.text)
+      if let font = props.font {
+        button.setFontSize(Double(font.size))
+        button.setFontFamily(font.family.isEmpty ? nil : font.family)
+        button.setFontWeight(CInt(font.weight.value.rounded()))
+      } else if previous?.font != nil {
+        button.setFontSize(0)
+        button.setFontFamily(nil)
+        button.setFontWeight(0)
+      }
     case .container(let axis):
       view.setLayout(axis == .horizontal ? .row : .column)
       view.setSpacing(props.spacing)

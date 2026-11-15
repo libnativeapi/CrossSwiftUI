@@ -1,8 +1,7 @@
-#include <cerrno>
 #include <cstdint>
-#include <spawn.h>
 #include <napi/native_api.h>
 #include "ohos_runtime.h"
+#include "swift_ohos_runtime.h"
 
 extern "C" std::int32_t swift_runtime_probe(std::int32_t seed);
 extern "C" std::int32_t swift_foundation_probe();
@@ -15,20 +14,6 @@ napi_value MountGallery(napi_env env, napi_callback_info info);
 napi_value ResizeGallery(napi_env env, napi_callback_info info);
 napi_value GalleryEvent(napi_env env, napi_callback_info info);
 napi_value UnmountGallery(napi_env env, napi_callback_info info);
-
-// Foundation's Linux archive references this musl extension. The OHOS NDK
-// does not export it, and this fixture has a fixed process name.
-extern "C" {
-static char probeProcessName[] = "dev.swiftuiport.runtimeprobe";
-__attribute__((visibility("hidden"))) char* program_invocation_short_name = probeProcessName;
-
-// The probe does not spawn subprocesses. Report the unavailable Foundation
-// operation if it is ever called instead of silently ignoring the directory.
-__attribute__((visibility("hidden")))
-int posix_spawn_file_actions_addchdir_np(posix_spawn_file_actions_t*, const char*) {
-  return ENOTSUP;
-}
-}
 
 static napi_value Number(napi_env env, std::int32_t value) {
   napi_value result;
@@ -119,8 +104,8 @@ static napi_value DetachNativeAPI(napi_env env, napi_callback_info info) {
 }
 
 static napi_value Init(napi_env env, napi_value exports) {
-  if (!nativeapi::ohos::Initialize(env)) {
-    napi_throw_error(env, nullptr, "Cannot initialize NativeAPI on the ArkTS UI thread");
+  if (!nativeapi::ohos::Initialize(env) || !nativeapi::swift_ohos::Initialize(env)) {
+    napi_throw_error(env, nullptr, "Cannot initialize NativeAPI and Swift runtime on the ArkTS UI thread");
     return nullptr;
   }
   const napi_property_descriptor properties[] = {

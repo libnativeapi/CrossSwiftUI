@@ -4,7 +4,6 @@
 extern "C" {
 #endif
 typedef void (*sui_event_callback)(void *context, int64_t id, int event);
-void sui_prepare_application(void);
 typedef struct {
   double width, height;
 } sui_size;
@@ -13,19 +12,14 @@ typedef int (*sui_input_callback)(void *, int64_t, int, double, double, int,
 void sui_surface_schedule(void *);
 void sui_surface_trace_update(void *, int begin);
 void sui_surface_trace_duration(void *surface, int stage, double milliseconds);
-int sui_control_focused(void *control);
 void sui_surface_flush(void *);
 void sui_surface_input(void *, sui_input_callback);
-void *sui_edit_create(void *, int64_t, int multiline, int secure);
-void sui_edit_update(void *, void *, const char *, const char *, double, double,
-                     double, double, const char *, double, double, uint32_t,
-                     uint32_t, int, int);
-int sui_edit_text(void *, char *, int);
-void sui_edit_destroy(void *, void *);
+void sui_surface_edit(void *surface, void *edit, int64_t id,
+                      uint64_t native_view);
+void sui_surface_remove_edit(void *surface, void *edit);
+void sui_edit_order(void *surface, void *edit);
 void sui_control_clip(void *, double, double, double, double);
 void sui_control_opacity(void *control, double opacity);
-void sui_control_focus(void *);
-void sui_edit_replace_text(void *, const char *);
 void sui_surface_pointer(void *, int event, double x, double y, int value);
 
 void *sui_surface_create(void *host, sui_event_callback callback, void *context,

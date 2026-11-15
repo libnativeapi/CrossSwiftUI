@@ -59,7 +59,8 @@ if !buildForWeb {
       linkerSettings: [.linkedLibrary("gdiplus"), .linkedLibrary("comctl32")]))
   targets.append(
     .target(
-      name: "CSwiftUIWindowsTestSupport", dependencies: ["CSwiftUIWindows"],
+      name: "CSwiftUIWindowsTestSupport",
+      dependencies: ["CSwiftUIWindows", .product(name: "CNativeAPI", package: "NativeAPI")],
       path: "Tests/CSwiftUIWindowsTestSupport", publicHeadersPath: "include"))
   targets.append(
     .testTarget(

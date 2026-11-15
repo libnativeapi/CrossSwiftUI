@@ -93,10 +93,8 @@ complete. Context menus are drawn content, not native OS menus.
 ## Lifecycle and motion
 
 Appearance/change/disappearance callbacks run after mounting. Tasks cancel when
-their view disappears or task id changes. The Windows bridge pumps Swift's main
-Dispatch queue alongside NativeAPI's Win32 loop. Linux watches libdispatch's
-main queue descriptor from the GTK loop. Both use the Swift runtime's
-`_dispatch_main_queue_callback_4CF` export.
+their view disappears or task id changes. NativeAPI's Swift binding pumps Swift's
+main Dispatch queue alongside the Win32, GTK and OpenHarmony UI loops.
 
 Both backends interpolate rotation, scale, opacity and offset, including repeat and
 delay. Timing curves currently interpolate linearly. Layout/color interpolation,

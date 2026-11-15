@@ -7,9 +7,9 @@
   /// Generic SwiftUI drawing hosted by nativeapi. Decorative nodes share a
   /// display list; buttons keep native Windows handles and native activation.
   public final class WindowsDrawingBackend: RenderBackend {
-    /// Call before creating any native windows when embedding the renderer.
-    /// App.main configures per-monitor DPI awareness automatically.
-    public static func prepareApplication() { sui_prepare_application() }
+    /// Ensures NativeAPI's early Per-Monitor V2 DPI setup has run before any
+    /// standalone HWNDs are created outside `Application`.
+    public static func prepareApplication() { _ = NativeAPI.Application.shared }
 
     public var tapHandler: ((NodeID) -> Void)?
     public var transactionHandler: ((() -> Void) -> Void)?
@@ -20,13 +20,19 @@
     private var deliveringUpdate = false
     private var pendingRender: (() -> Void)?
     private var pendingPointer: (() -> Void)?
-    private var updateListener: ListenerId?
+    private var contentListener: ListenerId?
     private var pendingEvents: [() -> Void] = []
     private var modalControls: Set<NodeID>?
     private var controlLabels: [NodeID: String] = [:]
     private var controlHitRadii: [NodeID: Double] = [:]
     private var desiredFocus: NodeID?
-    private var edits: [NodeID: UnsafeMutableRawPointer] = [:]
+    private struct RetainedEdit {
+      let view: NativeAPI.TextField
+      let listener: ListenerId
+      let multiline: Bool
+      let secure: Bool
+    }
+    private var edits: [NodeID: RetainedEdit] = [:]
     private var root: Element?
     private final class NativeShadowMask {
       let handle: UnsafeMutableRawPointer
@@ -80,7 +86,6 @@
     public var environment: EnvironmentValues { .hosting(window) }
     private let content: NativeAPI.View
     private var surface: UnsafeMutableRawPointer?
-    private var listener: ListenerId?
     private var buttons: [NodeID: (view: NativeAPI.Button, listener: ListenerId)] = [:]
 
     public init?(window: NativeAPI.Window, schedulesUpdates: Bool = false) {
@@ -116,7 +121,7 @@
               // Several Tab/focus changes can arrive before the next render.
               // An obsolete gain must not pull focus back to its old HWND.
               let focused =
-                backend.edits[node].map { sui_control_focused($0) != 0 }
+                backend.edits[node]?.view.isFocused
                 ?? backend.buttons[node]?.view.isFocused ?? false
               guard focused == (event == 5) else { return }
             }
@@ -172,33 +177,26 @@
             // not leaving the SwiftUI surface. Reconcile the current hit path.
             return backend.inputHandler?(nil, 1, point, 0, [], "") == true ? 1 : 0
           }
-          var text = ""
-          if event == 7, let edit = backend.edits[NodeID(rawValue: Int(id))] {
-            var bytes = [CChar](repeating: 0, count: Int(sui_edit_text(edit, nil, 0)))
-            _ = sui_edit_text(edit, &bytes, Int32(bytes.count))
-            text = String(cString: bytes)
-          }
           return backend.inputHandler?(
             id == 0 ? nil : NodeID(rawValue: Int(id)), Int(event), CGPoint(x: x, y: y), Int(value),
-            EventModifiers(rawValue: Int(modifiers)), text) == true ? 1 : 0
+            EventModifiers(rawValue: Int(modifiers)), "") == true ? 1 : 0
         })
-      if schedulesUpdates {
-        updateListener = content.addListener { [weak self] event in
-          if case .updating = event { self?.deliverUpdate() }
-        }
-      }
-      listener = window.addListener { [weak self] event in
-        // Window's resize event includes decorations; the renderer needs client size.
-        if case .resized = event, let self {
-          let size = self.window.contentSize
+      contentListener = content.addListener { [weak self] event in
+        guard let self else { return }
+        switch event {
+        case .updating where self.schedulesUpdates:
+          self.deliverUpdate()
+        case let .resized(_, size):
           self.onResize?(SwiftUIRuntime.Size(width: size.width, height: size.height))
+        default:
+          break
         }
       }
     }
     deinit {
       content.cancelUpdate()
-      if let updateListener { _ = content.removeListener(updateListener) }
-      if let listener { _ = window.removeListener(listener) }
+      if let contentListener { _ = content.removeListener(contentListener) }
+      for id in Array(edits.keys) { removeEdit(id) }
       for id in Array(buttons.keys) { removeButton(id) }
       if let surface { sui_surface_destroy(surface) }
     }
@@ -285,17 +283,14 @@
           let candidates = controls(node)
           desiredFocus =
             candidates.first(where: { id in
-              if let edit = edits[id] { return sui_control_focused(edit) != 0 }
-              return buttons[id]?.view.isFocused == true
+              edits[id]?.view.isFocused == true || buttons[id]?.view.isFocused == true
             }) ?? candidates.first
         }
         node.children.forEach(focusTarget)
       }
       if hasFocusRequest { focusTarget(root) }
       for id in Set(buttons.keys).subtracting(live) { removeButton(id) }
-      for id in Set(edits.keys).subtracting(liveEdits) {
-        if let edit = edits.removeValue(forKey: id) { sui_edit_destroy(surface, edit) }
-      }
+      for id in Set(edits.keys).subtracting(liveEdits) { removeEdit(id) }
       sui_surface_begin(surface)
       lastTimings["prepare"] = (Date.timeIntervalSinceReferenceDate - started) * 1000
       publish(root, on: surface)
@@ -344,9 +339,15 @@
     }
     /// Programmatic editing and pointer events are scoped to this surface's HWND.
     public func replaceText(_ id: NodeID, with text: String) {
-      if let edit = edits[id] {
-        sui_edit_replace_text(edit, text)
-        if let surface { sui_surface_flush(surface) }
+      guard let edit = edits[id]?.view else { return }
+      edit.setText(text)
+      enqueue { [weak self] in
+        _ = self?.inputHandler?(id, 7, .zero, 0, [], text)
+      }
+      if schedulesUpdates {
+        drainInput()
+      } else if let surface {
+        sui_surface_flush(surface)
       }
     }
     public func pointer(event: Int, at point: CGPoint, value: Int = 0) {
@@ -370,14 +371,18 @@
     public func nativeButton(_ id: NodeID) -> NativeAPI.Button? { buttons[id]?.view }
     public func advanceFocus(from id: NodeID?, backward: Bool = false) {
       if let surface {
-        sui_surface_focus_next(
-          surface, id.flatMap { buttons[$0]?.view.nativeObject }, backward ? 1 : 0)
+        let current = id.flatMap { buttons[$0]?.view.nativeObject ?? edits[$0]?.view.nativeObject }
+        sui_surface_focus_next(surface, current, backward ? 1 : 0)
       }
     }
     func focusInitialControl() {
       // The top-level HWND initially owns focus. Put it on the first available
       // control so Tab works before the user has clicked anything.
-      if !buttons.values.contains(where: { $0.view.isFocused }) { advanceFocus(from: nil) }
+      if !buttons.values.contains(where: { $0.view.isFocused })
+        && !edits.values.contains(where: { $0.view.isFocused })
+      {
+        advanceFocus(from: nil)
+      }
     }
 
     public func requestRender(_ render: @escaping () -> Void) -> Bool {
@@ -541,23 +546,79 @@
         }
       }
       if node.kind == .textField, let surface, edits[node.id] != nil || inViewport {
-        if edits[node.id] == nil {
-          edits[node.id] = sui_edit_create(
-            surface, Int64(node.id.rawValue), node.props.multiline ? 1 : 0,
-            node.props.secure ? 1 : 0)
+        if let existing = edits[node.id],
+          existing.multiline != node.props.multiline || existing.secure != node.props.secure
+        {
+          removeEdit(node.id)
         }
-        if let edit = edits[node.id] {
+        let retained = edits[node.id] != nil
+        if edits[node.id] == nil {
+          guard let field = NativeAPI.TextField.create(node.props.text) else {
+            fatalError("nativeapi failed to create a text field")
+          }
+          if node.props.multiline { field.setMultiline(true) }
+          if node.props.secure { field.setSecure(true) }
+          field.setBordered(false)
+          guard let handle = field.nativeObject else {
+            field.dispose()
+            fatalError("nativeapi text field has no native handle")
+          }
+          sui_surface_edit(surface, handle, Int64(node.id.rawValue), field.nativeHandle)
+          let id = node.id
+          let listener = field.addListener { [weak self] event in
+            switch event {
+            case let .textFieldChanged(_, text):
+              let value = text ?? ""
+              self?.enqueue { [weak self] in
+                if self?.schedulesUpdates == true { self?.drainInput() }
+                _ = self?.inputHandler?(id, 7, .zero, 0, [], value)
+              }
+            case .focused:
+              self?.enqueue { [weak self] in
+                guard let self, self.edits[id]?.view.isFocused == true else { return }
+                self.interactionHandler?(id, .focus(true))
+              }
+            case .blurred:
+              self?.enqueue { [weak self] in
+                guard let self, self.edits[id]?.view.isFocused == false else { return }
+                self.interactionHandler?(id, .focus(false))
+              }
+            default:
+              break
+            }
+          }
+          edits[id] = RetainedEdit(
+            view: field, listener: listener, multiline: node.props.multiline,
+            secure: node.props.secure)
+        }
+        if let edit = edits[node.id], let handle = edit.view.nativeObject {
           let p = node.props
           let r = node.frame
-          let font = p.font ?? .body
-          sui_edit_update(
-            surface, edit, p.text, p.placeholder, r.minX, r.minY, r.width, r.height, font.family,
-            Double(font.size), font.weight.value, (p.foreground ?? .black).argb, background.argb,
-            p.enabled && controlAllowed ? 1 : 0, wantsFocus ? 1 : 0)
-          sui_control_opacity(edit, p.opacity)
+          if inViewport || nativeClip != nil {
+            sui_control_frame(surface, handle, r.minX, r.minY, r.width, r.height)
+          }
+          sui_edit_order(surface, handle)
+          if !geometryOnly || !retained {
+            let font = p.font ?? .body
+            edit.view.setText(p.text)
+            edit.view.setPlaceholder(p.placeholder.isEmpty ? nil : p.placeholder)
+            edit.view.setFontFamily(font.family.isEmpty ? nil : font.family)
+            edit.view.setFontSize(Double(font.size) * 72.0 / 96.0)
+            edit.view.setFontWeight(CInt(font.weight.value.rounded()))
+            edit.view.setTextColor((p.foreground ?? .black).nativeColor)
+            edit.view.setBackgroundColor(background.nativeColor)
+            let name = p.accessibilityLabel.isEmpty ? p.placeholder : p.accessibilityLabel
+            edit.view.setAccessibilityLabel(name.isEmpty ? nil : name)
+            let enabled = p.enabled && controlAllowed
+            edit.view.setEnabled(enabled)
+            if wantsFocus && enabled && !edit.view.isFocused && inViewport {
+              edit.view.focus()
+            }
+          }
+          sui_control_opacity(handle, p.opacity)
           let visible = inViewport ? r.intersection(nativeClip ?? clip) : .zero
           sui_control_clip(
-            edit, visible.minX - r.minX, visible.minY - r.minY, visible.width, visible.height)
+            handle, visible.minX - r.minX, visible.minY - r.minY, visible.width, visible.height)
         }
       }
       for child in orderedChildren(node) {
@@ -570,6 +631,14 @@
       if !node.props.accessibilityLabel.isEmpty { return node.props.accessibilityLabel }
       if !node.props.text.isEmpty { return node.props.text }
       return node.children.map(label).filter { !$0.isEmpty }.joined(separator: " ")
+    }
+    private func removeEdit(_ id: NodeID) {
+      guard let edit = edits.removeValue(forKey: id) else { return }
+      _ = edit.view.removeListener(edit.listener)
+      if let surface, let handle = edit.view.nativeObject {
+        sui_surface_remove_edit(surface, handle)
+      }
+      edit.view.dispose()
     }
     private func removeButton(_ id: NodeID) {
       guard let button = buttons.removeValue(forKey: id) else { return }
