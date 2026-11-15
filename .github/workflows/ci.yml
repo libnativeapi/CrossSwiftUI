@@ -8,11 +8,11 @@ on:
 permissions:
   contents: read
 
-# Pin the workspace revision that exposes view update batching and scheduling.
-# See libnativeapi/nativeapi#34.
+# Pin the workspace revision that exposes Swift main-queue pumping, RunLoopTimer,
+# borderless TextField styling, typography, accessibility, and view resize events.
 env:
   NATIVEAPI_REPOSITORY: libnativeapi/nativeapi
-  NATIVEAPI_REF: c6f38de82db51582bd01cdd7024df105cb86c439
+  NATIVEAPI_REF: b9b612a2907fe9c27d8fc87a93422cacf98b608b
 
 jobs:
   runtime-macos:
