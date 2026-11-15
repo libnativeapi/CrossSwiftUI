@@ -90,7 +90,7 @@ jobs:
         run: swift build
 
       - name: Test
-        run: swift test
+        run: dbus-run-session -- xvfb-run -a swift test
 
       - name: Smoke test under Xvfb
         run: |
