@@ -63,9 +63,10 @@ Read [docs/COMPAT.md](docs/COMPAT.md) and
 
 ## Requirements
 
-- Swift 6.0 toolchain, language mode 5 (`swift-tools-version:5.9`). The
-  current Windows runners ship Visual Studio 2026 / MSVC 14.51, whose STL
-  requires Clang 20 or newer; the Windows CI therefore installs Swift 6.3.
+- Swift 6.0 or newer on Linux/macOS, language mode 5 (`swift-tools-version:5.9`).
+  Windows uses Swift 6.4.2 or newer: Swift 6.3.1 fails to link Foundation's
+  `AttributedString.runs` ([swift#88132](https://github.com/swiftlang/swift/issues/88132)).
+  The current Windows runners also require a modern Clang for the MSVC 14.51 STL.
   The package itself remains in language mode 5.
 - A [nativeapi](https://github.com/libnativeapi/nativeapi) checkout with the
   Swift binding's platform support. The package consumes it as a **sibling path
