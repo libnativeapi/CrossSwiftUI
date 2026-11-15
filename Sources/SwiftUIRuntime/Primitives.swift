@@ -1,3 +1,5 @@
+import Foundation
+
 /// Read-only text, with wrapping and explicit newlines on the Windows backend.
 
 /// A native button whose action invalidates mounted state synchronously.
@@ -16,13 +18,23 @@ public struct Text: View {
     var text: String
     var font: Font?
     var color: Color?
+    var tracking: Double = 0
+    var link: URL? = nil
   }
   var runs: [Run] = []
+  var textTracking: Double = 0
   var textFont: Font?, textColor: Color?
   public let content: String
 
   public init(_ content: String) {
     self.content = content
+  }
+
+  public init(_ content: AttributedString) {
+    self.content = String(content.characters)
+    runs = content.runs.map { run in
+      Run(text: String(content.characters[run.range]), font: nil, color: nil, link: run.link)
+    }
   }
 
   public var body: Never { fatalError("Text is a primitive view") }
@@ -33,13 +45,20 @@ extension Text: _PrimitiveView {
     props.text = content
     props.font = textFont ?? EnvironmentValues.current.font
     props.foreground = textColor
+    props.tracking = textTracking
     if !runs.isEmpty {
       let children = runs.map { run -> Element in
         var child = props
         child.text = run.text
         child.font = run.font ?? props.font
         child.foreground = run.color ?? props.foreground
-        return Element(kind: .text, props: child)
+        child.tracking = run.tracking
+        guard let url = run.link else { return Element(kind: .text, props: child) }
+        let openURL = EnvironmentValues.current.openURL
+        child.underline = true
+        child.foreground = run.color ?? EnvironmentValues.current.tint
+        child.accessibilityTraits = AccessibilityTraits.isLink.rawValue
+        return Element(kind: .text, props: child, action: { _ = openURL(url) })
       }
       var container = NodeProps()
       container.spacing = 0
@@ -48,21 +67,31 @@ extension Text: _PrimitiveView {
     return Element(kind: .text, props: props)
   }
 }
+public enum ButtonRole { case cancel, destructive }
+
 public struct Button<Label: View>: View {
   public typealias Body = Never
 
   public let title: String
   public let action: () -> Void
   let label: Label
+  let role: ButtonRole?
 
   public init(_ title: String, action: @escaping () -> Void) where Label == Text {
+    self.init(title, role: nil, action: action)
+  }
+
+  public init(_ title: String, role: ButtonRole?, action: @escaping () -> Void)
+  where Label == Text {
     self.title = title
+    self.role = role
     self.action = action
     self.label = Text(title)
   }
 
   public init(action: @escaping () -> Void, @ViewBuilder label: () -> Label) {
     self.title = ""
+    self.role = nil
     self.action = action
     self.label = label()
   }
@@ -77,6 +106,8 @@ extension Button: _PrimitiveView {
       if element.kind == .text { return element.props.text }
       return element.children.map(text).filter { !$0.isEmpty }.joined(separator: " ")
     }
+    if role == .cancel { props.keyboardShortcut = .cancelAction }
+    if role == .destructive { props.foreground = Color(hex: 0xb91c1c) }
     props.text = title.isEmpty ? text(_render(label, path: path.appending(index: 0))) : title
     return Element(kind: .button, props: props, action: action)
   }
@@ -128,6 +159,13 @@ func flattenChildren(_ element: Element) -> [Element] {
   return element.kind == .empty ? [] : [element]
 }
 extension Text {
+  public func kerning(_ spacing: CGFloat) -> Text {
+    var text = self
+    text.textTracking = Double(spacing)
+    for index in text.runs.indices { text.runs[index].tracking = Double(spacing) }
+    return text
+  }
+
   public func font(_ font: Font?) -> Text {
     var text = self
     text.textFont = font
@@ -151,9 +189,15 @@ extension Text {
     var text = Text(lhs.content + rhs.content)
     text.runs =
       (lhs.runs.isEmpty
-        ? [Run(text: lhs.content, font: lhs.textFont, color: lhs.textColor)] : lhs.runs)
+        ? [
+          Run(
+            text: lhs.content, font: lhs.textFont, color: lhs.textColor, tracking: lhs.textTracking)
+        ] : lhs.runs)
       + (rhs.runs.isEmpty
-        ? [Run(text: rhs.content, font: rhs.textFont, color: rhs.textColor)] : rhs.runs)
+        ? [
+          Run(
+            text: rhs.content, font: rhs.textFont, color: rhs.textColor, tracking: rhs.textTracking)
+        ] : rhs.runs)
     return text
   }
 }

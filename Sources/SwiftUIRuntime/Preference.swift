@@ -1,4 +1,5 @@
 import Foundation
+
 #if canImport(CoreGraphics)
   import CoreGraphics
 #endif
@@ -50,6 +51,31 @@ extension View {
   ) -> some View where K.Value: Equatable {
     PreferenceReader<Self, K>(content: self, action: action)
   }
+  public func transformPreference<K: PreferenceKey>(
+    _ key: K.Type, _ transform: @escaping (inout K.Value) -> Void
+  ) -> some View {
+    TransformView(content: self) { node in
+      node.preferenceTransforms.append { preferences in
+        let identifier = ObjectIdentifier(K.self)
+        var value = preferences[identifier]?.value as? K.Value ?? K.defaultValue
+        transform(&value)
+        preferences[identifier] = PreferenceValue(
+          value: value,
+          reduce: { old, new in
+            var result = old as! K.Value
+            K.reduce(value: &result) { new as! K.Value }
+            return result
+          })
+      }
+    }
+  }
+
+  public func overlayPreferenceValue<K: PreferenceKey, Overlay: View>(
+    _ key: K.Type, @ViewBuilder _ content: @escaping (K.Value) -> Overlay
+  ) -> some View where K.Value: Equatable {
+    PreferenceOverlay<Overlay, Self, K>(content: self, overlay: content)
+  }
+
 }
 func resolvePreferences(_ node: Element) -> [ObjectIdentifier: PreferenceValue] {
   if !node.hasPreferences { return [:] }
@@ -64,12 +90,24 @@ func resolvePreferences(_ node: Element) -> [ObjectIdentifier: PreferenceValue] 
       }
     }
   }
+  for transform in node.preferenceTransforms { transform(&result) }
   if let action = node.preferenceAction {
     let values = result
     LifecycleRegistry.shared.pending.append { action(values) }
   }
   return result
 }
+private struct PreferenceOverlay<Overlay: View, Content: View, Key: PreferenceKey>: View
+where Key.Value: Equatable {
+  let content: Content
+  let overlay: (Key.Value) -> Overlay
+  @State private var value = Key.defaultValue
+
+  var body: some View {
+    content.onPreferenceChange(Key.self) { value = $0 }.overlay { overlay(value) }
+  }
+}
+
 public struct GridItem {
   public enum Size {
     case fixed(CGFloat)
@@ -97,7 +135,9 @@ public struct LazyVGrid<Content: View>: View {
     self.spacing = spacing ?? 8
     self.content = content()
   }
-  public var body: some View { GridContent(layout: GridLayout(columns: columns, spacing: spacing), content: content) }
+  public var body: some View {
+    GridContent(layout: GridLayout(columns: columns, spacing: spacing), content: content)
+  }
 }
 
 private struct GridContent<Content: View>: View, _PrimitiveView {
@@ -182,8 +222,9 @@ private struct GridLayout: _LayoutBridge {
       guard index < slots.count else { return .zero }
       let slot = slots[index]
       let size = engine.sizeThatFits(children[index], proposal: ProposedViewSize(slot.size))
-      return CGRect(x: bounds.minX + slot.minX, y: bounds.minY + slot.minY,
-                    width: size.width, height: size.height)
+      return CGRect(
+        x: bounds.minX + slot.minX, y: bounds.minY + slot.minY,
+        width: size.width, height: size.height)
     }
   }
 }

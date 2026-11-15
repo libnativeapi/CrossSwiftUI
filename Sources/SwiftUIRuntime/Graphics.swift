@@ -1,4 +1,5 @@
 import Foundation
+
 #if canImport(CoreGraphics)
   import CoreGraphics
 #endif
@@ -6,6 +7,7 @@ import Foundation
 /// Backend-neutral vector path. Each command is M(x,y), L(x,y), C(6), or Z.
 
 public struct Angle: Equatable {
+  public static let zero = Angle(radians: 0)
   public var radians: Double
   public var degrees: Double { radians * 180 / .pi }
   public static func degrees(_ value: Double) -> Angle { Angle(radians: value * .pi / 180) }

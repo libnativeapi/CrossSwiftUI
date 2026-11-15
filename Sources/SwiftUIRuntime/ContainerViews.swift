@@ -1,4 +1,5 @@
 import Foundation
+
 #if canImport(CoreGraphics)
   import CoreGraphics
 #endif
@@ -54,12 +55,53 @@ extension ForEach where Data == Range<Int>, ID == Int {
     self.init(data, id: \.self, content: content)
   }
 }
+public struct ScrollViewProxy {
+  let request: (AnyHashable, UnitPoint?) -> Void
+
+  public func scrollTo<ID: Hashable>(_ id: ID, anchor: UnitPoint? = nil) {
+    request(AnyHashable(id), anchor)
+  }
+}
+
+public struct ScrollViewReader<Content: View>: View {
+  let content: (ScrollViewProxy) -> Content
+  @State private var target: ScrollTarget?
+
+  public init(@ViewBuilder content: @escaping (ScrollViewProxy) -> Content) {
+    self.content = content
+  }
+
+  public var body: some View {
+    content(ScrollViewProxy { target = ScrollTarget(id: $0, anchor: $1) })
+      .environment(\.scrollTarget, target)
+  }
+}
+
+struct ScrollTarget: Equatable {
+  let request = UUID()
+  let id: AnyHashable
+  let anchor: UnitPoint?
+}
+
+private enum ScrollTargetKey: EnvironmentKey {
+  static let defaultValue: ScrollTarget? = nil
+}
+
+extension EnvironmentValues {
+  var scrollTarget: ScrollTarget? {
+    get { self[ScrollTargetKey.self] }
+    set { self[ScrollTargetKey.self] = newValue }
+  }
+}
+
 public struct ScrollView<Content: View>: View, _PrimitiveView {
   public typealias Body = Never
   let axes: Axis.Set
   let content: Content
   let showsIndicators: Bool
   @State private var offset = Point.zero
+  @State private var completedTarget: ScrollTarget?
+  @Environment(\.scrollTarget) private var scrollTarget
   public init(
     _ axes: Axis.Set = .vertical, showsIndicators: Bool = true, @ViewBuilder content: () -> Content
   ) {
@@ -81,6 +123,10 @@ public struct ScrollView<Content: View>: View, _PrimitiveView {
       ?? _render(content, path: path.appending(index: 0))
     var result = Element(kind: .scroll, props: p, children: [child])
     result.scrollAction = { offset = $0 }
+    if let scrollTarget, scrollTarget != completedTarget {
+      result.scrollTarget = scrollTarget
+      result.completeScrollTarget = { completedTarget = scrollTarget }
+    }
     result.scrollStateKey = _offset.installedKey
     return result
   }
@@ -128,9 +174,11 @@ public struct GeometryReader<Content: View>: View, _PrimitiveView {
       let saved = EnvironmentValues.current
       EnvironmentValues.current = environment
       defer { EnvironmentValues.current = saved }
-      let snapshot = GeometrySnapshot.active
+      let snapshot =
+        GeometrySnapshot.active
         ?? GeometrySnapshot(rect: rect, namedOrigins: GeometryContext.current)
-      return normalize(_render(content(GeometryProxy(snapshot: snapshot)), path: path.appending(index: 0)))
+      return normalize(
+        _render(content(GeometryProxy(snapshot: snapshot)), path: path.appending(index: 0)))
     }
     return result
   }

@@ -71,8 +71,8 @@ State is scoped by structural path, concrete type and property position; `.id`
 and ForEach data IDs add stable scopes. StateObject initializes lazily and retains
 its object. Published writes invalidate after updating storage. Environment
 snapshots survive callbacks. Reflection installs directly stored wrappers, not
-SwiftUI's complete DynamicProperty machinery. The registry is process-wide and
-supports **one active renderer**.
+SwiftUI's complete DynamicProperty machinery. The registry is process-wide, but state retention and lifecycle ownership are
+scoped to each renderer root. Shared models invalidate all observing renderers.
 Local State reads are tracked for incremental body evaluation. ObservableObject
 notifications still invalidate globally; lazy containers are not virtualized.
 Measurement and placement caches reuse unchanged geometry. GeometryReader can
@@ -107,3 +107,19 @@ WindowGroup supplies one native window and defaultSize. There is no multi-window
 scene management or state restoration. Windows executables reserve 16 MiB
 of stack for deeply nested declarative trees. Headless and native integration
 tests demonstrate behavior, not pixel equivalence with Apple SwiftUI.
+
+## Additional compatibility APIs
+
+`ViewThatFits` evaluates its alternatives eagerly and clips the unselected ones;
+it does not reproduce SwiftUI's lazy appearance/task semantics for alternatives.
+`TimelineView` uses a cancellable task, not a display link, and supports only the
+animation schedule. Timer intervals are bounded to 1/240 second through one day.
+`ScrollViewReader` locates explicit IDs in existing content; it does not animate
+scrolling or materialize lazy views.
+
+Attributed strings import text and links, not arbitrary Foundation attributes.
+Concatenated runs use horizontal layout rather than a full attributed paragraph
+engine. URL links require a host-provided `openURL` handler to launch a browser.
+Text selection and accessibility identifiers are retained as metadata only.
+Saturation changes explicit colors; it is not a post-compositing filter.
+Alerts are centered drawn panels, not native system dialogs.

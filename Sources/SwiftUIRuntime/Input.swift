@@ -1,4 +1,5 @@
 import Foundation
+
 #if canImport(CoreGraphics)
   import CoreGraphics
 #endif
@@ -210,6 +211,9 @@ extension View {
     TransformView(content: self) { $0.props.accessibilityValue = text }
   }
   public func accessibilityValue(_ text: Text) -> some View { accessibilityValue(text.content) }
+  public func accessibilityIdentifier(_ value: String) -> some View {
+    TransformView(content: self) { $0.props.accessibilityIdentifier = value }
+  }
   public func accessibilityHidden(_ value: Bool) -> some View {
     TransformView(content: self) { $0.props.accessibilityHidden = value }
   }

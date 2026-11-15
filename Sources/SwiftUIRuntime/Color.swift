@@ -32,6 +32,15 @@ public struct Color: Hashable, Sendable {
     )
   }
 
+  func saturating(_ amount: Double) -> Color {
+    let gray = red * 0.2126 + green * 0.7152 + blue * 0.0722
+    return Color(
+      red: gray + (red - gray) * amount,
+      green: gray + (green - gray) * amount,
+      blue: gray + (blue - gray) * amount,
+      opacity: opacity)
+  }
+
   public static let clear = Color(red: 0, green: 0, blue: 0, opacity: 0)
   public static let black = Color(red: 0, green: 0, blue: 0)
   public static let white = Color(red: 1, green: 1, blue: 1)

@@ -1,6 +1,7 @@
 /// Deterministic metrics for tests and backends without a text measurer.
 /// Windows supplies real font measurement to LayoutEngine instead.
 import Foundation
+
 #if canImport(CoreGraphics)
   import CoreGraphics
 #endif
@@ -149,7 +150,8 @@ public struct LayoutEngine {
       for key in cache.placements.keys.filter({ !engine.pass!.liveMeasurements.contains($0) }) {
         cache.placements.removeValue(forKey: key)
       }
-      for key in cache.geometryContent.keys.filter({ !engine.pass!.liveMeasurements.contains($0) }) {
+      for key in cache.geometryContent.keys.filter({ !engine.pass!.liveMeasurements.contains($0) })
+      {
         cache.geometryContent.removeValue(forKey: key)
       }
     }
@@ -162,10 +164,13 @@ public struct LayoutEngine {
       return
     }
     let previous = previousGeometry.flatMap { $0.kind == element.kind ? $0 : nil }
-    var dynamic = element.geometryBuilder != nil || element.kind == .presentation || element.layout != nil
+    var dynamic =
+      element.geometryBuilder != nil || element.kind == .presentation || element.layout != nil
+      || element.scrollTarget != nil
     var presentation = element.kind == .presentation
-    var preferences = element.geometryBuilder != nil || !element.preferences.isEmpty
-      || element.preferenceAction != nil
+    var preferences =
+      element.geometryBuilder != nil || !element.preferences.isEmpty
+      || element.preferenceAction != nil || !element.preferenceTransforms.isEmpty
     for i in element.children.indices {
       let priorChild = previous.flatMap { i < $0.children.count ? $0.children[i] : nil }
       identify(&element.children[i], previousGeometry: priorChild)
@@ -407,6 +412,10 @@ public struct LayoutEngine {
     }
     if p.fillWidth, let width = offer.width, width.isFinite { size.width = width }
     if p.fillHeight, let height = offer.height, height.isFinite { size.height = height }
+    if case .container = e.kind {
+      if let width = offer.width, fills(e, horizontal: true) { size.width = width }
+      if let height = offer.height, fills(e, horizontal: false) { size.height = height }
+    }
     size.width = p.frameWidth ?? min(p.maxWidth ?? .infinity, max(p.minWidth ?? 0, size.width))
     size.height = p.frameHeight ?? min(p.maxHeight ?? .infinity, max(p.minHeight ?? 0, size.height))
     if p.gridUnsizedAxes.contains(.horizontal) { size.width = 0 }
@@ -641,19 +650,57 @@ public struct LayoutEngine {
           width: e.props.scrollAxes.contains(.horizontal) ? nil : rect.width,
           height: e.props.scrollAxes.contains(.vertical) ? nil : rect.height))
       let size = Size(
-        width: max(rect.width, natural.width), height: max(rect.height, natural.height))
+        width: e.props.scrollAxes.contains(.horizontal)
+          ? natural.width : max(rect.width, natural.width),
+        height: e.props.scrollAxes.contains(.vertical)
+          ? natural.height : max(rect.height, natural.height))
       let offset = Point(
         x: max(0, min(e.props.scrollOffset.x, size.width - rect.width)),
         y: max(0, min(e.props.scrollOffset.y, size.height - rect.height)))
+      func frame(at offset: Point) -> Rect {
+        Rect(
+          x: rect.minX - offset.x, y: rect.minY - offset.y,
+          width: size.width, height: size.height)
+      }
       e.props.scrollOffset = offset
-      place(
-        &e.children[0],
-        in: Rect(
-          x: rect.minX - offset.x, y: rect.minY - offset.y, width: size.width, height: size.height))
+      place(&e.children[0], in: frame(at: offset))
+      if let target = e.scrollTarget, let match = scrollTargetFrame(target.id, in: e.children[0]) {
+        let anchor = target.anchor ?? .topLeading
+        let next = Point(
+          x: e.props.scrollAxes.contains(.horizontal)
+            ? max(
+              0,
+              min(
+                size.width - rect.width,
+                offset.x + match.minX - rect.minX + anchor.x * (match.width - rect.width)))
+            : offset.x,
+          y: e.props.scrollAxes.contains(.vertical)
+            ? max(
+              0,
+              min(
+                size.height - rect.height,
+                offset.y + match.minY - rect.minY + anchor.y * (match.height - rect.height)))
+            : offset.y)
+        e.props.scrollOffset = next
+        place(&e.children[0], in: frame(at: next))
+        let scroll = e.scrollAction
+        let complete = e.completeScrollTarget
+        LifecycleRegistry.shared.pending.append {
+          complete?()
+          scroll?(next)
+        }
+      }
     case .container(let axis): placeStack(&e, axis: axis, in: rect)
     case .fragment: placeStack(&e, axis: .vertical, in: rect)
     default: break
     }
+  }
+  private func scrollTargetFrame(_ id: AnyHashable, in element: Element) -> Rect? {
+    if element.explicitID == id { return element.frame }
+    for child in element.children {
+      if let match = scrollTargetFrame(id, in: child) { return match }
+    }
+    return nil
   }
   private func placeStack(_ e: inout Element, axis: Axis, in rect: Rect) {
     let vertical = axis == .vertical
@@ -671,7 +718,8 @@ public struct LayoutEngine {
     for i in visible {
       let child = e.children[i]
       let natural = measure(child, proposal)
-      let flex = child.props.flex > 0 || fills(child, horizontal: !vertical)
+      let flex =
+        child.props.flex > 0 || fills(child, horizontal: !vertical)
         ? max(1, child.props.flex) : 0
       sizes.append((natural, flex))
       if flex > 0 {
@@ -685,7 +733,8 @@ public struct LayoutEngine {
     for (i, sizing) in zip(visible, sizes) {
       let child = e.children[i]
       let natural = sizing.natural
-      let main = sizing.flex > 0
+      let main =
+        sizing.flex > 0
         ? available * sizing.flex / max(1, flexTotal) : (vertical ? natural.height : natural.width)
       let cross =
         fills(child, horizontal: vertical) || child.props.flex > 0

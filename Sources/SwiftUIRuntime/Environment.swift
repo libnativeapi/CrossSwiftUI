@@ -1,3 +1,5 @@
+import Foundation
+
 /// Environment writes are value copies scoped to evaluating a subtree.
 
 public protocol EnvironmentKey {
@@ -13,6 +15,14 @@ public struct EnvironmentValues {
   public var layoutDirection: LayoutDirection = .leftToRight
   public var colorScheme: ColorScheme = .light
   public var tint: Color = .blue
+  public var locale: Locale {
+    get { self[LocaleKey.self] }
+    set { self[LocaleKey.self] = newValue }
+  }
+  public var openURL: OpenURLAction {
+    get { self[OpenURLKey.self] }
+    set { self[OpenURLKey.self] = newValue }
+  }
   public var font: Font? = nil
   public var accessibilityReduceMotion = false
   public init(foregroundColor: Color? = nil, isEnabled: Bool = true) {
@@ -42,7 +52,9 @@ struct EnvironmentView<Content: View, Value>: View, _PrimitiveView {
   var body: Never { fatalError("EnvironmentView is primitive") }
   func _makeElement(path: ViewPath) -> Element {
     let saved = EnvironmentValues.current
-    EnvironmentValues.current[keyPath: keyPath] = value
+    var scoped = saved
+    scoped[keyPath: keyPath] = value
+    EnvironmentValues.current = scoped
     defer { EnvironmentValues.current = saved }
     return _render(content, path: path)
   }
@@ -53,4 +65,21 @@ extension View {
   ) -> some View {
     EnvironmentView(content: self, keyPath: keyPath, value: value)
   }
+}
+
+public struct OpenURLAction {
+  public enum Result { case handled, discarded, systemAction }
+  let action: (URL) -> Result
+
+  public init(handler: @escaping (URL) -> Result) { action = handler }
+
+  @discardableResult public func callAsFunction(_ url: URL) -> Result { action(url) }
+}
+
+private enum LocaleKey: EnvironmentKey {
+  static var defaultValue: Locale { .current }
+}
+
+private enum OpenURLKey: EnvironmentKey {
+  static let defaultValue = OpenURLAction { _ in .systemAction }
 }
