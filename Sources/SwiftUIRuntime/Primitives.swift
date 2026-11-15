@@ -30,6 +30,7 @@ public struct Text: View {
     self.content = content
   }
 
+  @available(macOS 12, iOS 15, tvOS 15, watchOS 8, *)
   public init(_ content: AttributedString) {
     self.content = String(content.characters)
     runs = content.runs.map { run in

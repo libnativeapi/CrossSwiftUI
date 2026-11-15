@@ -142,6 +142,9 @@ final class CompatibilityExtensionsTests: XCTestCase {
   }
 
   func testAttributedLinkUsesScopedHandlerAndRunTracking() throws {
+    guard #available(macOS 12, iOS 15, tvOS 15, watchOS 8, *) else {
+      throw XCTSkip("AttributedString requires a newer Foundation")
+    }
     var opened: URL?
     let url = URL(string: "https://example.com/docs")!
     var attributed = AttributedString("Docs")

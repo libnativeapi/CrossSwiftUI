@@ -97,6 +97,7 @@ public struct TimelineView<Content: View>: View {
         do { try await Task.sleep(nanoseconds: UInt64(schedule.interval * 1_000_000_000)) } catch {
           return
         }
+        guard !Task.isCancelled else { return }
         date = Date()
       }
     }
