@@ -127,7 +127,8 @@ struct LayerView<Content: View, Layer: View>: View, _PrimitiveView {
     return Element(
       kind: .layer, props: props,
       children: [
-        _render(content, path: path.appending(index: 0)), _render(layer, path: path.appending(index: 1)),
+        _render(content, path: path.appending(index: 0)),
+        _render(layer, path: path.appending(index: 1)),
       ])
   }
 }
@@ -149,6 +150,17 @@ extension View {
   public func lineSpacing(_ spacing: CGFloat) -> some View {
     TransformView(content: self) { $0.props.lineSpacing = Double(spacing) }
   }
+  public func saturation(_ amount: Double) -> some View {
+    TransformView(content: self) {
+      func apply(_ element: inout Element) {
+        element.props.foreground = element.props.foreground?.saturating(amount)
+        element.props.background = element.props.background?.saturating(amount)
+        element.props.borderColor = element.props.borderColor.saturating(amount)
+        for i in element.children.indices { apply(&element.children[i]) }
+      }
+      apply(&$0)
+    }
+  }
   public func opacity(_ value: Double) -> some View {
     TransformView(content: self) { $0.props.opacity *= value }
   }
@@ -164,6 +176,9 @@ extension View {
   }
   public func background<V: View>(@ViewBuilder content: () -> V) -> some View {
     LayerView(content: self, layer: content(), behind: true, alignment: .center)
+  }
+  public func background<S: Shape>(_ color: Color, in shape: S) -> some View {
+    background { shape.fill(color) }
   }
   public func overlay<V: View>(_ overlay: V, alignment: Alignment = .center) -> some View {
     LayerView(content: self, layer: overlay, behind: false, alignment: alignment)
@@ -197,6 +212,11 @@ extension View {
   public struct Binding {
     let get: () -> Value
     let set: (Value) -> Void
+
+    public var wrappedValue: Value {
+      get { get() }
+      nonmutating set { set(newValue) }
+    }
   }
   private var state: State<Value>
   public init() where Value == Bool { state = State(wrappedValue: false) }
@@ -207,4 +227,12 @@ extension View {
   }
   public var projectedValue: Binding { Binding(get: { wrappedValue }, set: { wrappedValue = $0 }) }
   func install(_ key: StateKey) { state.install(key) }
+}
+
+public enum TextSelection { case enabled, disabled }
+
+extension View {
+  public func textSelection(_ selection: TextSelection) -> some View {
+    TransformView(content: self) { $0.props.selectableText = selection == .enabled }
+  }
 }

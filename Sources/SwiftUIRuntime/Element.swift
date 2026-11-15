@@ -33,6 +33,7 @@
 
 /// Collects the current tap handlers keyed by node id.
 import Foundation
+
 #if canImport(CoreGraphics)
   import CoreGraphics
 #endif
@@ -107,6 +108,7 @@ public struct NodeProps: Equatable {
   public var scaleX: Double = 1, scaleY: Double = 1, rotation: Double = 0
   public var zIndex: Double = 0
   public var underline = false, aspectFit = false
+  public var selectableText = false
   public var aspectRatio: Double? = nil
   public var transition: AnyTransition? = nil
   public var hitTesting = true
@@ -127,6 +129,7 @@ public struct NodeProps: Equatable {
   public var coordinateSpace: AnyHashable? = nil
   public var focusable = false
   public var accessibilityTraits = 0
+  public var accessibilityIdentifier = ""
 
   public var font: Font? = nil
   public var lineLimit: Int? = nil
@@ -203,6 +206,7 @@ public struct Element {
   var horizontalGuide: ((ViewDimensions) -> CGFloat)? = nil
   var verticalGuide: ((ViewDimensions) -> CGFloat)? = nil
   var preferences: [ObjectIdentifier: PreferenceValue] = [:]
+  var preferenceTransforms: [(inout [ObjectIdentifier: PreferenceValue]) -> Void] = []
   var preferenceAction: (([ObjectIdentifier: PreferenceValue]) -> Void)? = nil
   var geometryBuilder: ((CGRect) -> Element)? = nil
   var layout: (any _LayoutBridge)? = nil
@@ -211,11 +215,14 @@ public struct Element {
   var dragAction: ((DragGesture.Value, Bool) -> Void)? = nil
   var doubleTapAction: (() -> Void)? = nil
   var keyAction: ((KeyPress) -> KeyPress.Result)? = nil
+  var scrollTarget: ScrollTarget?
+  var completeScrollTarget: (() -> Void)?
   var scrollAction: ((Point) -> Void)? = nil
   // Only ScrollView's private offset can use the geometry-only update path.
   var scrollStateKey: StateKey? = nil
   var secondaryAction: ((CGPoint) -> Void)? = nil
   var dismissOnAction = false
+  var presentationCentered = false
   var presentationPoint: CGPoint? = nil
   var presentationEdge: Edge? = nil
   var dismissPresentation: (() -> Void)? = nil
@@ -271,7 +278,7 @@ enum ElementKey: Hashable {
   case structural(ElementKind, Int)
 }
 func normalize(_ element: Element, previous: Element? = nil) -> Element {
-  if let previous, element.evaluationID != 0,
+  if let previous, element.scrollTarget == nil, element.evaluationID != 0,
     element.evaluationID == previous.evaluationID,
     element.evaluationRevision == previous.evaluationRevision,
     element.kind == previous.kind
@@ -343,7 +350,7 @@ func resolveEnvironment(
   element.props.lineLimit = element.props.lineLimit ?? inheritedLineLimit
   if element.props.lineSpacing == 0 { element.props.lineSpacing = inheritedLineSpacing }
 
-  if let previous, element.evaluationID != 0,
+  if let previous, element.scrollTarget == nil, element.evaluationID != 0,
     element.evaluationID == previous.evaluationID,
     element.evaluationRevision == previous.evaluationRevision, !previous.hasPresentation
   {

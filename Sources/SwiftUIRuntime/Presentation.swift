@@ -1,6 +1,7 @@
 /// Hoist presentations above scroll clipping while preserving the anchor's layout.
 
 import Foundation
+
 #if canImport(CoreGraphics)
   import CoreGraphics
 #endif
@@ -90,7 +91,12 @@ func resolvePresentations(_ root: Element, in size: Size) -> Element {
         x = anchor.minX + point.x
         y = anchor.minY + point.y
       }
-      if y + height > size.height && anchor.minY > height { y = anchor.minY - height - 4 }
+      if node.presentationCentered {
+        x = (size.width - width) / 2
+        y = (size.height - height) / 2
+      } else if y + height > size.height && anchor.minY > height {
+        y = anchor.minY - height - 4
+      }
       if y < 0 && anchor.maxY + height < size.height { y = anchor.maxY + 4 }
       x = max(4, min(x, size.width - width - 4))
       y = max(4, min(y, size.height - height - 4))
@@ -101,6 +107,7 @@ func resolvePresentations(_ root: Element, in size: Size) -> Element {
       }
       translate(&panel, dx: x - panel.frame.minX, dy: y - panel.frame.minY)
       var props = NodeProps()
+      if node.presentationCentered { props.background = .black.opacity(0.25) }
       props.fillWidth = true
       props.fillHeight = true
       props.keyboardShortcut = .cancelAction
@@ -163,6 +170,55 @@ private struct ContextMenuView<Content: View, Menu: View>: View, _PrimitiveView 
       presented = true
     }
     element.dismissPresentation = { presented = false }
+    return element
+  }
+}
+
+extension View {
+  public func alert<Actions: View, Message: View>(
+    _ title: String, isPresented: Binding<Bool>, @ViewBuilder actions: () -> Actions,
+    @ViewBuilder message: () -> Message
+  ) -> some View {
+    AlertPresentation(
+      content: self, title: title, isPresented: isPresented,
+      actions: actions(), message: message())
+  }
+}
+
+private struct AlertPresentation<Content: View, Actions: View, Message: View>: View, _PrimitiveView
+{
+  typealias Body = Never
+  let content: Content
+  let title: String
+  let isPresented: Binding<Bool>
+  let actions: Actions
+  let message: Message
+  @Environment(\.colorScheme) private var scheme
+
+  var body: Never { fatalError("AlertPresentation is primitive") }
+
+  func _makeElement(path: ViewPath) -> Element {
+    var children = [_render(content, path: path.appending(index: 0))]
+    if isPresented.wrappedValue {
+      let panel = VStack(alignment: .leading, spacing: 12) {
+        Text(title).font(.system(size: 16, weight: .semibold))
+        message
+        HStack {
+          Spacer()
+          actions
+        }
+      }
+      .padding(20)
+      .frame(width: 390)
+      .foregroundStyle(scheme == .dark ? Color.white : .black)
+      .background(
+        scheme == .dark ? Color(hex: 0x25262b) : .white, in: RoundedRectangle(cornerRadius: 10))
+      children.append(_render(panel, path: path.appending(index: 1)))
+    }
+    var element = Element(kind: .presentation, children: children)
+    element.presentationCentered = true
+    element.dismissOnAction = true
+    element.dismissPresentation = { isPresented.wrappedValue = false }
     return element
   }
 }

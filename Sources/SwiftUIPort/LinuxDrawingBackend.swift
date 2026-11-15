@@ -671,6 +671,7 @@ private final class Editor {
   private let id: NodeID
   private let multiline: Bool
   private let editable: UnsafeMutableRawPointer
+  private let placeholder: Widget?
   private weak var backend: LinuxDrawingBackend?
   private var signals: [(UnsafeMutableRawPointer, gulong)] = []
   private var style: String?
@@ -692,7 +693,17 @@ private final class Editor {
         g_object_unref(input)
         return nil
       }
-      widget = scrolled
+      guard let overlay = gtk_overlay_new(), let label = gtk_label_new(nil) else { return nil }
+      widget = overlay
+      placeholder = label
+      gtk_container_add(typed(overlay, GtkContainer.self), scrolled)
+      gtk_widget_show(scrolled)
+      gtk_widget_set_halign(label, GTK_ALIGN_START)
+      gtk_widget_set_valign(label, GTK_ALIGN_START)
+      gtk_widget_set_opacity(label, 0.45)
+      gtk_label_set_line_wrap(typed(label, GtkLabel.self), 1)
+      gtk_overlay_add_overlay(typed(overlay, GtkOverlay.self), label)
+      gtk_overlay_set_overlay_pass_through(typed(overlay, GtkOverlay.self), label, 1)
       editable = UnsafeMutableRawPointer(buffer)
       g_object_ref(editable)
       g_object_ref_sink(input)
@@ -702,6 +713,7 @@ private final class Editor {
       gtk_widget_show(input)
     } else {
       widget = input
+      placeholder = nil
       editable = UnsafeMutableRawPointer(input)
       gtk_entry_set_has_frame(typed(input, GtkEntry.self), 0)
       gtk_entry_set_width_chars(typed(input, GtkEntry.self), 1)
@@ -710,6 +722,9 @@ private final class Editor {
     g_object_ref_sink(widget)
     gtk_fixed_put(host, widget, 0, 0)
     gtk_style_context_add_provider(gtk_widget_get_style_context(input), OpaquePointer(provider), 700)
+    if let placeholder {
+      gtk_style_context_add_provider(gtk_widget_get_style_context(placeholder), OpaquePointer(provider), 700)
+    }
     let data = Unmanaged.passUnretained(self).toOpaque()
     let changed: @convention(c) (UnsafeMutableRawPointer?, UnsafeMutableRawPointer?) -> Void = { _, data in
       guard let data else { return }
@@ -741,6 +756,9 @@ private final class Editor {
       g_signal_handler_disconnect(object, signal)
     }
     gtk_style_context_remove_provider(gtk_widget_get_style_context(input), OpaquePointer(provider))
+    if let placeholder {
+      gtk_style_context_remove_provider(gtk_widget_get_style_context(placeholder), OpaquePointer(provider))
+    }
     g_object_unref(provider)
     gtk_widget_destroy(widget)
     if multiline {
@@ -765,6 +783,10 @@ private final class Editor {
       let plain: gboolean = props.secure ? 0 : 1
       if gtk_entry_get_visibility(entry) != plain { gtk_entry_set_visibility(entry, plain) }
     }
+    if let placeholder {
+      gtk_label_set_text(typed(placeholder, GtkLabel.self), props.placeholder)
+      gtk_widget_set_visible(placeholder, props.text.isEmpty && !props.placeholder.isEmpty ? 1 : 0)
+    }
     let name = label.isEmpty ? props.placeholder : label
     if self.label != name {
       self.label = name
@@ -777,7 +799,7 @@ private final class Editor {
     func css(_ c: SwiftUIRuntime.Color) -> String {
       "rgba(\(Int(c.red * 255)),\(Int(c.green * 255)),\(Int(c.blue * 255)),\(c.opacity))"
     }
-    let css = "entry, textview, textview text { border: none; box-shadow: none; outline: none; padding: 0; min-height: 0; min-width: 0; font-family: \"\(family)\"; font-size: \(font.size)px; font-weight: \(Int(font.weight.value)); color: \(css(foreground)); background: \(css(background)); }"
+    let css = "entry, textview, textview text, label { border: none; box-shadow: none; outline: none; padding: 0; min-height: 0; min-width: 0; font-family: \"\(family)\"; font-size: \(font.size)px; font-weight: \(Int(font.weight.value)); color: \(css(foreground)); background: \(css(background)); } label { background: transparent; }"
     if css != style {
       style = css
       gtk_css_provider_load_from_data(provider, css, -1, nil)

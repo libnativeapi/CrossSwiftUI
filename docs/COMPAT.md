@@ -86,7 +86,7 @@ tests can run on macOS.
 | `Image` | partial | bundled SVG path template images and raster files; no asset catalogs or symbol catalog |
 | `TextField` | partial | native editor with binding, selection and IME; vertical axis uses multiline editing |
 | `SecureField` | partial | native password editor |
-| `ObservableObject` | partial | process-wide invalidation, one active renderer |
+| `ObservableObject` | partial | shared-model invalidation across renderers; independent local state and lifecycles |
 | `StateObject` | partial | lazy retained object, scoped by mounted identity |
 | `ObservedObject` | partial | object and writable-key-path bindings |
 | `EnvironmentObject` | partial | scoped object lookup |
@@ -106,12 +106,34 @@ tests can run on macOS.
 | `.border` | supported | shape overlay |
 | `.cornerRadius` | partial | circular clipping geometry |
 
+## Additional portable compatibility
+
+These APIs are covered by `CompatibilityExtensionsTests`; “partial” describes
+implemented behavior, not complete parity with Apple SwiftUI.
+
+| symbol | status | note |
+|---|---|---|
+| `ViewThatFits` | partial | first ideal-sized candidate fitting the requested axes, last-child fallback; alternatives evaluated eagerly and unselected content clipped |
+| `TimelineView(.animation(...))` | partial | cancellable date updates, configurable interval and pause; no display-link synchronization or other schedule families |
+| `ScrollViewReader`, `ScrollViewProxy.scrollTo` | partial | explicit IDs, anchors, axis clamping and repeat requests; no scroll animation or lazy loading |
+| `transformPreference`, `overlayPreferenceValue` | partial | child reduction, ordered transforms and Equatable overlay updates |
+| `EnvironmentValues.locale` | partial | scoped locale value; does not automatically localize text |
+| `OpenURLAction`, `Text(AttributedString)` | partial | links invoke the scoped URL handler; the default returns `systemAction` without launching a URL; only link attributes are imported |
+| `Text.kerning` | partial | tracking metadata retained on plain and concatenated runs; rendering support depends on the backend |
+| `ButtonRole` | partial | cancel keyboard shortcut and destructive foreground color |
+| `alert(_:isPresented:actions:message:)` | partial | centered drawn panel, modal backdrop, action/Escape dismissal; not a system dialog |
+| `saturation` | partial | transforms explicit foreground/background/border colors, not composited pixels, images or gradients |
+| `background(_:in:)` | supported | fills the supplied shape behind the content |
+| `FocusState.Binding.wrappedValue` | supported | reads and writes the retained focus value |
+| `textSelection`, `accessibilityIdentifier` | partial | metadata only; drawn text has no platform selection or accessibility identifier bridge yet |
+| multiline `TextField` placeholder (Linux) | supported | GTK overlay follows empty/nonempty text, font and color; pointer input passes through to the editor |
+
 ## Not implemented
 
 | symbol | status | note |
 |---|---|---|
 | `List`, `NavigationStack`, `TabView` | missing | compose containers where appropriate |
 | `Toggle`, `Slider`, `Picker` | missing | host libraries may compose these from generic primitives |
-| `Menu`, sheets, alerts | missing | popover/contextMenu are available; no complete SwiftUI presentation family |
+| `Menu`, sheets | missing | popover/contextMenu and a drawn alert overload are available; no complete SwiftUI presentation family |
 | `.blur`, long-press gestures | missing | no blur filters or long-press recognizer |
 | `Window`, `Settings`, `MenuBarExtra`, previews | missing | one-window runtime |

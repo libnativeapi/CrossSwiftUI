@@ -163,6 +163,30 @@ final class StyledViewTests: XCTestCase {
     XCTAssertEqual(shape.frame.height, 1)
   }
 
+  func testCustomLayoutUsesChildStackExpansion() throws {
+    struct Fill: Layout {
+      func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        CGSize(width: proposal.width ?? 200, height: 140)
+      }
+      func placeSubviews(
+        in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()
+      ) {
+        subviews.first?.place(at: bounds.origin, proposal: ProposedViewSize(bounds.size))
+      }
+    }
+    let renderer = render(
+      ScrollView {
+        Fill {
+          VStack(spacing: 0) {
+            Text("Source").frame(height: 40)
+            Text("Result").frame(maxHeight: .infinity).background(.blue)
+          }
+        }
+      })
+    let result = try XCTUnwrap(nodes(renderer.tree!).first { $0.props.background == .blue })
+    XCTAssertEqual(result.frame.height, 100)
+  }
+
   func testUnstyledLabelBuilderUsesNativeTitle() throws {
     let renderer = render(
       Button(action: {}) {
