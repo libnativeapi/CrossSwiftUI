@@ -208,4 +208,92 @@ final class StyledViewTests: XCTestCase {
     XCTAssertEqual(texts.map(\.props.text), ["disabled", "enabled"])
     XCTAssertEqual(texts.map(\.props.enabled), [false, true])
   }
+
+  func testIntrinsicWrappingCustomLayoutDoesNotSplitRowWithSpacer() throws {
+    struct SwatchFlow: Layout {
+      let spacing: CGFloat = 6
+      private func rows(_ subviews: Subviews, width: CGFloat) -> [[Int]] {
+        var result: [[Int]] = [[]]
+        var run: CGFloat = 0
+        for index in subviews.indices {
+          let size = subviews[index].sizeThatFits(.unspecified)
+          if run > 0, run + spacing + size.width > width {
+            result.append([])
+            run = 0
+          }
+          result[result.count - 1].append(index)
+          run += (run > 0 ? spacing : 0) + size.width
+        }
+        return result.filter { !$0.isEmpty }
+      }
+      func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let lines = rows(subviews, width: proposal.width ?? .infinity)
+        var size = CGSize.zero
+        for row in lines {
+          let sizes = row.map { subviews[$0].sizeThatFits(.unspecified) }
+          size.width = max(size.width, sizes.reduce(0) { $0 + $1.width } + CGFloat(row.count - 1) * spacing)
+          size.height += (sizes.map(\.height).max() ?? 0) + spacing
+        }
+        size.height = max(0, size.height - spacing)
+        return size
+      }
+      func placeSubviews(
+        in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()
+      ) {
+        var y = bounds.minY
+        for row in rows(subviews, width: bounds.width) {
+          let sizes = row.map { subviews[$0].sizeThatFits(.unspecified) }
+          let width = sizes.reduce(0) { $0 + $1.width } + CGFloat(row.count - 1) * spacing
+          var x = bounds.maxX - width
+          for (index, size) in zip(row, sizes) {
+            subviews[index].place(
+              at: CGPoint(x: x, y: y), anchor: .topLeading, proposal: ProposedViewSize(size))
+            x += size.width + spacing
+          }
+          y += (sizes.map(\.height).max() ?? 0) + spacing
+        }
+      }
+    }
+
+    let wide = Renderer(
+      backend: FakeBackend(),
+      root: AnyView(
+        HStack(spacing: 10) {
+          Text("Theme")
+          Spacer(minLength: 0)
+          HStack(spacing: 10) {
+            SwatchFlow {
+              ForEach(0..<6, id: \.self) { _ in
+                Rectangle().fill(.blue).frame(width: 39, height: 26)
+              }
+            }
+          }
+        }.frame(maxWidth: .infinity)),
+      size: Size(width: 480, height: 200))
+    wide.mount()
+    let wideSwatches = nodes(wide.tree!).filter { $0.kind == .shape }
+    XCTAssertEqual(wideSwatches.count, 6)
+    XCTAssertEqual(Set(wideSwatches.map { Int($0.frame.minY.rounded()) }).count, 1)
+    XCTAssertEqual(wideSwatches.last?.frame.maxX ?? 0, 480, accuracy: 0.5)
+
+    let narrow = Renderer(
+      backend: FakeBackend(),
+      root: AnyView(
+        HStack(spacing: 10) {
+          Text("Theme")
+          Spacer(minLength: 0)
+          HStack(spacing: 10) {
+            SwatchFlow {
+              ForEach(0..<6, id: \.self) { _ in
+                Rectangle().fill(.blue).frame(width: 39, height: 26)
+              }
+            }
+          }
+        }.frame(maxWidth: .infinity)),
+      size: Size(width: 280, height: 200))
+    narrow.mount()
+    let narrowSwatches = nodes(narrow.tree!).filter { $0.kind == .shape }
+    XCTAssertEqual(Set(narrowSwatches.map { Int($0.frame.minY.rounded()) }).count, 2)
+    XCTAssertTrue(narrowSwatches.allSatisfy { $0.frame.maxX <= 280.5 })
+  }
 }

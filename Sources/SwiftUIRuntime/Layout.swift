@@ -397,16 +397,30 @@ public struct LayoutEngine {
       let horizontal = e.kind == .container(.horizontal)
       let childOffer = ProposedViewSize(
         width: horizontal ? nil : offer.width, height: horizontal ? offer.height : nil)
-      var count = 0
-      var main = 0.0
-      var cross = 0.0
-      for child in e.children where child.props.visible {
-        let measured = measure(child, childOffer)
-        count += 1
-        main += horizontal ? measured.width : measured.height
-        cross = max(cross, horizontal ? measured.height : measured.width)
+      let visibleChildren = e.children.filter(\.props.visible)
+      let spacings = Double(max(0, visibleChildren.count - 1)) * p.spacing
+      var measuredChildren = visibleChildren.map { measure($0, childOffer) }
+      var main =
+        measuredChildren.reduce(0) { $0 + (horizontal ? $1.width : $1.height) } + spacings
+      if horizontal, let offeredWidth = offer.width, offeredWidth.isFinite,
+        main > Double(offeredWidth)
+      {
+        let nonFlex = visibleChildren.indices.filter { i in
+          let c = visibleChildren[i]
+          return c.kind != .spacer && c.props.flex <= 0 && !fills(c, horizontal: true)
+        }
+        let widths = allocateHorizontalWidths(
+          nonFlex.map { measuredChildren[$0].width },
+          budget: max(0, Double(offeredWidth) - spacings))
+        for (idx, allocated) in zip(nonFlex, widths)
+        where allocated + 0.5 < measuredChildren[idx].width {
+          measuredChildren[idx] = measure(
+            visibleChildren[idx],
+            ProposedViewSize(width: CGFloat(allocated), height: offer.height))
+        }
+        main = min(Double(offeredWidth), measuredChildren.reduce(0) { $0 + $1.width } + spacings)
       }
-      main += Double(max(0, count - 1)) * p.spacing
+      let cross = measuredChildren.map { horizontal ? $0.height : $0.width }.max() ?? 0
       size = horizontal ? Size(width: main, height: cross) : Size(width: cross, height: main)
     case .shape, .path, .gradient: size = Size(width: offer.width ?? 0, height: offer.height ?? 0)
     case .spacer, .empty: break
@@ -463,7 +477,20 @@ public struct LayoutEngine {
     case .presentation, .padding, .frame, .layer, .styledButton:
       return e.children.first.map { fills($0, horizontal: horizontal) } ?? false
     case .zStack: return e.children.contains { fills($0, horizontal: horizontal) }
-    case .customLayout: return horizontal
+    case .customLayout:
+      guard let layout = e.layout else { return false }
+      let ideal = layout.measure(.unspecified, children: e.children, engine: self)
+      if horizontal {
+        let probe = max(1, ideal.width) + 64
+        let expanded = layout.measure(
+          ProposedViewSize(width: probe, height: nil), children: e.children, engine: self)
+        return expanded.width > ideal.width + 0.5
+      } else {
+        let probe = max(1, ideal.height) + 64
+        let expanded = layout.measure(
+          ProposedViewSize(width: nil, height: probe), children: e.children, engine: self)
+        return expanded.height > ideal.height + 0.5
+      }
     case .container(let axis):
       if (axis == .horizontal) == horizontal {
         return e.children.contains { $0.kind == .spacer || fills($0, horizontal: horizontal) }
@@ -732,6 +759,23 @@ public struct LayoutEngine {
       }
     }
     var cursor = vertical ? rect.minY : rect.minX
+    let spacings = Double(max(0, visible.count - 1)) * e.props.spacing
+    if !vertical && fixed > mainExtent {
+      let nonFlexPositions = sizes.indices.filter { sizes[$0].flex == 0 }
+      let allocated = allocateHorizontalWidths(
+        nonFlexPositions.map { sizes[$0].natural.width },
+        budget: max(0, mainExtent - spacings))
+      for (pos, width) in zip(nonFlexPositions, allocated)
+      where width + 0.5 < sizes[pos].natural.width {
+        let child = e.children[visible[pos]]
+        let compressed = measure(
+          child, ProposedViewSize(width: CGFloat(width), height: CGFloat(rect.height)))
+        sizes[pos].natural = Size(width: width, height: compressed.height)
+      }
+      fixed =
+        spacings
+        + sizes.reduce(0) { $0 + ($1.flex > 0 ? 0 : $1.natural.width) }
+    }
     let available = max(0, mainExtent - fixed)
     for (i, sizing) in zip(visible, sizes) {
       let child = e.children[i]
@@ -781,6 +825,26 @@ public struct LayoutEngine {
       snapshot.namedOrigins = GeometryContext.current
     }
     for i in element.children.indices { translate(&element.children[i], dx: dx, dy: dy) }
+  }
+  private func allocateHorizontalWidths(_ ideals: [Double], budget: Double) -> [Double] {
+    guard !ideals.isEmpty else { return [] }
+    var allocated = ideals
+    var remaining = Array(ideals.indices)
+    var pool = max(0, budget)
+    while !remaining.isEmpty {
+      let share = pool / Double(remaining.count)
+      let small = remaining.filter { ideals[$0] <= share + 1e-6 }
+      if small.isEmpty {
+        for index in remaining { allocated[index] = share }
+        break
+      }
+      for index in small {
+        allocated[index] = ideals[index]
+        pool = max(0, pool - ideals[index])
+      }
+      remaining.removeAll { ideals[$0] <= share + 1e-6 }
+    }
+    return allocated
   }
   private func retainGeometry(_ element: Element) {
     if let snapshot = element.geometrySnapshot {
