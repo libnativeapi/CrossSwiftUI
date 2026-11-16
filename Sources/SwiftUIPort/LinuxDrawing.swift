@@ -133,23 +133,26 @@ final class LinuxDrawing {
       cairo_scale(context, props.scaleX, props.scaleY)
       cairo_translate(context, -frame.minX - frame.width / 2, -frame.minY - frame.height / 2)
     }
-    for shadow in props.shadows where shadow.color.opacity > 0 {
-      // Shadows precede this node's clip/group but remain inside ancestor
-      // groups, so apply this node's relative opacity exactly once here.
-      source(context, shadow.color.opacity(opacity))
-      if shadow.radius <= 0 {
-        let rect = Rect(x: frame.minX + shadow.x, y: frame.minY + shadow.y,
-                        width: frame.width, height: frame.height)
-        addRoundedRect(rect, radius: props.cornerRadius, to: context)
-        cairo_fill(context)
-      } else {
-        var sx = 1.0, sy = 1.0
-        cairo_surface_get_device_scale(cairo_get_target(context), &sx, &sy)
-        if let (mask, native) = shadowCache.value(
-          width: frame.width, height: frame.height, corner: props.cornerRadius,
-          radius: shadow.radius, scale: max(sx, sy), create: { NativeShadowMask($0) }) {
-          cairo_mask_surface(context, native.surface,
-                             frame.minX + shadow.x - mask.inset, frame.minY + shadow.y - mask.inset)
+    if !props.shadows.isEmpty {
+      let shadowCorner = node.shadowCornerRadius
+      for shadow in props.shadows where shadow.color.opacity > 0 {
+        // Shadows precede this node's clip/group but remain inside ancestor
+        // groups, so apply this node's relative opacity exactly once here.
+        source(context, shadow.color.opacity(opacity))
+        if shadow.radius <= 0 {
+          let rect = Rect(x: frame.minX + shadow.x, y: frame.minY + shadow.y,
+                          width: frame.width, height: frame.height)
+          addRoundedRect(rect, radius: shadowCorner, to: context)
+          cairo_fill(context)
+        } else {
+          var sx = 1.0, sy = 1.0
+          cairo_surface_get_device_scale(cairo_get_target(context), &sx, &sy)
+          if let (mask, native) = shadowCache.value(
+            width: frame.width, height: frame.height, corner: shadowCorner,
+            radius: shadow.radius, scale: max(sx, sy), create: { NativeShadowMask($0) }) {
+            cairo_mask_surface(context, native.surface,
+                               frame.minX + shadow.x - mask.inset, frame.minY + shadow.y - mask.inset)
+          }
         }
       }
     }

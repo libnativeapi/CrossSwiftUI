@@ -699,18 +699,21 @@
         }
       }
       let bounds = CGRect(x: r.minX, y: r.minY, width: r.width, height: r.height)
-      for shadow in p.shadows where shadow.color.opacity > 0 {
-        if shadow.radius <= 0 {
-          sui_surface_shape(
-            surface, r.minX + shadow.x, r.minY + shadow.y, r.width, r.height,
-            p.cornerRadius, shadow.color.opacity(p.opacity).argb, 0, 0)
-        } else if let (mask, native) = shadowCache.value(
-          width: r.width, height: r.height, corner: p.cornerRadius, radius: shadow.radius,
-          scale: sui_surface_scale(surface), create: { NativeShadowMask($0) }) {
-          sui_surface_mask(
-            surface, native.handle, r.minX + shadow.x - mask.inset, r.minY + shadow.y - mask.inset,
-            Double(mask.width) / mask.scale, Double(mask.height) / mask.scale,
-            shadow.color.opacity(p.opacity).argb)
+      if !p.shadows.isEmpty {
+        let shadowCorner = node.shadowCornerRadius
+        for shadow in p.shadows where shadow.color.opacity > 0 {
+          if shadow.radius <= 0 {
+            sui_surface_shape(
+              surface, r.minX + shadow.x, r.minY + shadow.y, r.width, r.height,
+              shadowCorner, shadow.color.opacity(p.opacity).argb, 0, 0)
+          } else if let (mask, native) = shadowCache.value(
+            width: r.width, height: r.height, corner: shadowCorner, radius: shadow.radius,
+            scale: sui_surface_scale(surface), create: { NativeShadowMask($0) }) {
+            sui_surface_mask(
+              surface, native.handle, r.minX + shadow.x - mask.inset, r.minY + shadow.y - mask.inset,
+              Double(mask.width) / mask.scale, Double(mask.height) / mask.scale,
+              shadow.color.opacity(p.opacity).argb)
+          }
         }
       }
       if p.clipped { sui_surface_clip(surface, r.minX, r.minY, r.width, r.height, p.cornerRadius) }

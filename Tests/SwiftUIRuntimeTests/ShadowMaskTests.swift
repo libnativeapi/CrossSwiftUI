@@ -68,10 +68,63 @@ final class ShadowMaskTests: XCTestCase {
     XCTAssertEqual(alpha(mask, x: 1, y: 60), 1)
     XCTAssertEqual(alpha(mask, x: 0, y: 0), 0)
     XCTAssertNil(ShadowMask(width: 0, height: 30, cornerRadius: 4, radius: 8))
+    XCTAssertNil(ShadowMask(width: 30, height: 30, cornerRadius: .nan, radius: 8))
     XCTAssertNil(ShadowMask(width: 30, height: 30, cornerRadius: 4, radius: .infinity))
+    let capsule = try XCTUnwrap(
+      ShadowMask(width: 80, height: 26, cornerRadius: .infinity, radius: 1))
+    XCTAssertLessThan(alpha(capsule, x: 1, y: 1), 0.05)
+    XCTAssertGreaterThan(alpha(capsule, x: 40, y: 13), 0.99)
     let large = try XCTUnwrap(
       ShadowMask(width: 10_000, height: 5000, cornerRadius: 100, radius: 100))
     XCTAssertLessThanOrEqual(large.width, 2048)
     XCTAssertLessThanOrEqual(large.height, 2048)
+  }
+
+  @MainActor
+  func testShadowCornerRadiusFollowsLayeredAndClippedSilhouettes() throws {
+    func shadowedCorner<V: View>(_ view: V) throws -> Double {
+      let renderer = Renderer(
+        backend: FakeBackend(), root: AnyView(view), size: Size(width: 300, height: 200))
+      renderer.mount()
+      func find(_ node: Element) -> Element? {
+        if !node.props.shadows.isEmpty { return node }
+        for child in node.children {
+          if let found = find(child) { return found }
+        }
+        return nil
+      }
+      let matched: Element? = renderer.tree.flatMap(find)
+      return try XCTUnwrap(matched).shadowCornerRadius
+    }
+
+    let button = Text("Save")
+      .frame(width: 80, height: 26)
+      .background { RoundedRectangle(cornerRadius: 9999, style: .circular).fill(.black) }
+      .overlay { RoundedRectangle(cornerRadius: 9999, style: .circular).strokeBorder(.clear, lineWidth: 1) }
+      .shadow(color: .black, radius: 1, x: 0, y: 1)
+    XCTAssertEqual(try shadowedCorner(button), 9999)
+
+    let popover = Text("Sheet")
+      .frame(width: 120, height: 80)
+      .background(.white)
+      .clipShape(RoundedRectangle(cornerRadius: 14, style: .circular))
+      .overlay { RoundedRectangle(cornerRadius: 14, style: .circular).strokeBorder(.gray, lineWidth: 1) }
+      .shadow(color: .black, radius: 8, x: 0, y: 4)
+    XCTAssertEqual(try shadowedCorner(popover), 14)
+
+    let thumb = Circle()
+      .fill(.white)
+      .frame(width: 16, height: 16)
+      .overlay(Circle().strokeBorder(.gray, lineWidth: 1))
+      .shadow(color: .black, radius: 1.5, x: 0, y: 1)
+    XCTAssertTrue(try shadowedCorner(thumb).isInfinite)
+
+    let sharpCard = ZStack {
+      Circle().fill(.red).frame(width: 16, height: 16)
+    }
+    .frame(width: 80, height: 40)
+    .background(.white)
+    .shadow(color: .black, radius: 4, x: 0, y: 2)
+    XCTAssertEqual(try shadowedCorner(sharpCard), 0)
   }
 }

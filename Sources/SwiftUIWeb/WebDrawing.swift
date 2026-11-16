@@ -72,7 +72,9 @@ extension WebBackend {
       props.rotation == 0 && props.scaleX == 1 && props.scaleY == 1
         ? "" : "rotate(\(props.rotation)deg) scale(\(props.scaleX), \(props.scaleY))")
     style.color = .string(props.foreground?.css ?? "")
-    let radius = max(0, min(props.cornerRadius, min(element.frame.width, element.frame.height) / 2))
+    let effectiveCorner =
+      props.shadows.isEmpty ? props.cornerRadius : max(props.cornerRadius, element.shadowCornerRadius)
+    let radius = max(0, min(effectiveCorner, min(element.frame.width, element.frame.height) / 2))
     style.borderRadius = .string(radius > 0 || props.clipped ? px(radius) : "")
     style.backgroundColor = .string(node.drawing == nil ? props.background?.css ?? "" : "")
     style.boxShadow = .string(

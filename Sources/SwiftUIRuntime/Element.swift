@@ -249,6 +249,33 @@ public struct Element {
 
   public var needsNativeFocus: Bool { props.focusable || focusAction != nil }
 
+  /// Effective silhouette corner radius for `.shadow(...)`, walking through
+  /// transparent `.background`, `.overlay`, and `.frame` wrappers whose filled,
+  /// stroked, or clipped shape lives on a coextensive child.
+  public var shadowCornerRadius: Double {
+    silhouetteCornerRadius(matching: frame) ?? props.cornerRadius
+  }
+
+  private func silhouetteCornerRadius(matching bounds: Rect) -> Double? {
+    guard props.visible, props.opacity > 0,
+      abs(frame.minX - bounds.minX) < 0.5,
+      abs(frame.minY - bounds.minY) < 0.5,
+      abs(frame.width - bounds.width) < 0.5,
+      abs(frame.height - bounds.height) < 0.5
+    else { return nil }
+    if props.clipped { return props.cornerRadius }
+    let hasFill = (props.background?.opacity ?? 0) > 0
+    let hasStroke = props.borderWidth > 0 && props.borderColor.opacity > 0
+    if hasFill || hasStroke { return props.cornerRadius }
+    var resolved: Double?
+    for child in children {
+      if let candidate = child.silhouetteCornerRadius(matching: bounds) {
+        resolved = resolved.map { min($0, candidate) } ?? candidate
+      }
+    }
+    return resolved
+  }
+
   package var handlesPointerInput: Bool {
     action != nil || doubleTapAction != nil || dragAction != nil || secondaryAction != nil
   }

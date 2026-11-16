@@ -18,7 +18,7 @@ public struct ShadowMask {
     width: Double, height: Double, cornerRadius: Double,
     radius: Double, scale: Double = 1
   ) {
-    guard width.isFinite, height.isFinite, cornerRadius.isFinite,
+    guard width.isFinite, height.isFinite, !cornerRadius.isNaN,
       radius.isFinite, scale.isFinite, width > 0, height > 0, scale > 0
     else { return nil }
     let padding = Self.padding(radius: radius)

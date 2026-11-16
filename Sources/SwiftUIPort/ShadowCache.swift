@@ -12,6 +12,7 @@ final class ShadowCache<Value> {
     width: Double, height: Double, corner: Double, radius: Double, scale: Double,
     create: (ShadowMask) -> Value?
   ) -> (ShadowMask, Value)? {
+    let corner = corner.isNaN ? corner : max(0, min(corner, min(width, height) / 2))
     let key = Key(width: width, height: height, corner: corner, radius: radius, scale: scale)
     if let entry = entries[key] { return entry }
     guard

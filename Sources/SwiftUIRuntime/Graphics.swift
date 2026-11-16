@@ -104,6 +104,7 @@ public struct Path: Equatable {
 }
 public struct Circle: Shape {
   public init() {}
+  public var cornerRadius: CGFloat { .infinity }
   public func path(in r: CGRect) -> Path {
     var p = Path()
     p.addArc(
