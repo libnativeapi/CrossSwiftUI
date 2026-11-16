@@ -220,6 +220,7 @@
     }
 
     /// Drawing is published atomically from didRender after diffing assigns IDs.
+    public var needsRenderCommands: Bool { false }
     public func perform(_ commands: [RenderCommand]) {}
     public func didMeasureRender(_ timings: [String: Double]) {
       guard tracesFrames, let surface else { return }
@@ -354,19 +355,15 @@
       if let surface { sui_surface_pointer(surface, Int32(event), point.x, point.y, Int32(value)) }
     }
     public func pointerLocation(fallback: CGPoint) -> CGPoint? {
+      guard let surface else { return nil }
       let started = Date.timeIntervalSinceReferenceDate
       defer {
         totalPointerQueryMilliseconds += (Date.timeIntervalSinceReferenceDate - started) * 1000
       }
-      let point = DisplayManager.shared.getCursorPosition()
-      guard WindowManager.shared.getWindowAtPoint(point, excludedWindowId: 0)?.id == window.id
-      else { return nil }
-      let bounds = window.contentBounds
-      let local = CGPoint(x: point.x - bounds.x, y: point.y - bounds.y)
-      guard local.x >= 0, local.y >= 0, local.x < bounds.width, local.y < bounds.height else {
-        return nil
-      }
-      return local
+      var x = 0.0
+      var y = 0.0
+      guard sui_surface_cursor(surface, &x, &y) != 0 else { return nil }
+      return CGPoint(x: x, y: y)
     }
     public func nativeButton(_ id: NodeID) -> NativeAPI.Button? { buttons[id]?.view }
     public func advanceFocus(from id: NodeID?, backward: Bool = false) {

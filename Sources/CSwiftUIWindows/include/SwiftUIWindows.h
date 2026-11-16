@@ -21,6 +21,7 @@ void sui_edit_order(void *surface, void *edit);
 void sui_control_clip(void *, double, double, double, double);
 void sui_control_opacity(void *control, double opacity);
 void sui_surface_pointer(void *, int event, double x, double y, int value);
+int sui_surface_cursor(void *surface, double *x, double *y);
 
 void *sui_surface_create(void *host, sui_event_callback callback, void *context,
                          uint64_t native_view);

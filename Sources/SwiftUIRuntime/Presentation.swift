@@ -114,8 +114,10 @@ func resolvePresentations(_ root: Element, in size: Size) -> Element {
       let backdrop = Element(
         kind: .shape, props: props, frame: Rect(origin: .zero, size: size),
         action: node.dismissPresentation)
+      node.updateOverflow()
       panels += [backdrop, panel]
     }
+    node.updateOverflow()
     return node
   }
   var base = collect(root)
@@ -130,6 +132,7 @@ func resolvePresentations(_ root: Element, in size: Size) -> Element {
   var result = Element(
     kind: .zStack, children: [base] + panels, frame: Rect(origin: .zero, size: size))
   result.hasActivePresentation = true
+  result.updateOverflow()
   return result
 }
 extension View {

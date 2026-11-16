@@ -22,6 +22,7 @@ final class WindowsDrawingTests: XCTestCase {
     _ = NativeAPI.Application.shared.isRunning()
     let window = try XCTUnwrap(NativeAPI.Window.create())
     let backend = try XCTUnwrap(WindowsDrawingBackend(window: window))
+    XCTAssertFalse(backend.needsRenderCommands)
     let model = Model()
     let renderer = Renderer(backend: backend, root: AnyView(Content(model: model)),
                             size: .init(width: 300, height: 200))

@@ -261,15 +261,17 @@ import Foundation
       if let id { find(id, in: tree)?.textAction?(text) }
       return true
     }
-    var chain: [Element] = []
-    if let id, id.rawValue != 0 {
-      _ = ancestry(id, in: tree, into: &chain)
-    } else if let root = tree {
-      chain = hitChain(root, point: point, hover: event == 1 || event == 10)
-    }
     if event == 1 || event == 10 {
       hoverPending = true
       hoverPoint = event == 10 ? nil : point
+    }
+    var chain: [Element] = []
+    if event != 1 && event != 10 {
+      if let id, id.rawValue != 0 {
+        _ = ancestry(id, in: tree, into: &chain)
+      } else if let root = tree {
+        chain = hitChain(root, point: point, hover: false)
+      }
     }
     if event == 2, usesCustomScrollIndicators,
       let scroll = chain.first(where: { $0.kind == .scroll && $0.props.showsScrollIndicators }),
@@ -390,29 +392,56 @@ import Foundation
     _ node: Element, point: CGPoint,
     hover: Bool = false
   ) -> [Element] {
-    guard node.props.visible, node.props.hitTesting, node.props.enabled else { return [] }
+    var result: [Element] = []
+    _ = collectHitChain(node, point: point, hover: hover, into: &result)
+    return result
+  }
+  private func collectHitChain(
+    _ node: Element, point: CGPoint,
+    hover: Bool, into result: inout [Element]
+  ) -> Bool {
+    guard node.props.visible, node.props.hitTesting, node.props.enabled else { return false }
     let inside =
       point.x >= node.frame.minX && point.x < node.frame.minX + node.frame.width
       && point.y >= node.frame.minY && point.y < node.frame.minY + node.frame.height
-    if node.props.clipped && !inside { return [] }
-    var children =
-      node.kind == .layer && node.props.layerBehind
-      ? Array(node.children.reversed()) : node.children
-    if children.count > 1 && children.contains(where: { $0.props.zIndex != 0 }) {
-      children = children.enumerated().sorted {
-        $0.element.props.zIndex == $1.element.props.zIndex
-          ? $0.offset < $1.offset : $0.element.props.zIndex < $1.element.props.zIndex
-      }.map { $0.element }
+    if !inside && (node.props.clipped || !node.hasOverflow) { return false }
+    if !node.children.isEmpty {
+      var childPoint = point
+      if let offset = unpublishedOffsets[node.id] {
+        childPoint.x += offset.x - node.props.scrollOffset.x
+        childPoint.y += offset.y - node.props.scrollOffset.y
+      }
+      let behind = node.kind == .layer && node.props.layerBehind
+      let count = node.children.count
+      if count > 1 && node.children.contains(where: { $0.props.zIndex != 0 }) {
+        let base = behind ? Array(node.children.reversed()) : node.children
+        let sorted = base.enumerated().sorted {
+          $0.element.props.zIndex == $1.element.props.zIndex
+            ? $0.offset < $1.offset : $0.element.props.zIndex < $1.element.props.zIndex
+        }
+        for entry in sorted.reversed() {
+          if collectHitChain(entry.element, point: childPoint, hover: hover, into: &result) {
+            result.append(node)
+            return true
+          }
+        }
+      } else if behind {
+        for i in 0..<count {
+          if collectHitChain(node.children[i], point: childPoint, hover: hover, into: &result) {
+            result.append(node)
+            return true
+          }
+        }
+      } else {
+        for i in stride(from: count - 1, through: 0, by: -1) {
+          if collectHitChain(node.children[i], point: childPoint, hover: hover, into: &result) {
+            result.append(node)
+            return true
+          }
+        }
+      }
     }
-    var childPoint = point
-    if let offset = unpublishedOffsets[node.id] {
-      childPoint.x += offset.x - node.props.scrollOffset.x
-      childPoint.y += offset.y - node.props.scrollOffset.y
-    }
-    for child in children.reversed() {
-      let result = hitChain(child, point: childPoint, hover: hover)
-      if !result.isEmpty { return result + [node] }
-    }
+    guard inside else { return false }
     // Layout-only containers, especially an empty overlay, do not occlude
     // interactive content underneath them.
     let interactive =
@@ -426,7 +455,11 @@ import Foundation
     }
     // Decorative canvas ink (a card's stroked overlay, for example) has no
     // native input window. It must not hide the hover target below it.
-    return inside && (interactive || (!hover && painted)) ? [node] : []
+    if interactive || (!hover && painted) {
+      result.append(node)
+      return true
+    }
+    return false
   }
 
   package func cancelPointer() {
@@ -524,11 +557,13 @@ import Foundation
             &node.children[i], dx: old.x - pending.offset.x,
             dy: old.y - pending.offset.y, origins: origins)
         }
+        node.updateOverflow()
         return true
       }
       for i in node.children.indices {
         if move(&node.children[i]) {
           node.reusesLayout = false
+          node.updateOverflow()
           if node.props.rotation != 0 || node.props.scaleX != 1 || node.props.scaleY != 1 {
             viewport = fullViewport
           }

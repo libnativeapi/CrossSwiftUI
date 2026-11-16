@@ -188,6 +188,7 @@ public struct Element {
   var evaluationID: Int = 0
   var evaluationRevision: Int = 0
   var reusesLayout = false
+  var hasOverflow = false
   var hasDynamicLayout = false
   var hasPresentation = false
   var hasActivePresentation = false
@@ -260,6 +261,28 @@ public struct Element {
       return false
     }
     return children.allSatisfy(\.supportsTranslation)
+  }
+
+  mutating func updateOverflow() {
+    if props.clipped {
+      hasOverflow = false
+      return
+    }
+    if kind == .scroll {
+      hasOverflow = true
+      return
+    }
+    if children.isEmpty {
+      hasOverflow = false
+      return
+    }
+    let r = frame
+    hasOverflow = children.contains { child in
+      guard child.props.visible else { return false }
+      if child.hasOverflow { return true }
+      let c = child.frame
+      return c.minX < r.minX || c.minY < r.minY || c.maxX > r.maxX || c.maxY > r.maxY
+    }
   }
 
   public var isContainer: Bool {

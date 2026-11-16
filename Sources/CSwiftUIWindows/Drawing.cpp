@@ -1283,6 +1283,32 @@ void sui_surface_pointer(void *handle, int event, double x, double y,
   }
   SendMessageW(s->host, msg, wp, MAKELPARAM(point.x, point.y));
 }
+int sui_surface_cursor(void *handle, double *x, double *y) {
+  auto *s = static_cast<Surface *>(handle);
+  if (!s || !s->host || !x || !y || !IsWindowVisible(s->host))
+    return 0;
+  HWND root = GetAncestor(s->host, GA_ROOT);
+  if (!root || !IsWindowVisible(root) || IsIconic(root))
+    return 0;
+  POINT cursor{};
+  if (!GetCursorPos(&cursor))
+    return 0;
+  RECT client{};
+  if (!GetClientRect(s->host, &client))
+    return 0;
+  POINT local = cursor;
+  if (!ScreenToClient(s->host, &local) || local.x < 0 || local.y < 0 ||
+      local.x >= client.right || local.y >= client.bottom)
+    return 0;
+  HWND hit = WindowFromPoint(cursor);
+  if (!hit || (hit != s->host && hit != s->tooltip && !IsChild(s->host, hit)))
+    return 0;
+  const UINT dpi = GetDpiForWindow(s->host);
+  const double scale = (dpi ? dpi : 96) / 96.;
+  *x = local.x / scale;
+  *y = local.y / scale;
+  return 1;
+}
 void sui_surface_begin(void *handle) {
   auto *s = static_cast<Surface *>(handle);
   if (s->trace.Enabled()) s->trace.publication_start = FrameTrace::Now();

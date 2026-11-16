@@ -526,6 +526,7 @@ public struct LayoutEngine {
       return
     }
     defer {
+      e.updateOverflow()
       e.hasPresentation = e.kind == .presentation || e.children.contains { $0.hasPresentation }
       if !e.hasDynamicLayout && !e.children.isEmpty && e.layoutID != 0 {
         cache.placements[e.layoutID] = Cache.Placement(offered: offered, element: e)
@@ -629,6 +630,7 @@ public struct LayoutEngine {
             in: Rect(x: x, y: y, width: columns[col], height: height))
           x += columns[col] + e.props.padding.leading
         }
+        e.children[row].updateOverflow()
         y += height + e.props.spacing
       }
     case .customLayout:
@@ -754,6 +756,7 @@ public struct LayoutEngine {
   private func applyFrames(_ element: inout Element, from previous: Element) {
     if element.frame != previous.frame { element.reusesLayout = false }
     element.frame = previous.frame
+    element.hasOverflow = previous.hasOverflow
     element.layoutContext = previous.layoutContext
     element.props.renderedText = previous.props.renderedText
     element.props.scrollOffset = previous.props.scrollOffset

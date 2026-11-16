@@ -617,4 +617,67 @@ final class IncrementalRenderingTests: XCTestCase {
     renderer.performTap(try XCTUnwrap(findNode(in: renderer.tree!, text: "Read frame")).id)
     XCTAssertEqual(model.text, "-48")
   }
+
+  private final class CommandlessBackend: RenderBackend {
+    var tapHandler: ((NodeID) -> Void)?
+    var transactionHandler: ((() -> Void) -> Void)?
+    var needsRenderCommands: Bool { false }
+    var renders = 0
+    var scrolls = 0
+    func perform(_ commands: [RenderCommand]) {
+      XCTFail("Commandless backends must not receive incremental render commands")
+    }
+    func didRender(_ root: Element) { renders += 1 }
+    func didScroll(_ root: Element, viewport: Rect) { scrolls += 1 }
+  }
+
+  func testCommandlessBackendSkipsCommandsAndPrunesHoverHitTesting() throws {
+    StateRegistry.shared.reset()
+    var hovered: [String] = []
+    let counts = Counts()
+    let view = ZStack(alignment: .topLeading) {
+      ScrollView {
+        VStack(alignment: .leading, spacing: 8) {
+          Counter(name: "row", counts: counts)
+          ForEach(0..<40, id: \.self) { index in
+            Text("Item \(index)")
+              .frame(width: 120, height: 24)
+              .onHover { active in if active { hovered.append("item:\(index)") } }
+          }
+        }
+      }.frame(width: 200, height: 120)
+      Button("OverflowHover") {}
+        .frame(width: 60, height: 24)
+        .onHover { active in if active { hovered.append("overflow") } }
+        .offset(x: 210, y: 10)
+        .frame(width: 40, height: 24)
+    }
+    let backend = CommandlessBackend()
+    let renderer = Renderer(backend: backend, root: AnyView(view), size: Size(width: 300, height: 200))
+    renderer.mount()
+    XCTAssertEqual(backend.renders, 1)
+    XCTAssertTrue(renderer.lastCommands.isEmpty)
+
+    let overflow = try XCTUnwrap(findNode(in: renderer.tree!, text: "OverflowHover"))
+    renderer.input(event: 1, point: CGPoint(x: overflow.frame.minX + 5, y: overflow.frame.minY + 5))
+    XCTAssertEqual(hovered, ["overflow"])
+
+    renderer.input(event: 5, point: CGPoint(x: 40, y: 40), value: -120)
+    XCTAssertEqual(backend.scrolls, 1)
+    XCTAssertTrue(renderer.lastCommands.isEmpty)
+
+    let target = try XCTUnwrap(findNode(in: renderer.tree!, text: "Item 2"))
+    renderer.input(event: 1, point: CGPoint(x: target.frame.minX + 5, y: target.frame.minY + 5))
+    XCTAssertEqual(hovered.last, "item:2")
+
+    let row = try XCTUnwrap(findNode(in: renderer.tree!, text: "row:0"))
+    let idBefore = row.id
+    renderer.performTap(row.id)
+    XCTAssertTrue(renderer.lastCommands.isEmpty)
+    XCTAssertEqual(findNode(in: renderer.tree!, text: "row:1")?.id, idBefore)
+
+    renderer.input(event: 10)
+    renderer.input(event: 1, point: CGPoint(x: overflow.frame.minX + 5, y: overflow.frame.minY + 5))
+    XCTAssertEqual(hovered.suffix(2), ["item:2", "overflow"])
+  }
 }
