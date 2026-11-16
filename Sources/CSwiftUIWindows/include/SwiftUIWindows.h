@@ -18,6 +18,8 @@ void sui_surface_edit(void *surface, void *edit, int64_t id,
                       uint64_t native_view);
 void sui_surface_remove_edit(void *surface, void *edit);
 void sui_edit_order(void *surface, void *edit);
+void sui_edit_line_metrics(void *surface, void *edit, double *center,
+                           double *height);
 void sui_control_clip(void *, double, double, double, double);
 void sui_control_opacity(void *control, double opacity);
 void sui_surface_pointer(void *, int event, double x, double y, int value);

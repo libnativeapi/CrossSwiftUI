@@ -172,6 +172,44 @@ int editor_resize_probe(void) {
   SendMessageW(single_hwnd, WM_LBUTTONUP, 0, MAKELPARAM(px(40), px(12)));
   RedrawWindow(single_hwnd, nullptr, nullptr, RDW_UPDATENOW);
   if (initial_cue == 0 || cue_ink() != initial_cue) ++errors;
+
+  // Single-line EDIT optical alignment must centre cap-to-baseline ink inside
+  // a control-height slot (e.g. a 28pt Combobox with 12px Segoe UI).
+  native_text_field_set_text(single, "Hover");
+  native_text_field_set_font_size(single, 12.0 * 72.0 / 96.0);
+  native_text_field_set_text_color(single, {0x10, 0x20, 0x30, 0xFF});
+  double edit_center = 0, edit_height = 0;
+  sui_edit_line_metrics(surface, single_hwnd, &edit_center, &edit_height);
+  const double slot_y = 140.0, slot_h = 28.0;
+  const double edit_y = slot_y + slot_h * 0.5 - edit_center;
+  const double edit_box_h = edit_height > (slot_y + slot_h - edit_y)
+                                ? edit_height
+                                : (slot_y + slot_h - edit_y);
+  sui_surface_begin(surface);
+  sui_surface_shape(surface, 0, 0, 1000, 500, 0, 0xFFFAF9F6, 0, 0);
+  sui_controls_begin(surface);
+  sui_control_frame(surface, single_hwnd, 40, edit_y, 240, edit_box_h);
+  sui_edit_order(surface, single_hwnd);
+  sui_control_clip(single_hwnd, 0, 0, 240, edit_box_h);
+  sui_surface_end(surface);
+  RedrawWindow(host, nullptr, nullptr,
+               RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN | RDW_UPDATENOW);
+  {
+    HDC dc = GetDC(host);
+    const int box_top = px(slot_y), box_bottom = px(slot_y + slot_h) - 1;
+    int min_y = box_bottom + 1, max_y = -1;
+    for (int y = box_top; y <= box_bottom; ++y)
+      for (int x = px(42); x < px(160); ++x)
+        if (GetRValue(GetPixel(dc, x, y)) < 200) {
+          if (y < min_y) min_y = y;
+          if (y > max_y) max_y = y;
+        }
+    ReleaseDC(host, dc);
+    const int top_gap = min_y - box_top;
+    const int bottom_gap = box_bottom - max_y;
+    if (max_y < min_y || std::abs(top_gap - bottom_gap) > 1) ++errors;
+  }
+
   sui_surface_remove_edit(surface, single_hwnd);
   native_text_field_free(single);
 

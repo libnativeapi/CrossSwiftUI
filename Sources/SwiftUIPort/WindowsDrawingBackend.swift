@@ -591,10 +591,6 @@
         if let edit = edits[node.id], let handle = edit.view.nativeObject {
           let p = node.props
           let r = node.frame
-          if inViewport || nativeClip != nil {
-            sui_control_frame(surface, handle, r.minX, r.minY, r.width, r.height)
-          }
-          sui_edit_order(surface, handle)
           if !geometryOnly || !retained {
             let font = p.font ?? .body
             edit.view.setText(p.text)
@@ -612,10 +608,31 @@
               edit.view.focus()
             }
           }
+          var editRect = r
+          if !p.multiline {
+            // Single-line Win32 EDIT paints at y = 0 of its own HWND rather
+            // than centring vertically. Align the glyph's optical cap centre to
+            // the layout slot's midpoint.
+            var lineCenter = 0.0
+            var lineHeight = 0.0
+            sui_edit_line_metrics(surface, handle, &lineCenter, &lineHeight)
+            if lineHeight > 0 {
+              let editY = r.minY + r.height * 0.5 - lineCenter
+              editRect = Rect(
+                x: r.minX, y: editY, width: r.width,
+                height: max(lineHeight, r.maxY - editY))
+            }
+          }
+          if inViewport || nativeClip != nil {
+            sui_control_frame(
+              surface, handle, editRect.minX, editRect.minY, editRect.width, editRect.height)
+          }
+          sui_edit_order(surface, handle)
           sui_control_opacity(handle, p.opacity)
-          let visible = inViewport ? r.intersection(nativeClip ?? clip) : .zero
+          let visible = inViewport ? editRect.intersection(nativeClip ?? clip) : .zero
           sui_control_clip(
-            handle, visible.minX - r.minX, visible.minY - r.minY, visible.width, visible.height)
+            handle, visible.minX - editRect.minX, visible.minY - editRect.minY,
+            visible.width, visible.height)
         }
       }
       for child in orderedChildren(node) {

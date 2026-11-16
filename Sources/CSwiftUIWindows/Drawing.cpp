@@ -64,6 +64,12 @@ struct ButtonHook {
 };
 struct EditHook {
   int64_t id;
+  UINT cached_dpi = 0;
+  LONG lf_height = 0;
+  LONG lf_weight = 0;
+  wchar_t face[LF_FACESIZE]{};
+  double line_center = 0;
+  double line_height = 0;
 };
 struct Framebuffer {
   UINT width, height;
@@ -1308,6 +1314,86 @@ void sui_edit_order(void *handle, void *edit) {
   HWND hwnd = static_cast<HWND>(edit);
   ParentControl(s, hwnd);
   OrderControl(s, hwnd);
+}
+void sui_edit_line_metrics(void *handle, void *edit, double *center,
+                           double *height) {
+  auto *s = static_cast<Surface *>(handle);
+  HWND hwnd = static_cast<HWND>(edit);
+  const UINT dpi = GetDpiForWindow(hwnd);
+  const double scale = (dpi ? dpi : 96) / 96.;
+  auto found = s->edits.find(hwnd);
+  HFONT hfont = reinterpret_cast<HFONT>(SendMessageW(hwnd, WM_GETFONT, 0, 0));
+  if (!hfont)
+    hfont = static_cast<HFONT>(GetStockObject(DEFAULT_GUI_FONT));
+  LOGFONTW lf{};
+  GetObjectW(hfont, sizeof(lf), &lf);
+  if (found != s->edits.end()) {
+    auto &hook = found->second;
+    if (hook.cached_dpi == dpi && hook.lf_height == lf.lfHeight &&
+        hook.lf_weight == lf.lfWeight &&
+        wcscmp(hook.face, lf.lfFaceName) == 0 && hook.line_height > 0) {
+      *center = hook.line_center;
+      *height = hook.line_height;
+      return;
+    }
+  }
+  HDC dc = CreateCompatibleDC(nullptr);
+  HGDIOBJ old_font = SelectObject(dc, hfont);
+  TEXTMETRICW tm{};
+  GetTextMetricsW(dc, &tm);
+  const int w = max(24, int(tm.tmAveCharWidth) * 4 + 8);
+  const int h = max(24, int(tm.tmHeight) + 8);
+  BITMAPINFO info{};
+  info.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+  info.bmiHeader.biWidth = w;
+  info.bmiHeader.biHeight = -h;
+  info.bmiHeader.biPlanes = 1;
+  info.bmiHeader.biBitCount = 32;
+  info.bmiHeader.biCompression = BI_RGB;
+  void *raw = nullptr;
+  HBITMAP dib = CreateDIBSection(dc, &info, DIB_RGB_COLORS, &raw, nullptr, 0);
+  double resolved_height = max(1., double(tm.tmHeight)) / scale;
+  double resolved_center = resolved_height * 0.5;
+  if (dib && raw) {
+    auto *pixels = static_cast<uint32_t *>(raw);
+    std::fill(pixels, pixels + size_t(w) * h, 0xFFFFFFFFu);
+    HGDIOBJ old_bmp = SelectObject(dc, dib);
+    SetBkMode(dc, TRANSPARENT);
+    SetTextColor(dc, RGB(0, 0, 0));
+    ExtTextOutW(dc, 2, 0, 0, nullptr, L"H", 1, nullptr);
+    GdiFlush();
+    int min_y = h, max_y = -1;
+    for (int py = 0; py < h; ++py) {
+      const uint32_t *row = pixels + size_t(py) * w;
+      for (int px = 0; px < w; ++px) {
+        if (((row[px] >> 16) & 255) < 220 || ((row[px] >> 8) & 255) < 220 ||
+            (row[px] & 255) < 220) {
+          min_y = min(min_y, py);
+          max_y = max(max_y, py);
+        }
+      }
+    }
+    if (max_y >= min_y) {
+      const double cap_center = ((min_y + max_y + 1) * 0.5) / scale;
+      resolved_center =
+          cap_center + (resolved_height * 0.5 - cap_center) * 0.25;
+    }
+    SelectObject(dc, old_bmp);
+    DeleteObject(dib);
+  }
+  SelectObject(dc, old_font);
+  DeleteDC(dc);
+  if (found != s->edits.end()) {
+    auto &hook = found->second;
+    hook.cached_dpi = dpi;
+    hook.lf_height = lf.lfHeight;
+    hook.lf_weight = lf.lfWeight;
+    wcsncpy_s(hook.face, LF_FACESIZE, lf.lfFaceName, _TRUNCATE);
+    hook.line_center = resolved_center;
+    hook.line_height = resolved_height;
+  }
+  *center = resolved_center;
+  *height = resolved_height;
 }
 void sui_control_clip(void *control, double x, double y, double w, double h) {
   HWND hwnd = static_cast<HWND>(control);

@@ -347,7 +347,8 @@ public struct LayoutEngine {
     case .textField:
       size = textSize(p.text.isEmpty ? " " : p.text, p.font)
       size.width = offer.width.map { Double($0) } ?? max(80, size.width)
-      size.height = max(size.height, 20) * (p.multiline ? 3 : 1)
+      if textMeasurer == nil { size.height = max(size.height, 20) }
+      if p.multiline { size.height *= 3 }
     case .image: size = Size(width: 20, height: 20)
     case .padding:
       let child = ProposedViewSize(
