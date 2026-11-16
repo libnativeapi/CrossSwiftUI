@@ -124,8 +124,8 @@ int editor_resize_probe(void) {
     // Process only the damage published by the renderer, not a full expose.
     RedrawWindow(host, nullptr, nullptr, RDW_UPDATENOW | RDW_ALLCHILDREN);
     HDC screen = GetDC(host);
-    for (int y = px(42); y < px(98); ++y)
-      for (int x = px(sidebar + 22); x < px(190); ++x)
+    for (int y = px(40); y < px(98); ++y)
+      for (int x = px(sidebar + 20); x < px(190); ++x)
         if (GetPixel(screen, x, y) != RGB(250, 249, 246)) ++errors;
     ReleaseDC(host, screen);
   }
@@ -133,6 +133,48 @@ int editor_resize_probe(void) {
   DestroyWindow(sidebar_button);
   sui_surface_remove_edit(surface, editor);
   native_text_field_free(field);
+
+  // Double-clicking or dragging inside an already-focused empty single-line
+  // EDIT must keep its native cue banner visible without waiting on a render.
+  native_text_field_t single = native_text_field_create("");
+  native_text_field_set_bordered(single, false);
+  native_text_field_set_placeholder(single, "Placeholder");
+  native_text_field_set_font_family(single, "Segoe UI");
+  native_text_field_set_font_size(single, 16.0 * 72.0 / 96.0);
+  native_view_set_background_color(single, {0xFA, 0xF9, 0xF6, 0xFF});
+  auto single_hwnd = static_cast<HWND>(native_view_get_native_object(single));
+  sui_surface_edit(surface, single_hwnd, 13, single);
+  sui_surface_begin(surface);
+  sui_surface_shape(surface, 0, 0, 1000, 500, 0, 0xFFFAF9F6, 0, 0);
+  sui_controls_begin(surface);
+  sui_control_frame(surface, single_hwnd, 40, 140, 240, 32);
+  sui_edit_order(surface, single_hwnd);
+  sui_control_clip(single_hwnd, 0, 0, 240, 32);
+  sui_surface_end(surface);
+  SetActiveWindow(host);
+  SetFocus(single_hwnd);
+  RedrawWindow(host, nullptr, nullptr,
+               RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN | RDW_UPDATENOW);
+  auto cue_ink = [&]() {
+    int ink = 0;
+    HDC dc = GetDC(single_hwnd);
+    for (int y = px(2); y < px(30); ++y)
+      for (int x = px(2); x < px(200); ++x)
+        if (GetPixel(dc, x, y) != RGB(250, 249, 246)) ++ink;
+    ReleaseDC(single_hwnd, dc);
+    return ink;
+  };
+  const int initial_cue = cue_ink();
+  SendMessageW(single_hwnd, WM_LBUTTONDOWN, MK_LBUTTON, MAKELPARAM(px(12), px(12)));
+  SendMessageW(single_hwnd, WM_LBUTTONUP, 0, MAKELPARAM(px(12), px(12)));
+  SendMessageW(single_hwnd, WM_LBUTTONDBLCLK, MK_LBUTTON, MAKELPARAM(px(12), px(12)));
+  SendMessageW(single_hwnd, WM_MOUSEMOVE, MK_LBUTTON, MAKELPARAM(px(40), px(12)));
+  SendMessageW(single_hwnd, WM_LBUTTONUP, 0, MAKELPARAM(px(40), px(12)));
+  RedrawWindow(single_hwnd, nullptr, nullptr, RDW_UPDATENOW);
+  if (initial_cue == 0 || cue_ink() != initial_cue) ++errors;
+  sui_surface_remove_edit(surface, single_hwnd);
+  native_text_field_free(single);
+
   sui_surface_destroy(surface);
   DestroyWindow(host);
   return errors;
@@ -286,11 +328,21 @@ drawing_probe_result drawing_probe(void) {
       if (GetPixel(parent.dc, x, px(22)) != expected)
         ++p.result.pixel_errors;
     }
+    int min_ink_y = px(30), max_ink_y = -1;
     for (int y = 0; y < px(30); ++y)
-      for (int x = 0; x < px(80); ++x)
-        if (GetPixel(child.dc, x, y) !=
-            GetPixel(parent.dc, x + px(20), y + px(20)))
+      for (int x = 0; x < px(80); ++x) {
+        const auto color = GetPixel(child.dc, x, y);
+        if (color != GetPixel(parent.dc, x + px(20), y + px(20)))
           ++p.result.child_pixel_errors;
+        if (GetRValue(color) > 160 && GetBValue(color) > 160) {
+          if (y < min_ink_y) min_ink_y = y;
+          if (y > max_ink_y) max_ink_y = y;
+        }
+      }
+    const int top_gap = min_ink_y;
+    const int bottom_gap = px(30) - 1 - max_ink_y;
+    if (max_ink_y < min_ink_y || std::abs(top_gap - bottom_gap) > 1)
+      ++p.result.pixel_errors;
   }
   Frame(p, false, 40);
   HRGN region = CreateRectRgn(0, 0, 0, 0);

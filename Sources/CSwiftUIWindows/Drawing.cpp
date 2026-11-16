@@ -95,12 +95,76 @@ struct Framebuffer {
 struct TextFont {
   FontFamily family;
   Font font;
+  float size;
+  UINT cached_dpi = 0;
+  float cached_center = 0;
   TextFont(const Command &c)
       : family(c.family.c_str()),
         font(family.GetLastStatus() == Ok ? &family
                                           : FontFamily::GenericSansSerif(),
              c.size, c.weight >= 600 ? FontStyleBold : FontStyleRegular,
-             UnitPixel) {}
+             UnitPixel),
+        size(c.size) {}
+  float OpticalCenter(UINT dpi, float line_height) {
+    if (dpi == 0)
+      dpi = 96;
+    if (cached_dpi == dpi)
+      return cached_center;
+    cached_dpi = dpi;
+    cached_center = line_height * 0.5f;
+    if (size <= 0.f || size > 200.f)
+      return cached_center;
+    // GDI+ positions strings from the font's WinAscent cell top, which on
+    // Segoe UI includes asymmetric diacritic headroom and ClearType ppem jumps
+    // that push single-line control labels visibly below centre. Measure the
+    // rasterized cap-to-baseline bounds of 'H' once per (font, DPI) under the
+    // exact surface rasterizer state so labels sit optically centred.
+    const float scale = dpi / 96.f;
+    const int cell_w = max(16, int(std::ceil(size * scale * 1.5f)) + 8);
+    const int w = cell_w * 4;
+    const int h = max(24, int(std::ceil(size * scale * 2.5f)) + 16);
+    std::vector<uint32_t> pixels(size_t(w) * h, 0xFFFFFFFFu);
+    {
+      Bitmap bitmap(w, h, w * 4, PixelFormat32bppPARGB,
+                    reinterpret_cast<BYTE *>(pixels.data()));
+      Graphics g(&bitmap);
+      g.SetSmoothingMode(SmoothingModeAntiAlias);
+      g.SetPixelOffsetMode(PixelOffsetModeHalf);
+      g.SetTextRenderingHint(TextRenderingHintClearTypeGridFit);
+      g.ScaleTransform(scale, scale);
+      StringFormat format(StringFormat::GenericTypographic());
+      format.SetFormatFlags(StringFormatFlagsNoWrap |
+                            StringFormatFlagsMeasureTrailingSpaces);
+      SolidBrush black(Color(255, 0, 0, 0));
+      for (int i = 0; i < 4; ++i) {
+        const float ox = (2.f + i * cell_w) / scale;
+        const float oy = (4.f + i * 0.25f) / scale;
+        g.DrawString(L"H", 1, &font, PointF(ox, oy), &format, &black);
+      }
+    }
+    float sum = 0.f;
+    for (int i = 0; i < 4; ++i) {
+      const int x0 = i * cell_w, x1 = x0 + cell_w;
+      int min_y = h, max_y = -1;
+      for (int py = 0; py < h; ++py) {
+        const uint32_t *row = pixels.data() + size_t(py) * w;
+        for (int px = x0; px < x1; ++px) {
+          if (((row[px] >> 16) & 255) < 220 || ((row[px] >> 8) & 255) < 220 ||
+              (row[px] & 255) < 220) {
+            min_y = min(min_y, py);
+            max_y = max(max_y, py);
+          }
+        }
+      }
+      if (max_y < min_y)
+        return cached_center;
+      const float oy = (4.f + i * 0.25f) / scale;
+      sum += ((min_y + max_y + 1) * 0.5f) / scale - oy;
+    }
+    const float cap_center = sum * 0.25f;
+    cached_center = cap_center + (line_height * 0.5f - cap_center) * 0.25f;
+    return cached_center;
+  }
 };
 struct ControlContext {
   HWND parent;
@@ -215,11 +279,12 @@ void DrawTextCommand(Surface *s, Graphics &g, const Command &c) {
   SolidBrush brush(Color(c.fill));
   // Explicit newlines and line spacing, without inventing a wrapping policy.
   const float line_height = font.GetHeight(&g);
+  const float step = line_height + c.line_spacing;
   size_t start = 0;
   int lines = 1 + int(std::count(c.text.begin(), c.text.end(), L'\n'));
-  float y = c.rect.Y + (c.rect.Height -
-                        (line_height * lines + c.line_spacing * (lines - 1))) /
-                           2;
+  const float center = found->second->OpticalCenter(s->buffer_dpi, line_height);
+  float y =
+      c.rect.Y + c.rect.Height * 0.5f - center - step * (lines - 1) * 0.5f;
   while (start <= c.text.size()) {
     auto end = c.text.find(L'\n', start);
     auto line =
@@ -229,7 +294,7 @@ void DrawTextCommand(Surface *s, Graphics &g, const Command &c) {
     if (end == std::wstring::npos)
       break;
     start = end + 1;
-    y += line_height + c.line_spacing;
+    y += step;
   }
 }
 void VectorPath(GraphicsPath &path, const std::vector<double> &commands) {
