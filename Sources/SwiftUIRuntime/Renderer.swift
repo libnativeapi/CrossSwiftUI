@@ -20,6 +20,7 @@ import Foundation
   public let backend: any RenderBackend
   public let layoutEngine: LayoutEngine
   package var usesCustomScrollIndicators = true
+  package var clock: () -> TimeInterval = { Date.timeIntervalSinceReferenceDate }
 
   private let root: AnyView
   private let rootPath = ViewPath()
@@ -30,6 +31,9 @@ import Foundation
   private var isRendering = false
   private var needsRender = false
   private var pendingAnimation: Animation?
+  private var pendingAnimationExplicit = false
+  private var renderPass = 0
+  private let layoutAnimations = LayoutAnimator()
   private var transactionDepth = 0
   private let evaluations = EvaluationGraph()
   private var contentSize: Size
@@ -81,6 +85,9 @@ import Foundation
       defer { self.finishTransaction() }
       action()
     }
+    backend.animationTickHandler = { [weak self] in
+      self?.stepAnimations() ?? false
+    }
   }
 
   deinit { StateRegistry.shared.removeObserver(rootPath) }
@@ -104,6 +111,7 @@ import Foundation
     )
     mounted = mountedTree
     tree = mountedTree
+    layoutAnimations.seed(mountedTree)
     refreshHoverActions()
     lastCommands = commands ?? []
     if let commands { backend.perform(commands) }
@@ -132,10 +140,35 @@ import Foundation
     scheduleRender()
   }
   private func scheduleRender() {
-    if let animation = AnimationContext.current { pendingAnimation = animation }
+    if AnimationContext.isExplicit {
+      pendingAnimation = AnimationContext.current
+      pendingAnimationExplicit = true
+    } else if let animation = AnimationContext.current {
+      pendingAnimation = animation
+    }
     needsRender = true
     if isRendering || transactionDepth > 0 { return }
     requestRender()
+  }
+
+  /// True while layout-sizing animations are still interpolating across frames.
+  public var hasActiveAnimations: Bool { layoutAnimations.hasActiveMotions }
+
+  /// Advances active layout animations to the current `clock()` timestamp.
+  /// Returns true if layout animations remain in flight after this frame.
+  @discardableResult
+  public func stepAnimations() -> Bool {
+    guard mounted != nil else { return false }
+    if needsRender {
+      renderIfNeeded()
+      return layoutAnimations.hasActiveMotions
+    }
+    guard layoutAnimations.hasActiveMotions else { return false }
+    update()
+    backend.didMeasureRender(lastTimings)
+    unpublishedOffsets.removeAll(keepingCapacity: true)
+    if needsRender { renderIfNeeded() }
+    return layoutAnimations.hasActiveMotions
   }
   private func requestRender() {
     if !backend.requestRender({ [weak self] in
@@ -495,6 +528,7 @@ import Foundation
     // Opaque layouts must reproduce exactly translated placement proposals.
     if !needsRender || pendingScroll?.id == node.id, !isRendering, let key = node.scrollStateKey,
       mounted?.hasActivePresentation == false,
+      mounted?.hasLayoutAnimation == false,
       node.children.allSatisfy({
         layoutEngine.canTranslateScroll(
           $0, dx: node.props.scrollOffset.x - offset.x,
@@ -591,6 +625,12 @@ import Foundation
     let savedEnvironment = EnvironmentValues.current
     EnvironmentValues.current = backend.environment
     defer { EnvironmentValues.current = savedEnvironment }
+    renderPass += 1
+    let currentPass = renderPass
+    let savedPass = AnimationContext.renderPass
+    AnimationContext.renderPass = currentPass
+    defer { AnimationContext.renderPass = savedPass }
+    let now = clock()
     lastTimings.removeAll(keepingCapacity: true)
     var start = Date.timeIntervalSinceReferenceDate
     StateRegistry.shared.begin()
@@ -602,14 +642,38 @@ import Foundation
     lastTimings["normalize"] = (Date.timeIntervalSinceReferenceDate - start) * 1000
     normalized = element
     start = Date.timeIntervalSinceReferenceDate
-    if let animation = pendingAnimation ?? AnimationContext.current {
-      element.props.animation = animation
-    }
+    let explicitTransaction = pendingAnimationExplicit || AnimationContext.isExplicit
+    let transactionAnimation = pendingAnimation ?? AnimationContext.current
     pendingAnimation = nil
-    resolveEnvironment(&element, previous: mounted)
+    pendingAnimationExplicit = false
+    if let animation = transactionAnimation {
+      element.props.animation = animation
+      element.props.animationDisabled = false
+      element.props.animationPass = currentPass
+    } else if explicitTransaction {
+      element.props.animation = nil
+      element.props.animationDisabled = true
+      element.props.animationPass = currentPass
+    }
+    let previousBase = mounted.flatMap {
+      $0.hasActivePresentation ? $0.children.first : $0
+    }
+    resolveEnvironment(&element, previous: previousBase)
+    layoutAnimations.beginPass()
+    layoutAnimations.apply(
+      to: &element,
+      previous: previousBase,
+      inheritedAnimation: nil,
+      renderPass: currentPass,
+      now: now)
     lastTimings["environment"] = (Date.timeIntervalSinceReferenceDate - start) * 1000
     start = Date.timeIntervalSinceReferenceDate
-    layoutEngine.layout(root: &element, in: contentSize)
+    layoutEngine.layout(
+      root: &element,
+      in: contentSize,
+      animator: layoutAnimations,
+      renderPass: currentPass,
+      now: now)
     lastTimings["layout"] = (Date.timeIntervalSinceReferenceDate - start) * 1000
     for (key, value) in layoutEngine.lastTimings { lastTimings["layout." + key] = value }
     start = Date.timeIntervalSinceReferenceDate
@@ -642,6 +706,7 @@ import Foundation
     )
     mounted = mountedTree
     tree = mountedTree
+    layoutAnimations.finishPass(mounted: mountedTree)
     refreshHoverActions()
     lastCommands = commands ?? []
     lastTimings["diff"] = (Date.timeIntervalSinceReferenceDate - start) * 1000

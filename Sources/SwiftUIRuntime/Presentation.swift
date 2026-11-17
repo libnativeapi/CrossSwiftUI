@@ -132,6 +132,10 @@ func resolvePresentations(_ root: Element, in size: Size) -> Element {
   var result = Element(
     kind: .zStack, children: [base] + panels, frame: Rect(origin: .zero, size: size))
   result.hasActivePresentation = true
+  result.hasLayoutAnimation =
+    base.hasLayoutAnimation || panels.contains { $0.hasLayoutAnimation }
+  result.hasScopedAnimation =
+    base.hasScopedAnimation || panels.contains { $0.hasScopedAnimation }
   result.updateOverflow()
   return result
 }

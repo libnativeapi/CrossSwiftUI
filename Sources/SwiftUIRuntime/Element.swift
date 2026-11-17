@@ -150,6 +150,8 @@ public struct NodeProps: Equatable {
   public var opacity: Double = 1
   public var shadows: [Shadow] = []
   public var animation: Animation? = nil
+  package var animationDisabled = false
+  package var animationPass = 0
   public var presentationBackgroundEnabled = false
   public var focusRequested = false
   public var help = ""
@@ -191,7 +193,9 @@ public struct Element {
   var hasOverflow = false
   var hasDynamicLayout = false
   var hasPresentation = false
-  var hasActivePresentation = false
+  package var hasActivePresentation = false
+  package var hasLayoutAnimation = false
+  var hasScopedAnimation = false
   var hasPreferences = false
   var layoutContext: [AnyHashable: CGPoint] = [:]
   var customLayoutFrames: [CGRect] = []
@@ -402,12 +406,25 @@ func resolveEnvironment(
 
   if let previous, element.scrollTarget == nil, element.evaluationID != 0,
     element.evaluationID == previous.evaluationID,
-    element.evaluationRevision == previous.evaluationRevision, !previous.hasPresentation
+    element.evaluationRevision == previous.evaluationRevision,
+    !previous.hasPresentation, !previous.hasLayoutAnimation, !previous.hasScopedAnimation
   {
     var oldProps = previous.props
     oldProps.renderedText = element.props.renderedText
-    if oldProps == element.props {
+    oldProps.animation = nil
+    oldProps.animationDisabled = false
+    oldProps.animationPass = 0
+    var candidateProps = element.props
+    if candidateProps.animationPass != AnimationContext.renderPass {
+      candidateProps.animation = nil
+      candidateProps.animationDisabled = false
+      candidateProps.animationPass = 0
+    }
+    if oldProps == candidateProps {
       element = previous
+      element.props.animation = nil
+      element.props.animationDisabled = false
+      element.props.animationPass = 0
       element.reusesLayout = true
       return
     }

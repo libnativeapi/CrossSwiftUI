@@ -1399,7 +1399,8 @@ void sui_control_clip(void *control, double x, double y, double w, double h) {
   HWND hwnd = static_cast<HWND>(control);
   double scale = GetDpiForWindow(hwnd) / 96.;
   const bool visible = w > 0 && h > 0;
-  if (bool(IsWindowVisible(hwnd)) != visible)
+  const bool style_visible = (GetWindowLongPtrW(hwnd, GWL_STYLE) & WS_VISIBLE) != 0;
+  if (style_visible != visible)
     ShowWindow(hwnd, visible ? SW_SHOWNA : SW_HIDE);
   ApplyRegion(hwnd, CreateRectRgn(int(std::floor(x * scale)),
                                   int(std::floor(y * scale)),

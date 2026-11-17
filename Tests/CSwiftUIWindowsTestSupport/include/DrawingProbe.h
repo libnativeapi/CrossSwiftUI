@@ -21,6 +21,7 @@ int shadow_probe(const uint8_t *alpha, int width, int height, double inset,
                  double scale);
 int editor_resize_probe(void);
 int control_visible(void *control);
+int control_clip_width(void *control);
 #ifdef __cplusplus
 }
 #endif

@@ -74,7 +74,20 @@ public struct LayoutEngine {
   private let cache = Cache()
   private final class Pass {
     let prunes: Bool
-    init(prunes: Bool) { self.prunes = prunes }
+    let animator: LayoutAnimator?
+    let renderPass: Int
+    let now: TimeInterval
+    init(
+      prunes: Bool,
+      animator: LayoutAnimator? = nil,
+      renderPass: Int = 0,
+      now: TimeInterval = 0
+    ) {
+      self.prunes = prunes
+      self.animator = animator
+      self.renderPass = renderPass
+      self.now = now
+    }
     struct Key: Hashable {
       let id: Int
       let width: CGFloat?, height: CGFloat?
@@ -123,11 +136,21 @@ public struct LayoutEngine {
     return element.children.allSatisfy { canTranslateScroll($0, dx: dx, dy: dy) }
   }
   public func layout(root: inout Element, in size: Size) {
+    layout(root: &root, in: size, animator: nil, renderPass: 0, now: 0)
+  }
+  func layout(
+    root: inout Element,
+    in size: Size,
+    animator: LayoutAnimator?,
+    renderPass: Int,
+    now: TimeInterval
+  ) {
     var engine = self
     cache.passes += 1
     // IDs are never recycled. Reclaim obsolete proposals and snapshots in
     // bounded batches instead of rebuilding three dictionaries on every tick.
-    engine.pass = Pass(prunes: cache.passes % 8 == 0)
+    engine.pass = Pass(
+      prunes: cache.passes % 8 == 0, animator: animator, renderPass: renderPass, now: now)
     var started = Date.timeIntervalSinceReferenceDate
     engine.identify(&root)
     cache.timings["identify"] = (Date.timeIntervalSinceReferenceDate - started) * 1000
@@ -556,6 +579,8 @@ public struct LayoutEngine {
     defer {
       e.updateOverflow()
       e.hasPresentation = e.kind == .presentation || e.children.contains { $0.hasPresentation }
+      e.hasLayoutAnimation = e.hasLayoutAnimation || e.children.contains { $0.hasLayoutAnimation }
+      e.hasScopedAnimation = e.hasScopedAnimation || e.children.contains { $0.hasScopedAnimation }
       if !e.hasDynamicLayout && !e.children.isEmpty && e.layoutID != 0 {
         cache.placements[e.layoutID] = Cache.Placement(offered: offered, element: e)
       }
@@ -614,6 +639,7 @@ public struct LayoutEngine {
       }
     case .geometry:
       if let builder = e.geometryBuilder {
+        let priorMountedChild = e.children.first
         let snapshot = GeometrySnapshot(
           rect: CGRect(x: rect.minX, y: rect.minY, width: rect.width, height: rect.height),
           namedOrigins: GeometryContext.current)
@@ -626,6 +652,14 @@ public struct LayoutEngine {
             &child, inheritedForeground: e.props.foreground, inheritedDisabled: !e.props.enabled,
             inheritedOpacity: e.props.opacity, inheritedVisible: e.props.visible,
             inheritedLineLimit: e.props.lineLimit, inheritedLineSpacing: e.props.lineSpacing)
+          if let pass, let animator = pass.animator {
+            animator.applyGeometryChild(
+              &child,
+              geometryID: e.id,
+              fallbackPrevious: priorMountedChild,
+              renderPass: pass.renderPass,
+              now: pass.now)
+          }
           // Geometry content is rebuilt with its current closure and scope.
           // Reuse only layout identities when the new content measures alike.
           identify(&child, previousGeometry: cache.geometryContent[e.layoutID])
@@ -635,6 +669,8 @@ public struct LayoutEngine {
         }
         e.geometrySnapshot = snapshot
         e.hasPresentation = e.children.contains { $0.hasPresentation }
+        e.hasLayoutAnimation = e.hasLayoutAnimation || e.children.contains { $0.hasLayoutAnimation }
+        e.hasScopedAnimation = e.hasScopedAnimation || e.children.contains { $0.hasScopedAnimation }
       }
     case .grid:
       let columns = gridColumns(

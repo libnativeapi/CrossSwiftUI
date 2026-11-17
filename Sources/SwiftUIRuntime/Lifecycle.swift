@@ -71,6 +71,9 @@ final class LifecycleRegistry {
     LifecycleSnapshots.shared.versions.removeAll()
   }
 }
+struct SnapshotBox<Value> {
+  let value: Value
+}
 struct LifecycleView<Content: View, Value: Equatable>: View, _PrimitiveView {
   typealias Body = Never
   let content: Content
@@ -84,10 +87,10 @@ struct LifecycleView<Content: View, Value: Equatable>: View, _PrimitiveView {
     // Equatable values need not be Hashable. Keep a comparison snapshot without
     // publishing internal bookkeeping as an application state mutation.
     let key = StateKey(path: path, owner: ObjectIdentifier(Self.self), property: -1)
-    let snapshot = LifecycleSnapshots.shared.values[key] as? Value
-    let changed = snapshot == nil || snapshot! != value
+    let snapshot = LifecycleSnapshots.shared.values[key] as? SnapshotBox<Value>
+    let changed = snapshot == nil || snapshot!.value != value
     let version = LifecycleSnapshots.shared.versions[key, default: 0] + (changed ? 1 : 0)
-    LifecycleSnapshots.shared.values[key] = value
+    LifecycleSnapshots.shared.values[key] = SnapshotBox(value: value)
     LifecycleSnapshots.shared.versions[key] = version
     LifecycleRegistry.shared.register(
       key, value: version, appear: appear, change: { change?(value) }, disappear: disappear,
@@ -95,7 +98,34 @@ struct LifecycleView<Content: View, Value: Equatable>: View, _PrimitiveView {
     return _render(content, path: path.appending(index: 0))
   }
 }
-private final class LifecycleSnapshots {
+struct AnimationValueView<Content: View, Value: Equatable>: View, _PrimitiveView {
+  typealias Body = Never
+  let content: Content
+  let animation: Animation?
+  let value: Value
+  var body: Never { fatalError() }
+  func _makeElement(path: ViewPath) -> Element {
+    let key = StateKey(path: path, owner: ObjectIdentifier(Self.self), property: -2)
+    let snapshot = LifecycleSnapshots.shared.values[key] as? SnapshotBox<Value>
+    let changed = snapshot != nil && snapshot!.value != value
+    LifecycleSnapshots.shared.values[key] = SnapshotBox(value: value)
+    LifecycleRegistry.shared.register(
+      key, value: 0, appear: nil, change: nil, disappear: nil, task: nil)
+    var element = _render(content, path: path.appending(index: 0))
+    if changed {
+      element.props.animationPass = AnimationContext.renderPass
+      if let animation {
+        element.props.animation = animation
+        element.props.animationDisabled = false
+      } else {
+        element.props.animation = nil
+        element.props.animationDisabled = true
+      }
+    }
+    return element
+  }
+}
+final class LifecycleSnapshots {
   static let shared = LifecycleSnapshots()
   var values: [StateKey: Any] = [:]
   var versions: [StateKey: Int] = [:]

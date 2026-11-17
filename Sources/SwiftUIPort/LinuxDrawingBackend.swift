@@ -8,6 +8,7 @@ import SwiftUIRuntime
 public final class LinuxDrawingBackend: RenderBackend {
   public var tapHandler: ((NodeID) -> Void)?
   public var transactionHandler: ((() -> Void) -> Void)?
+  public var animationTickHandler: (() -> Bool)?
   public var inputHandler: ((NodeID?, Int, CGPoint, Int, EventModifiers, String) -> Bool)?
   public var interactionHandler: ((NodeID, Renderer.Interaction) -> Void)?
   public var onResize: ((SwiftUIRuntime.Size) -> Void)?
@@ -291,10 +292,17 @@ public final class LinuxDrawingBackend: RenderBackend {
     controlBranches.removeAll(keepingCapacity: true)
     modal = nil
     @discardableResult func visit(_ node: Element, animation: Animation?) -> Bool {
-      let animation = node.props.animation ?? animation
+      let animation = node.props.animationDisabled ? nil : (node.props.animation ?? animation)
       let values = LinuxDrawing.DrawingValues(node.props)
-      if let animation, animation.duration > 0, let old = prior[node.id], old != values {
-        motions[node.id] = LinuxDrawing.Motion(from: old, animation: animation, start: now + animation.delay)
+      if let old = prior[node.id], old != values {
+        if let animation, animation.duration > 0 {
+          let origin =
+            motions[node.id].flatMap { $0.isActive(at: now) ? $0.interpolated(to: old, now: now) : nil }
+            ?? old
+          motions[node.id] = LinuxDrawing.Motion(from: origin, animation: animation, start: now + animation.delay)
+        } else {
+          motions.removeValue(forKey: node.id)
+        }
       }
       next[node.id] = values
       if modal == nil, node.props.accessibilityTraits & AccessibilityTraits.isModal.rawValue != 0 {
@@ -345,17 +353,24 @@ public final class LinuxDrawingBackend: RenderBackend {
       collect(root, clip: root.frame)
     }
     if trace { log("GTK visible animations \(motionDamage.count)/\(motions.count)") }
-    if !motionDamage.isEmpty && tick == 0 {
+    if (!motionDamage.isEmpty || root.hasLayoutAnimation) && tick == 0 {
       tick = gtk_widget_add_tick_callback(canvas, { _, _, data in
         guard let data else { return 0 }
         let backend = Unmanaged<LinuxDrawingBackend>.fromOpaque(data).takeUnretainedValue()
-        let now = Date.timeIntervalSinceReferenceDate
-        for rect in backend.motionDamage.values {
-          backend.invalidateCanvas(rect)
+        if backend.root?.hasLayoutAnimation == true {
+          _ = backend.animationTickHandler?()
+        } else {
+          let now = Date.timeIntervalSinceReferenceDate
+          for rect in backend.motionDamage.values {
+            backend.invalidateCanvas(rect)
+          }
+          backend.motions = backend.motions.filter { $0.value.isActive(at: now) }
+          backend.motionDamage = backend.motionDamage.filter { backend.motions[$0.key] != nil }
         }
-        backend.motions = backend.motions.filter { $0.value.isActive(at: now) }
-        backend.motionDamage = backend.motionDamage.filter { backend.motions[$0.key] != nil }
-        if backend.motionDamage.isEmpty { backend.tick = 0; return 0 }
+        if backend.motionDamage.isEmpty && backend.root?.hasLayoutAnimation != true {
+          backend.tick = 0
+          return 0
+        }
         return 1
       }, Unmanaged.passUnretained(self).toOpaque(), nil)
     }
@@ -387,8 +402,11 @@ public final class LinuxDrawingBackend: RenderBackend {
     let visible = node.frame.intersection(clip)
     let background = props.background.flatMap { $0.opacity > 0.99 ? $0 : nil } ?? background
     let accessibilityLabel = props.accessibilityLabel.isEmpty ? accessibilityLabel : props.accessibilityLabel
-    let active = allowed && (modal == nil || inModal) && !visible.isEmpty
-    if node.kind == .textField, active || controls[node.id] != nil {
+    let modalAllowed = modal == nil || inModal
+    let blockedByPresentation = !modalAllowed || (root?.hasActivePresentation == true && !allowed)
+    let shown = props.visible && !blockedByPresentation && !visible.isEmpty
+    let active = allowed && modalAllowed && !visible.isEmpty
+    if node.kind == .textField, shown || controls[node.id] != nil {
       live.insert(node.id)
       if let existing = controls[node.id], existing.multiline != props.multiline {
         controls.removeValue(forKey: node.id)
@@ -398,8 +416,10 @@ public final class LinuxDrawingBackend: RenderBackend {
         controls[node.id] = Editor(node.id, props: props, hostView: hostView, backend: self)
       }
       if let editor = controls[node.id] {
-        if refreshContent || isNew { editor.updateContent(props, background: background, label: accessibilityLabel) }
-        editor.updatePlacement(props, visible: active ? visible : .zero)
+        var effectiveProps = props
+        effectiveProps.enabled = props.enabled && active
+        if refreshContent || isNew { editor.updateContent(effectiveProps, background: background, label: accessibilityLabel) }
+        editor.updatePlacement(effectiveProps, visible: shown ? visible : .zero)
         if props.focusRequested && active { focus = node.id }
       }
     }

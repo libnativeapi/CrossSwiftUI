@@ -28,12 +28,84 @@ public struct Font: Hashable, Sendable {
 }
 public struct Animation: Equatable, Sendable {
   public let duration: Double
+  public let x1: Double
+  public let y1: Double
+  public let x2: Double
+  public let y2: Double
   public var repeats = false, autoreverses = false
   public var delay: Double = 0
+
+  public init(
+    duration: Double,
+    x1: Double = 0.25, y1: Double = 0.1,
+    x2: Double = 0.25, y2: Double = 1.0,
+    repeats: Bool = false, autoreverses: Bool = false, delay: Double = 0
+  ) {
+    self.duration = duration
+    self.x1 = min(1, max(0, x1))
+    self.y1 = y1
+    self.x2 = min(1, max(0, x2))
+    self.y2 = y2
+    self.repeats = repeats
+    self.autoreverses = autoreverses
+    self.delay = delay
+  }
+
   public static func timingCurve(
     _ x1: Double, _ y1: Double, _ x2: Double, _ y2: Double, duration: Double
   ) -> Animation {
-    Animation(duration: duration)
+    Animation(duration: duration, x1: x1, y1: y1, x2: x2, y2: y2)
+  }
+
+  /// Evaluates the cubic-bezier timing curve at normalized time `t` in `[0, 1]`.
+  public func curveValue(at fraction: Double) -> Double {
+    if fraction <= 0 { return 0 }
+    if fraction >= 1 { return 1 }
+    if x1 == y1 && x2 == y2 { return fraction }
+    let cx = 3 * x1
+    let bx = 3 * (x2 - x1) - cx
+    let ax = 1 - cx - bx
+    let cy = 3 * y1
+    let by = 3 * (y2 - y1) - cy
+    let ay = 1 - cy - by
+    func sampleX(_ u: Double) -> Double { ((ax * u + bx) * u + cx) * u }
+    func sampleSlopeX(_ u: Double) -> Double { (3 * ax * u + 2 * bx) * u + cx }
+    func sampleY(_ u: Double) -> Double { ((ay * u + by) * u + cy) * u }
+
+    var lo = 0.0
+    var hi = 1.0
+    var u = fraction
+    for _ in 0..<8 {
+      let x = sampleX(u) - fraction
+      if abs(x) < 1e-7 { return sampleY(u) }
+      if x < 0 { lo = u } else { hi = u }
+      let slope = sampleSlopeX(u)
+      if abs(slope) < 1e-6 {
+        u = 0.5 * (lo + hi)
+      } else {
+        let next = u - x / slope
+        u = (next > lo && next < hi) ? next : 0.5 * (lo + hi)
+      }
+    }
+    for _ in 0..<12 {
+      let x = sampleX(u) - fraction
+      if abs(x) < 1e-7 { break }
+      if x < 0 { lo = u } else { hi = u }
+      u = 0.5 * (lo + hi)
+    }
+    return sampleY(u)
+  }
+
+  /// Evaluates curve progress at `now` for an animation starting at `start`
+  /// (after delay has already been added to `start`).
+  public func progress(at now: TimeInterval, start: TimeInterval) -> Double {
+    guard duration > 0 else { return 1 }
+    guard now > start else { return 0 }
+    let elapsed = (now - start) / duration
+    if !repeats && elapsed >= 1 { return 1 }
+    var fraction = repeats ? elapsed.truncatingRemainder(dividingBy: 1) : min(1, elapsed)
+    if repeats && autoreverses && Int(elapsed) % 2 == 1 { fraction = 1 - fraction }
+    return curveValue(at: fraction)
   }
 }
 @MainActor @preconcurrency public protocol ViewModifier {
@@ -193,7 +265,7 @@ extension View {
     }
   }
   public func animation<V: Equatable>(_ animation: Animation?, value: V) -> some View {
-    TransformView(content: self) { $0.props.animation = animation }
+    AnimationValueView(content: self, animation: animation, value: value)
   }
   public func onHover(perform action: @escaping (Bool) -> Void) -> some View {
     TransformView(content: self) { $0.hoverAction = action }

@@ -56,6 +56,9 @@ public protocol RenderBackend: AnyObject {
   var tapHandler: ((NodeID) -> Void)? { get set }
   /// Groups native notifications from one message turn into one render.
   var transactionHandler: ((() -> Void) -> Void)? { get set }
+  /// Advances active layout animations on display frame ticks; returns true
+  /// while layout animations remain active.
+  var animationTickHandler: (() -> Bool)? { get set }
 }
 public final class FakeBackend: RenderBackend {
   public private(set) var commands: [RenderCommand] = []
@@ -108,6 +111,10 @@ extension RenderBackend {
   public func didScroll(_ root: Element, viewport: Rect) { didScroll(root) }
   public func pointerLocation(fallback: CGPoint) -> CGPoint? { fallback }
   public var transactionHandler: ((() -> Void) -> Void)? {
+    get { nil }
+    set {}
+  }
+  public var animationTickHandler: (() -> Bool)? {
     get { nil }
     set {}
   }

@@ -48,17 +48,26 @@ final class LinuxDrawing {
       animation.repeats || now < start + animation.duration
     }
 
-    func apply(to props: inout NodeProps, now: TimeInterval) -> CGPoint {
-      let elapsed = max(0, (now - start) / animation.duration)
-      var progress = animation.repeats ? elapsed.truncatingRemainder(dividingBy: 1) : min(1, elapsed)
-      if animation.autoreverses && Int(elapsed) % 2 == 1 { progress = 1 - progress }
+    func interpolated(to target: DrawingValues, now: TimeInterval) -> DrawingValues {
+      let progress = animation.progress(at: now, start: start)
       func mix(_ from: Double, _ to: Double) -> Double { from + (to - from) * progress }
-      props.rotation = mix(from.rotation, props.rotation)
-      props.scaleX = mix(from.scaleX, props.scaleX)
-      props.scaleY = mix(from.scaleY, props.scaleY)
-      props.opacity = mix(from.opacity, props.opacity)
-      return CGPoint(x: mix(from.offsetX, props.offsetX) - props.offsetX,
-                     y: mix(from.offsetY, props.offsetY) - props.offsetY)
+      return DrawingValues(
+        rotation: mix(from.rotation, target.rotation),
+        scaleX: mix(from.scaleX, target.scaleX),
+        scaleY: mix(from.scaleY, target.scaleY),
+        opacity: mix(from.opacity, target.opacity),
+        offsetX: mix(from.offsetX, target.offsetX),
+        offsetY: mix(from.offsetY, target.offsetY))
+    }
+
+    func apply(to props: inout NodeProps, now: TimeInterval) -> CGPoint {
+      let current = interpolated(to: DrawingValues(props), now: now)
+      props.rotation = current.rotation
+      props.scaleX = current.scaleX
+      props.scaleY = current.scaleY
+      props.opacity = current.opacity
+      return CGPoint(x: current.offsetX - props.offsetX,
+                     y: current.offsetY - props.offsetY)
     }
   }
 
@@ -72,6 +81,18 @@ final class LinuxDrawing {
       opacity = props.opacity
       offsetX = props.offsetX
       offsetY = props.offsetY
+    }
+
+    init(
+      rotation: Double, scaleX: Double, scaleY: Double,
+      opacity: Double, offsetX: Double, offsetY: Double
+    ) {
+      self.rotation = rotation
+      self.scaleX = scaleX
+      self.scaleY = scaleY
+      self.opacity = opacity
+      self.offsetX = offsetX
+      self.offsetY = offsetY
     }
   }
 

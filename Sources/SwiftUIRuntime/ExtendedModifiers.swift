@@ -128,11 +128,19 @@ public struct SafeAreaRegions: OptionSet {
   public static let all = Self(rawValue: 1)
 }
 extension Animation {
-  public static func linear(duration: Double) -> Self { Self(duration: duration) }
-  public static func easeInOut(duration: Double) -> Self { Self(duration: duration) }
-  public static func easeOut(duration: Double) -> Self { Self(duration: duration) }
-  public static func easeIn(duration: Double) -> Self { Self(duration: duration) }
-  public static let `default` = Self(duration: 0.25)
+  public static func linear(duration: Double) -> Self {
+    Self(duration: duration, x1: 0, y1: 0, x2: 1, y2: 1)
+  }
+  public static func easeInOut(duration: Double) -> Self {
+    Self(duration: duration, x1: 0.42, y1: 0, x2: 0.58, y2: 1)
+  }
+  public static func easeOut(duration: Double) -> Self {
+    Self(duration: duration, x1: 0, y1: 0, x2: 0.58, y2: 1)
+  }
+  public static func easeIn(duration: Double) -> Self {
+    Self(duration: duration, x1: 0.42, y1: 0, x2: 1, y2: 1)
+  }
+  public static let `default` = Self(duration: 0.25, x1: 0.25, y1: 0.1, x2: 0.25, y2: 1)
   public func repeatForever(autoreverses: Bool = true) -> Self {
     var animation = self
     animation.repeats = true
@@ -149,11 +157,20 @@ public func withAnimation<Result>(_ animation: Animation? = .default, _ body: ()
   -> Result
 {
   let old = AnimationContext.current
+  let oldExplicit = AnimationContext.isExplicit
   AnimationContext.current = animation
-  defer { AnimationContext.current = old }
+  AnimationContext.isExplicit = true
+  defer {
+    AnimationContext.current = old
+    AnimationContext.isExplicit = oldExplicit
+  }
   return body()
 }
-enum AnimationContext { static var current: Animation? }
+enum AnimationContext {
+  static var current: Animation?
+  static var isExplicit = false
+  static var renderPass = 0
+}
 public enum TextAlignment: Equatable { case leading, center, trailing }
 extension View {
   public func scaledToFill() -> some View { aspectRatio(contentMode: .fill) }

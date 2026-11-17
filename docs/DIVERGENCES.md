@@ -97,8 +97,10 @@ their view disappears or task id changes. NativeAPI's Swift binding pumps Swift'
 main Dispatch queue alongside the Win32, GTK and OpenHarmony UI loops.
 
 Both backends interpolate rotation, scale, opacity and offset, including repeat and
-delay. Timing curves currently interpolate linearly. Layout/color interpolation,
-entry/exit transitions and exact presentation-time hit geometry are incomplete.
+delay, and the runtime interpolates animated layout sizing (frames, padding and
+spacing) across `withAnimation` and `.animation(_:value:)` transactions using
+cubic-bezier timing curves. Color interpolation, entry/exit transitions and
+presentation-time transform hit geometry remain incomplete.
 Reduced motion can be supplied through EnvironmentValues.
 
 WindowGroup supplies one native window and defaultSize. There is no multi-window

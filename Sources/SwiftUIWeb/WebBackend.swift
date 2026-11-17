@@ -3,12 +3,14 @@ import SwiftUIRuntime
 
 final class WebBackend: RenderBackend {
   var tapHandler: ((NodeID) -> Void)?
+  var animationTickHandler: (() -> Bool)?
   var needsRenderCommands: Bool { false }
 
   let document: JSObject
   let host: JSObject
   private let measureContext: JSObject
   private var renderScheduled = false
+  private var animationScheduled = false
   private var resizeObserver: JSObject?
 
   struct Node {
@@ -216,6 +218,16 @@ final class WebBackend: RenderBackend {
     if let focus, document.activeElement.object != focus {
       let options: JSObject = ["preventScroll": .boolean(true)]
       _ = focus.focus!(options)
+    }
+    if root.hasLayoutAnimation && !animationScheduled {
+      animationScheduled = true
+      _ = JSObject.global.requestAnimationFrame!(
+        JSOneshotClosure { [weak self] _ in
+          guard let self else { return .undefined }
+          self.animationScheduled = false
+          _ = self.animationTickHandler?()
+          return .undefined
+        })
     }
   }
 

@@ -13,6 +13,7 @@
 
     public var tapHandler: ((NodeID) -> Void)?
     public var transactionHandler: ((() -> Void) -> Void)?
+    public var animationTickHandler: (() -> Bool)?
     public var interactionHandler: ((NodeID, Renderer.Interaction) -> Void)?
     public var inputHandler: ((NodeID?, Int, CGPoint, Int, EventModifiers, String) -> Bool)?
     private let schedulesUpdates: Bool
@@ -55,12 +56,37 @@
         offsetX = p.offsetX
         offsetY = p.offsetY
       }
+      init(
+        rotation: Double, scaleX: Double, scaleY: Double,
+        opacity: Double, offsetX: Double, offsetY: Double
+      ) {
+        self.rotation = rotation
+        self.scaleX = scaleX
+        self.scaleY = scaleY
+        self.opacity = opacity
+        self.offsetX = offsetX
+        self.offsetY = offsetY
+      }
     }
     private struct Motion {
       let from: AnimatedValues
       let frame: Rect
       let animation: Animation
       let start: TimeInterval
+      func isActive(at now: TimeInterval) -> Bool {
+        animation.repeats || now < start + animation.duration
+      }
+      func interpolated(to target: AnimatedValues, at now: TimeInterval) -> AnimatedValues {
+        let fraction = animation.progress(at: now, start: start)
+        func mix(_ a: Double, _ b: Double) -> Double { a + (b - a) * fraction }
+        return AnimatedValues(
+          rotation: mix(from.rotation, target.rotation),
+          scaleX: mix(from.scaleX, target.scaleX),
+          scaleY: mix(from.scaleY, target.scaleY),
+          opacity: mix(from.opacity, target.opacity),
+          offsetX: mix(from.offsetX, target.offsetX),
+          offsetY: mix(from.offsetY, target.offsetY))
+      }
     }
     private var motions: [NodeID: Motion] = [:]
     private var previous: [NodeID: AnimatedValues] = [:]
@@ -148,7 +174,9 @@
               return 1
             }
             if event == 8 {
-              if !backend.motions.isEmpty { _ = backend.content.requestUpdate() }
+              if !backend.motions.isEmpty || backend.root?.hasLayoutAnimation == true {
+                _ = backend.content.requestUpdate()
+              }
               return 0
             }
             // Preserve press/key/text ordering relative to earlier pointer input.
@@ -169,7 +197,11 @@
             return 0
           }
           if event == 8 {
-            backend.tick()
+            if backend.root?.hasLayoutAnimation == true {
+              _ = backend.animationTickHandler?()
+            } else {
+              backend.tick()
+            }
             return 0
           }
           if event == 10, let point = backend.pointerLocation(fallback: .zero) {
@@ -250,12 +282,20 @@
         hasFocusRequest = hasFocusRequest || node.props.focusRequested
         let values = AnimatedValues(node.props)
         current[node.id] = values
-        let animation = node.props.animation ?? inherited
-        if let old = previous[node.id], let animation, animation.duration > 0,
-          old != values
-        {
-          motions[node.id] = Motion(
-            from: old, frame: node.frame, animation: animation, start: now + animation.delay)
+        let animation = node.props.animationDisabled ? nil : (node.props.animation ?? inherited)
+        if let old = previous[node.id], old != values {
+          if let animation, animation.duration > 0 {
+            let origin: AnimatedValues
+            if let existing = motions[node.id], existing.isActive(at: now) {
+              origin = existing.interpolated(to: old, at: now)
+            } else {
+              origin = old
+            }
+            motions[node.id] = Motion(
+              from: origin, frame: node.frame, animation: animation, start: now + animation.delay)
+          } else {
+            motions.removeValue(forKey: node.id)
+          }
         }
         node.children.forEach { animate($0, inherited: animation) }
       }
@@ -295,6 +335,9 @@
       sui_surface_begin(surface)
       lastTimings["prepare"] = (Date.timeIntervalSinceReferenceDate - started) * 1000
       publish(root, on: surface)
+      if schedulesUpdates && !deliveringUpdate && (!motions.isEmpty || root.hasLayoutAnimation) {
+        _ = content.requestUpdate()
+      }
     }
 
     public func didScroll(_ root: Element) {
@@ -366,6 +409,7 @@
       return CGPoint(x: x, y: y)
     }
     public func nativeButton(_ id: NodeID) -> NativeAPI.Button? { buttons[id]?.view }
+    public func nativeTextField(_ id: NodeID) -> NativeAPI.TextField? { edits[id]?.view }
     public func advanceFocus(from id: NodeID?, backward: Bool = false) {
       if let surface {
         let current = id.flatMap { buttons[$0]?.view.nativeObject ?? edits[$0]?.view.nativeObject }
@@ -425,8 +469,14 @@
       let render = pendingRender
       pendingRender = nil
       render?()
-      if publications == publicationCount { tick() }
-      if !motions.isEmpty { _ = content.requestUpdate() }
+      if publications == publicationCount {
+        if root?.hasLayoutAnimation == true {
+          _ = animationTickHandler?()
+        } else {
+          tick()
+        }
+      }
+      if !motions.isEmpty || root?.hasLayoutAnimation == true { _ = content.requestUpdate() }
     }
     private func enqueue(_ action: @escaping () -> Void) {
       let schedule = pendingEvents.isEmpty
@@ -440,16 +490,13 @@
     private func tick() {
       // The C bridge services Dispatch without consuming NativeAPI WM_QUIT.
       guard !motions.isEmpty, let surface, let root else { return }
+      let hadVisible = motions.values.contains(where: {
+        let visible = $0.frame.intersection(root.frame)
+        return visible.width > 0 && visible.height > 0
+      })
       let now = Date.timeIntervalSinceReferenceDate
-      motions = motions.filter {
-        $0.value.animation.repeats || now < $0.value.start + $0.value.animation.duration
-      }
-      guard
-        motions.values.contains(where: {
-          let visible = $0.frame.intersection(root.frame)
-          return visible.width > 0 && visible.height > 0
-        })
-      else { return }
+      motions = motions.filter { $0.value.isActive(at: now) }
+      guard hadVisible else { return }
       sui_surface_begin(surface)
       draw(root, clip: root.frame)
       sui_surface_end(surface)
@@ -460,14 +507,18 @@
       geometryOnly: Bool = false
     ) {
       let allowed = allowed && node.props.hitTesting
-      let controlAllowed = allowed && (modalControls?.contains(node.id) ?? true)
+      let modalAllowed = modalControls?.contains(node.id) ?? true
+      let controlAllowed = allowed && modalAllowed
+      let blockedByPresentation =
+        !modalAllowed || (root?.hasActivePresentation == true && !allowed)
       let clip = node.props.clipped ? clip.intersection(node.frame) : clip
       var nativeClip = nativeClip.map { node.props.clipped ? $0.intersection(node.frame) : $0 }
       let background = node.props.background.flatMap { $0.opacity > 0.99 ? $0 : nil } ?? background
       let wantsFocus = desiredFocus == node.id
       let viewport = node.frame.intersection(clip)
-      let inViewport =
-        node.props.visible && controlAllowed && viewport.width > 0 && viewport.height > 0
+      let shownInViewport =
+        node.props.visible && !blockedByPresentation && viewport.width > 0 && viewport.height > 0
+      let inViewport = shownInViewport && controlAllowed
       // Keep child HWND coordinates stable while the ScrollView's content moves.
       // The shared framebuffer remains in surface coordinates at native DPI.
       let grouped = node.kind == .scroll && node.children.first != nil
@@ -542,7 +593,7 @@
           button.focus()
         }
       }
-      if node.kind == .textField, let surface, edits[node.id] != nil || inViewport {
+      if node.kind == .textField, let surface, edits[node.id] != nil || shownInViewport {
         if let existing = edits[node.id],
           existing.multiline != node.props.multiline || existing.secure != node.props.secure
         {
@@ -623,13 +674,13 @@
                 height: max(lineHeight, r.maxY - editY))
             }
           }
-          if inViewport || nativeClip != nil {
+          if shownInViewport || nativeClip != nil {
             sui_control_frame(
               surface, handle, editRect.minX, editRect.minY, editRect.width, editRect.height)
           }
           sui_edit_order(surface, handle)
           sui_control_opacity(handle, p.opacity)
-          let visible = inViewport ? editRect.intersection(nativeClip ?? clip) : .zero
+          let visible = shownInViewport ? editRect.intersection(nativeClip ?? clip) : .zero
           sui_control_clip(
             handle, visible.minX - editRect.minX, visible.minY - editRect.minY,
             visible.width, visible.height)
@@ -670,18 +721,14 @@
       let r = node.frame
       var translated = false
       if let motion = motions[node.id] {
-        let elapsed =
-          max(0, Date.timeIntervalSinceReferenceDate - motion.start) / motion.animation.duration
-        var fraction =
-          motion.animation.repeats ? elapsed.truncatingRemainder(dividingBy: 1) : min(1, elapsed)
-        if motion.animation.autoreverses && Int(elapsed) % 2 == 1 { fraction = 1 - fraction }
-        func mix(_ from: Double, _ to: Double) -> Double { from + (to - from) * fraction }
-        p.rotation = mix(motion.from.rotation, p.rotation)
-        p.scaleX = mix(motion.from.scaleX, p.scaleX)
-        p.scaleY = mix(motion.from.scaleY, p.scaleY)
-        p.opacity = mix(motion.from.opacity, p.opacity)
-        let dx = mix(motion.from.offsetX, p.offsetX) - p.offsetX
-        let dy = mix(motion.from.offsetY, p.offsetY) - p.offsetY
+        let now = Date.timeIntervalSinceReferenceDate
+        let current = motion.interpolated(to: AnimatedValues(p), at: now)
+        p.rotation = current.rotation
+        p.scaleX = current.scaleX
+        p.scaleY = current.scaleY
+        p.opacity = current.opacity
+        let dx = current.offsetX - p.offsetX
+        let dy = current.offsetY - p.offsetY
         if dx != 0 || dy != 0 {
           sui_surface_translation(surface, dx, dy)
           translated = true

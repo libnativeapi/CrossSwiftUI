@@ -70,6 +70,14 @@ int control_visible(void *control) {
   return (GetWindowLongPtrW(static_cast<HWND>(control), GWL_STYLE) & WS_VISIBLE) != 0;
 }
 
+int control_clip_width(void *control) {
+  RECT box{};
+  const int kind = GetWindowRgnBox(static_cast<HWND>(control), &box);
+  if (kind == ERROR || kind == NULLREGION)
+    return 0;
+  return int(box.right - box.left);
+}
+
 int editor_resize_probe(void) {
   HWND host = CreateWindowExW(0, L"STATIC", L"Editor resize regression",
                               WS_OVERLAPPEDWINDOW, 0, 0, 1000, 500, nullptr,

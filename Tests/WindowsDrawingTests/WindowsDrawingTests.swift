@@ -53,6 +53,73 @@ final class WindowsDrawingTests: XCTestCase {
                                  modifiers: .option))
     XCTAssertEqual(model.clicks, 2)
   }
+  func testSidebarCollapseAnimatesAndClipsNativeTextFieldWithoutHidingEarly() throws {
+    struct SidebarHost: SwiftUIRuntime.View {
+      @State private var open = true
+      @State private var query = "Filter"
+      var body: some SwiftUIRuntime.View {
+        SwiftUIRuntime.HStack(spacing: 0) {
+          SwiftUIRuntime.VStack(spacing: 0) {
+            SwiftUIRuntime.TextField("Search", text: $query)
+              .padding(8)
+              .frame(width: 200, height: 32)
+          }
+          .frame(width: 220, height: 200)
+          .frame(width: open ? 220 : 0, alignment: .leading)
+          .clipped()
+          .allowsHitTesting(open)
+
+          SwiftUIRuntime.Button("Toggle") {
+            SwiftUIRuntime.withAnimation(.timingCurve(0.2, 0, 0, 1, duration: 0.2)) {
+              open.toggle()
+            }
+          }
+          .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+      }
+    }
+    WindowsDrawingBackend.prepareApplication()
+    _ = NativeAPI.Application.shared.isRunning()
+    let window = try XCTUnwrap(NativeAPI.Window.create())
+    let backend = try XCTUnwrap(WindowsDrawingBackend(window: window))
+    var now = 50.0
+    let renderer = Renderer(
+      backend: backend, root: AnyView(SidebarHost()), size: .init(width: 500, height: 200))
+    renderer.clock = { now }
+    renderer.mount()
+
+    func findKind(_ kind: ElementKind, in node: Element) -> NodeID? {
+      if node.kind == kind { return node.id }
+      return node.children.lazy.compactMap { findKind(kind, in: $0) }.first
+    }
+    let tree = try XCTUnwrap(renderer.tree)
+    let editID = try XCTUnwrap(findKind(.textField, in: tree))
+    let buttonID = try XCTUnwrap(findKind(.button, in: tree))
+    let field = try XCTUnwrap(backend.nativeTextField(editID))
+    let editHandle = try XCTUnwrap(field.nativeObject)
+    let fullClipWidth = control_clip_width(editHandle)
+    XCTAssertEqual(control_visible(editHandle), 1)
+    XCTAssertGreaterThan(fullClipWidth, 0)
+
+    renderer.performTap(buttonID)
+    XCTAssertTrue(renderer.hasActiveAnimations)
+    // Even with `.allowsHitTesting(false)` during collapse, the native EDIT
+    // stays visible and progressively clips against the shrinking sidebar edge.
+    XCTAssertEqual(control_visible(editHandle), 1)
+    XCTAssertFalse(field.isEnabled)
+
+    now = 50.05
+    XCTAssertTrue(renderer.stepAnimations())
+    let midClipWidth = control_clip_width(editHandle)
+    XCTAssertEqual(control_visible(editHandle), 1)
+    XCTAssertGreaterThan(midClipWidth, 0)
+    XCTAssertLessThan(midClipWidth, fullClipWidth)
+
+    now = 50.25
+    XCTAssertFalse(renderer.stepAnimations())
+    XCTAssertEqual(control_visible(editHandle), 0)
+    XCTAssertEqual(control_clip_width(editHandle), 0)
+  }
   func testResizingMultilineEditorClearsPixelsExposedBySidebarCollapse() {
     WindowsDrawingBackend.prepareApplication()
     XCTAssertEqual(editor_resize_probe(), 0,
