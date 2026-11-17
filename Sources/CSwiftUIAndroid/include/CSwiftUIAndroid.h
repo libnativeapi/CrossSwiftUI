@@ -1,0 +1,25 @@
+#pragma once
+
+#include <jni.h>
+
+typedef JNIEnv *SwiftUIJNIEnvironment;
+
+static inline jstring swiftui_android_string(JNIEnv *env, const jchar *text, jsize length) {
+  return (*env)->NewString(env, text, length);
+}
+
+static inline jmethodID swiftui_android_text_measurer(JNIEnv *env, jobject host) {
+  jclass type = (*env)->GetObjectClass(env, host);
+  jmethodID method = (*env)->GetMethodID(env, type, "measureText", "(Ljava/lang/String;DLjava/lang/String;I)J");
+  (*env)->DeleteLocalRef(env, type);
+  return method;
+}
+
+static inline jlong swiftui_android_measure_text(
+    JNIEnv *env, jobject host, jmethodID method, jstring text, jdouble size,
+    jstring family, jint weight) {
+  jlong measured = (*env)->CallLongMethod(env, host, method, text, size, family, weight);
+  (*env)->DeleteLocalRef(env, text);
+  (*env)->DeleteLocalRef(env, family);
+  return measured;
+}

@@ -9,7 +9,8 @@ See [DIVERGENCES.md](DIVERGENCES.md) for rendering and state semantics.
 
 Windows and Linux use the shared runtime with platform drawing and native
 controls. macOS applications use Apple's SwiftUI, while the port's runtime
-tests can run on macOS.
+tests can run on macOS. The [Android compatibility plan](ANDROID.md) lists
+the first Android host's supported subset and entry point.
 
 | symbol | status | behavior |
 |---|---|---|
@@ -65,7 +66,7 @@ tests can run on macOS.
 | `Scene` | partial | one WindowGroup |
 | `WindowGroup` | partial | one window, defaultSize and resize events |
 | `@main` | supported | App.main() runner |
-| `SwiftUI` module | supported | facade on Windows and Linux only |
+| `SwiftUI` module | supported | facade on Windows, Linux, WebAssembly and Android |
 
 ## Additional drawing backend capabilities
 

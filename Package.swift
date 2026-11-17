@@ -11,6 +11,7 @@ import PackageDescription
 //                   No nativeapi dependency, so it builds and tests on macOS.
 //   SwiftUIPort     the nativeapi backend and app/window integration.
 //   SwiftUIWeb      the WebAssembly backend and browser integration.
+//   SwiftUIAndroid  the Android Activity host and JNI integration.
 //   SwiftUI         the user-facing facade (`import SwiftUI`).
 //
 // The desktop macOS build contains SwiftUIRuntime, its tests, and Counter
@@ -21,9 +22,11 @@ import PackageDescription
 // ../nativeapi/bindings/swift (see README "Requirements"). It is intentionally
 // a path dependency: this project is not published to a package registry.
 
-// SwiftPM evaluates the manifest on the host. Select the browser dependency
-// graph explicitly so a cross-build never resolves desktop SDK dependencies.
-let buildForWeb = ProcessInfo.processInfo.environment["SWIFTUI_PORT_WEB"] == "1"
+// SwiftPM evaluates the manifest on the host. Select the cross-build graph
+// explicitly so it never resolves desktop SDK dependencies.
+let buildForAndroid = ProcessInfo.processInfo.environment["SWIFTUI_PORT_ANDROID"] == "1"
+let buildForWeb = !buildForAndroid && ProcessInfo.processInfo.environment["SWIFTUI_PORT_WEB"] == "1"
+let buildForDesktop = !buildForWeb && !buildForAndroid
 var packageDependencies: [Package.Dependency] = []
 if buildForWeb {
   packageDependencies = [
@@ -31,7 +34,7 @@ if buildForWeb {
   ]
 }
 #if !os(macOS)
-if !buildForWeb {
+if buildForDesktop {
   packageDependencies = [
     .package(
       name: "NativeAPI",
@@ -51,7 +54,7 @@ var targets: [Target] = [
 ]
 
 #if os(Windows)
-if !buildForWeb {
+if buildForDesktop {
   targets.append(
     .target(
       name: "CSwiftUIWindows", dependencies: [.product(name: "CNativeAPI", package: "NativeAPI")],
@@ -70,7 +73,7 @@ let drawingDependencies: [Target.Dependency] = ["CSwiftUIWindows"]
 #elseif !os(macOS)
 let drawingDependencies: [Target.Dependency] = []
 #if os(Linux)
-if !buildForWeb {
+if buildForDesktop {
   targets.append(.testTarget(name: "LinuxDrawingTests", dependencies: ["SwiftUIPort"]))
 }
 #endif
@@ -80,6 +83,20 @@ var products: [Product] = [
   .library(name: "SwiftUIRuntime", targets: ["SwiftUIRuntime"])
 ]
 var counterDependencies: [Target.Dependency] = []
+if buildForAndroid {
+  targets += [
+    .target(name: "CSwiftUIAndroid"),
+    .target(name: "SwiftUIAndroid", dependencies: ["SwiftUIRuntime", "CSwiftUIAndroid"], exclude: ["Kotlin"]),
+    .target(name: "SwiftUI", dependencies: ["SwiftUIRuntime", "SwiftUIAndroid"]),
+    .target(
+      name: "AndroidCounter", dependencies: ["SwiftUI", "CSwiftUIAndroid"],
+      path: "Examples/Counter", exclude: ["CounterApp.swift"])
+  ]
+  products += [
+    .library(name: "SwiftUI", targets: ["SwiftUI"]),
+    .library(name: "AndroidCounter", type: .dynamic, targets: ["AndroidCounter"]),
+  ]
+}
 if buildForWeb {
   targets += [
     .target(
@@ -97,7 +114,7 @@ if buildForWeb {
 }
 
 #if !os(macOS)
-if !buildForWeb {
+if buildForDesktop {
   targets += [
     .target(
       name: "SwiftUIPort",
@@ -119,25 +136,28 @@ if !buildForWeb {
 }
 #endif
 
-targets.append(
-  .executableTarget(
-    name: "Counter",
-    dependencies: counterDependencies,
-    path: "Examples/Counter",
-    linkerSettings: [
-      // The WASI linker defaults to a 64 KiB stack. Debug view evaluation can
-      // exceed it before the first frame has been mounted.
-      .unsafeFlags(["-Xlinker", "-z", "-Xlinker", "stack-size=16777216"], .when(platforms: [.wasi]))
-    ]
+if !buildForAndroid {
+  targets.append(
+    .executableTarget(
+      name: "Counter",
+      dependencies: counterDependencies,
+      path: "Examples/Counter",
+      exclude: ["AndroidCounterHost.swift"],
+      linkerSettings: [
+        // The WASI linker defaults to a 64 KiB stack. Debug view evaluation can
+        // exceed it before the first frame has been mounted.
+        .unsafeFlags(["-Xlinker", "-z", "-Xlinker", "stack-size=16777216"], .when(platforms: [.wasi]))
+      ]
+    )
   )
-)
+  products.append(.executable(name: "Counter", targets: ["Counter"]))
+}
 targets.append(
   .testTarget(
     name: "SwiftUIRuntimeTests",
     dependencies: ["SwiftUIRuntime"]
   )
 )
-products.append(.executable(name: "Counter", targets: ["Counter"]))
 let package = Package(
   name: "SwiftUIPort",
   platforms: [.macOS(.v11)],

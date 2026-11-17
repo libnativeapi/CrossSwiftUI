@@ -104,6 +104,7 @@ public struct LayoutEngine {
     self.metrics = metrics
     self.textMeasurer = textMeasurer
   }
+  package func invalidateMeasurements() { cache.reset() }
   public func measuredSize(of element: Element) -> Size { measure(element) }
   public func sizeThatFits(_ element: Element, proposal: ProposedViewSize) -> CGSize {
     let s = measure(element, proposal)

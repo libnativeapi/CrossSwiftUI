@@ -2,11 +2,11 @@
 
 **Unofficial; not affiliated with Apple.**
 
-SwiftUI's declarative API shape for Windows, Linux and the browser. Desktop builds use
-[nativeapi](https://github.com/libnativeapi/nativeapi), and Web builds use WebAssembly and
-browser controls. This is an independent implementation, not a
-port of Apple's SwiftUI source, and it does not try to reproduce SwiftUI's
-renderer.
+SwiftUI's declarative API shape for Windows, Linux, the browser, and an
+initial Android host. Desktop builds use [nativeapi](https://github.com/libnativeapi/nativeapi),
+Web builds use WebAssembly and browser controls, and the Android host renders
+the shared runtime's controls with Jetpack Compose. SwiftUIPort is an
+independent implementation.
 
 ```swift
 import SwiftUI
@@ -43,8 +43,8 @@ struct CounterView: View {
 ```
 
 That program is checked in as [`Examples/Counter`](Examples/Counter/CounterApp.swift).
-The same source builds for Windows, Linux and WebAssembly. Desktop macOS
-builds compile it against Apple's SwiftUI.
+The same view source builds for Windows, Linux, WebAssembly, and Android.
+Desktop macOS builds compile it against Apple's SwiftUI.
 
 ## What this is
 
@@ -167,15 +167,25 @@ executable. Use [Web/index.html](Web/index.html) as a host page. For deeply
 nested views in debug builds, use the WASI stack size linker setting on
 Counter's executable target in [Package.swift](Package.swift).
 
+## Build for Android
+
+The [Android Counter example](Examples/AndroidCounter/README.md) builds an APK
+with the official Swift SDK for Android and Gradle. The Activity hosts the
+same `CounterView` with Compose Material 3 text and buttons. See the
+[Android compatibility plan](docs/ANDROID.md) for the supported subset and
+upcoming milestones.
+
 ## Repository layout
 
 ```
 Sources/SwiftUIRuntime/   view protocol, element tree, layout, diff, state
 Sources/SwiftUIPort/      Windows and Linux drawing backends, app runner
 Sources/SwiftUIWeb/       DOM renderer and WebAssembly app runner
+Sources/SwiftUIAndroid/   Compose host and Swift renderer integration
 Sources/CSwiftUIWindows/  generic GDI+ display list and native button bridge
 Sources/SwiftUI/          facade: `import SwiftUI`
 Examples/Counter/         the README program
+Examples/AndroidCounter/  Android Activity, APK build and smoke test
 Web/                      browser entry page
 Tests/SwiftUIRuntimeTests FakeBackend assertions for layout, diff and state
 docs/                     architecture, compatibility, divergences

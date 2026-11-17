@@ -11,6 +11,24 @@ final class LayoutTests: XCTestCase {
     XCTAssertEqual(tree.frame.height, metrics.lineHeight)
   }
 
+  func testUpdatedTextMetricsReflowTheSameViewport() {
+    let viewport = Size(width: 100, height: 100)
+    var width = 20.0
+    let renderer = Renderer(
+      backend: FakeBackend(), root: AnyView(VStack { Text("Label") }), size: viewport,
+      layoutEngine: LayoutEngine(textMeasurer: { _, _ in Size(width: width, height: 20) }))
+    renderer.mount()
+    let label = renderer.tree?.children.first
+    XCTAssertEqual(label?.frame, Rect(x: 40, y: 0, width: 20, height: 20))
+
+    width = 40
+    renderer.resize(to: viewport, invalidateMeasurements: true)
+
+    let resized = renderer.tree?.children.first
+    XCTAssertEqual(resized?.id, label?.id)
+    XCTAssertEqual(resized?.frame, Rect(x: 30, y: 0, width: 40, height: 20))
+  }
+
   func testVStackMeasuresAndPlacesChildren() {
     let tree = makeTree(
       VStack(alignment: .leading, spacing: 4) {

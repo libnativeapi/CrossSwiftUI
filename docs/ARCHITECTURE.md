@@ -7,14 +7,17 @@
 - `SwiftUIRuntime`: platform-independent view values, builders, scoped
   environment, state, element tree, layout and diff. No native API imports.
 - `SwiftUIPort`: nativeapi window/application lifecycle and platform backends.
+- `SwiftUIWeb`: WebAssembly app hosting and a DOM renderer.
+- `SwiftUIAndroid`: Jetpack Compose hosting and a JNI bridge.
 - `CSwiftUIWindows`: generic Win32/GDI+ drawing, text measurement, edit and button
   painting, focus and tooltip bridge. Owns no application design tokens,
   components or theme recipes. Borrows the window/button HWNDs owned by nativeapi and owns EDIT children.
-- `SwiftUI`: non-macOS facade exporting the two Swift modules.
+- `SwiftUI`: facade exporting the shared runtime and selected backend.
 
 macOS builds runtime tests and the Counter example against Apple's SwiftUI.
-Windows/Linux use the facade. A host library owns its own components and
-styles; the compatibility layer implements only generic SwiftUI concepts.
+Windows, Linux, WebAssembly and Android use the facade. A host library owns
+its own components and styles. See [ANDROID.md](ANDROID.md) for the Activity
+lifecycle and Android milestones.
 
 ## Render pass
 

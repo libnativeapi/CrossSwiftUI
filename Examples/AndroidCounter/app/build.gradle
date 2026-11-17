@@ -1,0 +1,48 @@
+plugins {
+    id 'com.android.application' version '9.0.1'
+    id 'org.jetbrains.kotlin.plugin.compose' version '2.2.10'
+}
+
+def swiftLibraries = layout.buildDirectory.dir('generated/swift-jni')
+def abis = providers.gradleProperty('androidAbis').orElse('arm64-v8a,x86_64').get().split(',')
+
+android {
+    namespace = 'dev.swiftuiport.android.counter'
+    compileSdk = 36
+
+    defaultConfig {
+        applicationId = 'dev.swiftuiport.android.counter'
+        minSdk = 23
+        targetSdk = 36
+        ndk.abiFilters.addAll(abis)
+    }
+
+    compileOptions {
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
+    }
+
+    buildFeatures {
+        compose = true
+    }
+
+    sourceSets.main {
+        kotlin.srcDir '../../../Sources/SwiftUIAndroid/Kotlin'
+        jniLibs.srcDir swiftLibraries.get().asFile
+    }
+}
+
+dependencies {
+    implementation platform('androidx.compose:compose-bom:2026.03.01')
+    implementation 'androidx.compose.material3:material3'
+    implementation 'androidx.activity:activity-compose:1.11.0'
+}
+
+def buildSwift = tasks.register('buildSwift', Exec) {
+    workingDir rootProject.projectDir
+    commandLine 'bash', 'build-swift.sh', swiftLibraries.get().asFile.absolutePath, *abis
+}
+
+tasks.named('preBuild') {
+    dependsOn buildSwift
+}

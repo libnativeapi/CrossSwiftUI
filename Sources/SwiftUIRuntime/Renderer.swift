@@ -126,7 +126,15 @@ import Foundation
 
   /// Updates the available content area and re-renders if it changed.
   public func resize(to size: Size) {
-    guard size != contentSize else { return }
+    resize(to: size, invalidateMeasurements: false)
+  }
+
+  package func resize(to size: Size, invalidateMeasurements: Bool) {
+    guard size != contentSize || invalidateMeasurements else { return }
+    if invalidateMeasurements {
+      layoutEngine.invalidateMeasurements()
+      evaluations.invalidateAll()
+    }
     contentSize = size
     pendingScroll = nil
     scheduleRender()
