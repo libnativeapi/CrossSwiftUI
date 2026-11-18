@@ -3,6 +3,9 @@ import Foundation
 import NativeAPI
 import Observation
 import SwiftUIRuntime
+#if !os(macOS)
+  import Combine
+#endif
 
 // MARK: - Hosted NSView Bridge Protocols
 
@@ -561,3 +564,37 @@ internal func installAssetResolversOnce() {
     VectorImage.hasSymbol(symbolName)
   }
 }
+
+#if !os(macOS)
+  private final class _WinCombineCancellableBox {
+    var cancellable: AnyCancellable?
+  }
+
+  private struct _WinOnReceiveView<Content: SwiftUIRuntime.View, P: Combine.Publisher>: SwiftUIRuntime.View
+  where P.Failure == Never {
+    let content: Content
+    let publisher: P
+    let action: (P.Output) -> Void
+    @State private var box = _WinCombineCancellableBox()
+
+    var body: some SwiftUIRuntime.View {
+      content
+        .onAppear {
+          box.cancellable = publisher.sink(receiveValue: action)
+        }
+        .onDisappear {
+          box.cancellable?.cancel()
+          box.cancellable = nil
+        }
+    }
+  }
+
+  extension SwiftUIRuntime.View {
+    public func onReceive<P: Combine.Publisher>(
+      _ publisher: P,
+      perform action: @escaping (P.Output) -> Void
+    ) -> some SwiftUIRuntime.View where P.Failure == Never {
+      _WinOnReceiveView(content: self, publisher: publisher, action: action)
+    }
+  }
+#endif

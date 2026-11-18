@@ -2,6 +2,7 @@
 //
 // Unofficial; not affiliated with Apple.
 
+@_exported import Foundation
 @_exported import SwiftUIRuntime
 #if os(WASI)
   @_exported import SwiftUIWeb

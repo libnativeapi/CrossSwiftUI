@@ -14,6 +14,10 @@ public struct Binding<Value> {
     self.setter = set
   }
 
+  public init(projectedValue: Binding<Value>) {
+    self = projectedValue
+  }
+
   public var wrappedValue: Value {
     get { getter() }
     nonmutating set { setter(newValue) }
@@ -36,3 +40,53 @@ public struct Binding<Value> {
     Binding(get: { value }, set: { _ in })
   }
 }
+
+extension Binding: Identifiable where Value: Identifiable {
+  public var id: Value.ID { wrappedValue.id }
+}
+
+extension Binding: Sequence where Value: MutableCollection {
+  public typealias Element = Binding<Value.Element>
+  public typealias Iterator = IndexingIterator<Binding<Value>>
+}
+
+extension Binding: Collection where Value: MutableCollection {
+  public typealias Index = Value.Index
+  public typealias Indices = Value.Indices
+
+  public var startIndex: Value.Index { wrappedValue.startIndex }
+  public var endIndex: Value.Index { wrappedValue.endIndex }
+  public var indices: Value.Indices { wrappedValue.indices }
+
+  public func index(after i: Value.Index) -> Value.Index {
+    wrappedValue.index(after: i)
+  }
+
+  public func formIndex(after i: inout Value.Index) {
+    wrappedValue.formIndex(after: &i)
+  }
+
+  public subscript(position: Value.Index) -> Binding<Value.Element> {
+    Binding<Value.Element>(
+      get: { wrappedValue[position] },
+      set: {
+        var copy = wrappedValue
+        copy[position] = $0
+        wrappedValue = copy
+      })
+  }
+}
+
+extension Binding: BidirectionalCollection
+where Value: BidirectionalCollection & MutableCollection {
+  public func index(before i: Value.Index) -> Value.Index {
+    wrappedValue.index(before: i)
+  }
+
+  public func formIndex(before i: inout Value.Index) {
+    wrappedValue.formIndex(before: &i)
+  }
+}
+
+extension Binding: RandomAccessCollection
+where Value: MutableCollection & RandomAccessCollection {}

@@ -30,6 +30,18 @@ public enum ViewBuilder {
     content
   }
 
+  public static func buildBlock<each C: View>(_ content: repeat each C) -> TupleView {
+    TupleView { path in
+      var elements: [Element] = []
+      var index = 0
+      for child in repeat each content {
+        elements.append(_render(child, path: path.appending(index: index)))
+        index += 1
+      }
+      return elements
+    }
+  }
+
   public static func buildBlock<C0: View, C1: View>(_ c0: C0, _ c1: C1) -> TupleView {
     TupleView { path in
       [

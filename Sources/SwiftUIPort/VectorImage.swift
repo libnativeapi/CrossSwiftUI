@@ -7,20 +7,28 @@ import SwiftUIRuntime
 struct VectorImage {
   let bounds: CGRect
   let paths: [Path]
+  let strokeWidth: Double
   static var cache: [String: VectorImage] = [:]
-  nonisolated(unsafe) static var symbolDefinitions: [String: (viewBox: CGRect, paths: [String])] = [:]
+  nonisolated(unsafe) static var symbolDefinitions: [String: (viewBox: CGRect, strokeWidth: Double, paths: [String])] = [:]
 
-  static func registerSymbol(_ name: String, viewBox: CGRect = CGRect(x: 0, y: 0, width: 24, height: 24), paths: [String]) {
-    symbolDefinitions[name] = (viewBox, paths)
+  static func registerSymbol(
+    _ name: String,
+    viewBox: CGRect = CGRect(x: 0, y: 0, width: 24, height: 24),
+    strokeWidth: Double = 2.0,
+    paths: [String]
+  ) {
+    symbolDefinitions[name] = (viewBox, strokeWidth, paths)
   }
 
   static func hasSymbol(_ name: String) -> Bool {
+    ensureBuiltinSFSymbolsRegistered()
     if symbolDefinitions[name] != nil { return true }
     let stripped = name.replacingOccurrences(of: ".fill", with: "")
     return symbolDefinitions[stripped] != nil
   }
 
   static func loadSymbol(_ rawName: String) -> VectorImage? {
+    ensureBuiltinSFSymbolsRegistered()
     let key = "sf://" + rawName
     if let cached = cache[key] { return cached }
     let def =
@@ -28,7 +36,7 @@ struct VectorImage {
       ?? symbolDefinitions[rawName.replacingOccurrences(of: ".fill", with: "")]
       ?? symbolDefinitions["circle"]
     guard let def else { return nil }
-    let img = VectorImage(bounds: def.viewBox, paths: def.paths.map { parse($0) })
+    let img = VectorImage(bounds: def.viewBox, paths: def.paths.map { parse($0) }, strokeWidth: def.strokeWidth)
     cache[key] = img
     return img
   }
@@ -54,7 +62,8 @@ struct VectorImage {
     guard box.count == 4, box[2] > 0, box[3] > 0 else { return nil }
     let image = VectorImage(
       bounds: CGRect(x: box[0], y: box[1], width: box[2], height: box[3]),
-      paths: attributes("(?:^|\\s)d").map { parse($0) })
+      paths: attributes("(?:^|\\s)d").map { parse($0) },
+      strokeWidth: 0)
     cache[file] = image
     return image
   }

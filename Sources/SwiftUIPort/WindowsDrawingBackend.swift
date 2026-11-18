@@ -798,6 +798,10 @@
       let canCull = !transformedAncestor && !transformed && !translated
       let clip = p.clipped && canCull ? clip.intersection(r) : clip
       if canCull && p.clipped && (clip.width <= 0 || clip.height <= 0) { return }
+      if canCull && !node.hasOverflow && p.shadows.isEmpty && !node.children.isEmpty {
+        let visible = r.intersection(clip)
+        if visible.width <= 0 || visible.height <= 0 { return }
+      }
       if canCull && node.children.isEmpty && p.shadows.isEmpty
         && (node.kind == .text || node.kind == .image || node.kind == .shape)
       {
@@ -874,12 +878,19 @@
           let sx = r.width / image.bounds.width
           let sy = r.height / image.bounds.height
           let scale = min(sx, sy)
+          let inkColor = p.foreground ?? .black
+          let weightBoost = ((p.font?.weight.value ?? 400) - 400) / 500 * 0.45
+          let sw = image.strokeWidth > 0 ? max(1.1, (image.strokeWidth + weightBoost) * scale) : 0
           for path in image.paths {
-            vector(
-              path.transformed(
-                x: r.minX + (r.width - image.bounds.width * scale) / 2 - image.bounds.minX * scale,
-                y: r.minY + (r.height - image.bounds.height * scale) / 2 - image.bounds.minY
-                  * scale, sx: scale, sy: scale), fill: p.foreground ?? .black)
+            let transformed = path.transformed(
+              x: r.minX + (r.width - image.bounds.width * scale) / 2 - image.bounds.minX * scale,
+              y: r.minY + (r.height - image.bounds.height * scale) / 2 - image.bounds.minY * scale,
+              sx: scale, sy: scale)
+            if sw > 0 {
+              vector(transformed, fill: .clear, stroke: inkColor, width: sw)
+            } else {
+              vector(transformed, fill: inkColor)
+            }
           }
         } else if !p.imagePath.isEmpty {
           sui_surface_image(surface, p.imagePath, r.minX, r.minY, r.width, r.height)

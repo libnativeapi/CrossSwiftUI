@@ -205,6 +205,22 @@ final class WindowsDrawingTests: XCTestCase {
     XCTAssertTrue(hasText("Calculator: 42", in: try XCTUnwrap(renderer.tree)))
     panel.close()
   }
+
+  @MainActor
+  func testSFSymbolCatalogAndStringLocalizedOnWindows() {
+    _ = NSHostingView(rootView: SwiftUIRuntime.EmptyView())
+    let sampleSymbols = [
+      "magnifyingglass", "gearshape", "sparkles", "apple.intelligence",
+      "doc.on.clipboard", "macwindow", "puzzlepiece.extension", "stop.fill"
+    ]
+    for sym in sampleSymbols {
+      XCTAssertNotNil(CrossAppKit.NSImage(systemSymbolName: sym, accessibilityDescription: nil), "Missing symbol \(sym)")
+    }
+    XCTAssertNil(CrossAppKit.NSImage(systemSymbolName: "CustomBrandAssetName", accessibilityDescription: nil))
+
+    let msg = String(localized: "Found \(5) apps")
+    XCTAssertEqual(msg, "Found 5 apps")
+  }
 }
 
 @Observable

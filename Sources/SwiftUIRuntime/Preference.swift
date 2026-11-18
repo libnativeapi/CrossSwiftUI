@@ -1,8 +1,69 @@
 import Foundation
 
-#if canImport(CoreGraphics)
+#if canImport(Darwin) && canImport(CoreGraphics)
   import CoreGraphics
 #endif
+
+public struct Anchor<Value> {
+  let value: Value
+  init(_ value: Value) { self.value = value }
+
+  public struct Source {
+    let resolve: (CGRect) -> Value
+    init(_ resolve: @escaping (CGRect) -> Value) { self.resolve = resolve }
+  }
+}
+
+extension Anchor: Equatable where Value: Equatable {
+  public static func == (lhs: Anchor<Value>, rhs: Anchor<Value>) -> Bool {
+    lhs.value == rhs.value
+  }
+}
+
+extension Anchor: @unchecked Sendable where Value: Sendable {}
+
+extension Anchor.Source where Value == CGRect {
+  public static var bounds: Anchor<CGRect>.Source { Anchor.Source { $0 } }
+  public static func rect(_ r: CGRect) -> Anchor<CGRect>.Source {
+    Anchor.Source { base in
+      CGRect(x: base.minX + r.minX, y: base.minY + r.minY, width: r.width, height: r.height)
+    }
+  }
+}
+
+extension Anchor.Source where Value == CGPoint {
+  public static var topLeading: Anchor<CGPoint>.Source { Anchor.Source { CGPoint(x: $0.minX, y: $0.minY) } }
+  public static var top: Anchor<CGPoint>.Source { Anchor.Source { CGPoint(x: $0.midX, y: $0.minY) } }
+  public static var topTrailing: Anchor<CGPoint>.Source { Anchor.Source { CGPoint(x: $0.maxX, y: $0.minY) } }
+  public static var leading: Anchor<CGPoint>.Source { Anchor.Source { CGPoint(x: $0.minX, y: $0.midY) } }
+  public static var center: Anchor<CGPoint>.Source { Anchor.Source { CGPoint(x: $0.midX, y: $0.midY) } }
+  public static var trailing: Anchor<CGPoint>.Source { Anchor.Source { CGPoint(x: $0.maxX, y: $0.midY) } }
+  public static var bottomLeading: Anchor<CGPoint>.Source { Anchor.Source { CGPoint(x: $0.minX, y: $0.maxY) } }
+  public static var bottom: Anchor<CGPoint>.Source { Anchor.Source { CGPoint(x: $0.midX, y: $0.maxY) } }
+  public static var bottomTrailing: Anchor<CGPoint>.Source { Anchor.Source { CGPoint(x: $0.maxX, y: $0.maxY) } }
+  public static func point(_ p: CGPoint) -> Anchor<CGPoint>.Source {
+    Anchor.Source { CGPoint(x: $0.minX + p.x, y: $0.minY + p.y) }
+  }
+}
+
+extension GeometryProxy {
+  public subscript<T>(_ anchor: Anchor<T>) -> T {
+    if let rect = anchor.value as? CGRect {
+      let local = CGRect(
+        x: rect.minX - snapshot.rect.minX,
+        y: rect.minY - snapshot.rect.minY,
+        width: rect.width,
+        height: rect.height
+      )
+      return local as! T
+    }
+    if let pt = anchor.value as? CGPoint {
+      let local = CGPoint(x: pt.x - snapshot.rect.minX, y: pt.y - snapshot.rect.minY)
+      return local as! T
+    }
+    return anchor.value
+  }
+}
 
 public protocol PreferenceKey {
   associatedtype Value
@@ -76,6 +137,14 @@ extension View {
     PreferenceOverlay<Overlay, Self, K>(content: self, overlay: content)
   }
 
+  public func anchorPreference<A, K: PreferenceKey>(
+    key: K.Type = K.self,
+    value source: Anchor<A>.Source,
+    transform: @escaping (Anchor<A>) -> K.Value
+  ) -> some View {
+    self.preference(key: key, value: transform(Anchor(source.resolve(.zero))))
+  }
+
 }
 func resolvePreferences(_ node: Element) -> [ObjectIdentifier: PreferenceValue] {
   if !node.hasPreferences { return [:] }
@@ -108,8 +177,8 @@ where Key.Value: Equatable {
   }
 }
 
-public struct GridItem {
-  public enum Size {
+public struct GridItem: Sendable {
+  public enum Size: Sendable {
     case fixed(CGFloat)
     case flexible(minimum: CGFloat = 10, maximum: CGFloat = .infinity)
     case adaptive(minimum: CGFloat, maximum: CGFloat = .infinity)
@@ -128,7 +197,10 @@ public struct LazyVGrid<Content: View>: View {
   let spacing: CGFloat
   let content: Content
   public init(
-    columns: [GridItem], alignment: HorizontalAlignment = .center, spacing: CGFloat? = nil,
+    columns: [GridItem],
+    alignment: HorizontalAlignment = .center,
+    spacing: CGFloat? = nil,
+    pinnedViews: PinnedScrollableViews = [],
     @ViewBuilder content: () -> Content
   ) {
     self.columns = columns
@@ -228,8 +300,9 @@ private struct GridLayout: _LayoutBridge {
     }
   }
 }
-public struct Transaction {
+public struct Transaction: Equatable, Sendable {
   public var animation: Animation?
+  public var disablesAnimations: Bool = false
   public init(animation: Animation? = nil) { self.animation = animation }
 }
 extension View {
@@ -237,7 +310,12 @@ extension View {
     TransformView(content: self) { node in
       var transaction = Transaction(animation: node.props.animation)
       transform(&transaction)
-      node.props.animation = transaction.animation
+      if transaction.disablesAnimations {
+        node.props.animation = nil
+        node.props.animationDisabled = true
+      } else {
+        node.props.animation = transaction.animation
+      }
     }
   }
 }

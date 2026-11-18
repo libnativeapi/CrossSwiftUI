@@ -2,7 +2,7 @@
 /// Windows supplies real font measurement to LayoutEngine instead.
 import Foundation
 
-#if canImport(CoreGraphics)
+#if canImport(Darwin) && canImport(CoreGraphics)
   import CoreGraphics
 #endif
 
@@ -190,7 +190,8 @@ public struct LayoutEngine {
     let previous = previousGeometry.flatMap { $0.kind == element.kind ? $0 : nil }
     var dynamic =
       element.geometryBuilder != nil || element.kind == .presentation || element.layout != nil
-      || element.scrollTarget != nil
+      || element.scrollTarget != nil || !element.scrollGeometryHandlers.isEmpty
+      || !element.geometryChangeHandlers.isEmpty
     var presentation = element.kind == .presentation
     var preferences =
       element.geometryBuilder != nil || !element.preferences.isEmpty
@@ -255,7 +256,8 @@ public struct LayoutEngine {
       && a.spacing == b.spacing && a.flex == b.flex && a.scrollAxes == b.scrollAxes
       && a.gridUnsizedAxes == b.gridUnsizedAxes && a.visible == b.visible
       && a.multiline == b.multiline && a.offsetX == b.offsetX && a.offsetY == b.offsetY
-      && a.scrollOffset == b.scrollOffset && a.alignment == b.alignment
+      && a.scrollOffset == b.scrollOffset && a.scrollContentInsets == b.scrollContentInsets
+      && a.alignment == b.alignment
       && a.horizontalAlignment == b.horizontalAlignment
       && a.verticalAlignment == b.verticalAlignment && a.coordinateSpace == b.coordinateSpace
       && a.layerBehind == b.layerBehind
@@ -592,6 +594,17 @@ public struct LayoutEngine {
       return
     }
     defer {
+      if !e.geometryChangeHandlers.isEmpty {
+        let snap = GeometrySnapshot(
+          rect: CGRect(x: e.frame.minX, y: e.frame.minY, width: e.frame.width, height: e.frame.height),
+          namedOrigins: e.layoutContext
+        )
+        let proxy = GeometryProxy(snapshot: snap)
+        let handlers = e.geometryChangeHandlers
+        LifecycleRegistry.shared.enqueue {
+          for h in handlers { h(proxy) }
+        }
+      }
       e.updateOverflow()
       e.hasPresentation = e.kind == .presentation || e.children.contains { $0.hasPresentation }
       e.hasLayoutAnimation = e.hasLayoutAnimation || e.children.contains { $0.hasLayoutAnimation }
@@ -725,19 +738,29 @@ public struct LayoutEngine {
       }
     case .scroll:
       guard !e.children.isEmpty else { return }
+      GeometryContext.current[AnyHashable(ScrollCoordinateSpaceKey.shared)] = CGPoint(
+        x: rect.minX, y: rect.minY
+      )
+      let insets = e.props.scrollContentInsets
+      let visibleHeight = max(0, rect.height - insets.top - insets.bottom)
+      let visibleWidth = max(0, rect.width - insets.leading - insets.trailing)
       let natural = measure(
         e.children[0],
         ProposedViewSize(
           width: e.props.scrollAxes.contains(.horizontal) ? nil : rect.width,
-          height: e.props.scrollAxes.contains(.vertical) ? nil : rect.height))
+          height: e.props.scrollAxes.contains(.vertical) ? nil : visibleHeight))
       let size = Size(
         width: e.props.scrollAxes.contains(.horizontal)
-          ? natural.width : max(rect.width, natural.width),
+          ? natural.width : max(visibleWidth, natural.width),
         height: e.props.scrollAxes.contains(.vertical)
-          ? natural.height : max(rect.height, natural.height))
+          ? natural.height : max(visibleHeight, natural.height))
+      let minX = -insets.leading
+      let maxX = max(minX, size.width + insets.trailing - rect.width)
+      let minY = -insets.top
+      let maxY = max(minY, size.height + insets.bottom - rect.height)
       let offset = Point(
-        x: max(0, min(e.props.scrollOffset.x, size.width - rect.width)),
-        y: max(0, min(e.props.scrollOffset.y, size.height - rect.height)))
+        x: max(minX, min(e.props.scrollOffset.x, maxX)),
+        y: max(minY, min(e.props.scrollOffset.y, maxY)))
       func frame(at offset: Point) -> Rect {
         Rect(
           x: rect.minX - offset.x, y: rect.minY - offset.y,
@@ -745,23 +768,25 @@ public struct LayoutEngine {
       }
       e.props.scrollOffset = offset
       place(&e.children[0], in: frame(at: offset))
+      var finalOffset = offset
       if let target = e.scrollTarget, let match = scrollTargetFrame(target.id, in: e.children[0]) {
         let anchor = target.anchor ?? .topLeading
         let next = Point(
           x: e.props.scrollAxes.contains(.horizontal)
             ? max(
-              0,
+              minX,
               min(
-                size.width - rect.width,
-                offset.x + match.minX - rect.minX + anchor.x * (match.width - rect.width)))
+                maxX,
+                offset.x + match.minX - (rect.minX + insets.leading) + anchor.x * (match.width - visibleWidth)))
             : offset.x,
           y: e.props.scrollAxes.contains(.vertical)
             ? max(
-              0,
+              minY,
               min(
-                size.height - rect.height,
-                offset.y + match.minY - rect.minY + anchor.y * (match.height - rect.height)))
+                maxY,
+                offset.y + match.minY - (rect.minY + insets.top) + anchor.y * (match.height - visibleHeight)))
             : offset.y)
+        finalOffset = next
         e.props.scrollOffset = next
         place(&e.children[0], in: frame(at: next))
         let scroll = e.scrollAction
@@ -769,6 +794,18 @@ public struct LayoutEngine {
         LifecycleRegistry.shared.enqueue {
           complete?()
           scroll?(next)
+        }
+      }
+      if !e.scrollGeometryHandlers.isEmpty {
+        let geo = ScrollGeometry(
+          contentOffset: CGPoint(x: finalOffset.x, y: finalOffset.y),
+          contentSize: CGSize(width: size.width, height: size.height),
+          contentInsets: insets,
+          containerSize: CGSize(width: rect.width, height: rect.height)
+        )
+        let handlers = e.scrollGeometryHandlers
+        LifecycleRegistry.shared.enqueue {
+          for h in handlers { h(geo) }
         }
       }
     case .container(let axis): placeStack(&e, axis: axis, in: rect)
@@ -845,6 +882,11 @@ public struct LayoutEngine {
       place(
         &e.children[i],
         in: aligned(size, in: slot, alignment: alignment, child: child))
+      if vertical, let stackKey = e.lazyCacheKey, let itemID = e.children[i].explicitID,
+         !e.children[i].children.isEmpty
+      {
+        LazyHeightCache.shared.record(stack: stackKey, item: itemID, height: main)
+      }
       cursor += main + e.props.spacing
     }
     for i in e.children.indices where !e.children[i].props.visible { e.children[i].frame = .zero }

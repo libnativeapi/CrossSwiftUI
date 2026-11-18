@@ -19,7 +19,7 @@ import Foundation
 /// A two-axis alignment, used by ``View/frame(width:height:alignment:)``.
 
 /// Which axis a stack lays its children out on.
-public struct Point: Equatable {
+public struct Point: Equatable, Sendable {
   public var x: Double
   public var y: Double
 
@@ -30,7 +30,7 @@ public struct Point: Equatable {
 
   public static let zero = Point()
 }
-public struct Size: Equatable {
+public struct Size: Equatable, Sendable {
   public var width: Double
   public var height: Double
 
@@ -43,7 +43,7 @@ public struct Size: Equatable {
 
   public var isEmpty: Bool { width <= 0 || height <= 0 }
 }
-public struct Rect: Equatable {
+public struct Rect: Equatable, Sendable {
   public var origin: Point
   public var size: Size
 
@@ -75,7 +75,7 @@ public struct Rect: Equatable {
     )
   }
 }
-public struct EdgeInsets: Equatable {
+public struct EdgeInsets: Equatable, Sendable {
   public var top: Double
   public var leading: Double
   public var bottom: Double
@@ -110,19 +110,19 @@ public struct EdgeInsets: Equatable {
     )
   }
 }
-public enum HorizontalAlignment: Equatable {
+public enum HorizontalAlignment: Equatable, Sendable {
   case leading
   case center
   case trailing
 }
-public enum VerticalAlignment: Equatable {
+public enum VerticalAlignment: Equatable, Sendable {
   case top
   case center
   case bottom
   public static let firstTextBaseline: VerticalAlignment = .center
   public static let lastTextBaseline: VerticalAlignment = .center
 }
-public struct Alignment: Equatable {
+public struct Alignment: Equatable, Sendable {
   public var horizontal: HorizontalAlignment
   public var vertical: VerticalAlignment
 
@@ -140,9 +140,15 @@ public struct Alignment: Equatable {
   public static let topTrailing = Alignment(horizontal: .trailing, vertical: .top)
   public static let bottomLeading = Alignment(horizontal: .leading, vertical: .bottom)
   public static let bottomTrailing = Alignment(horizontal: .trailing, vertical: .bottom)
+  public static let leadingFirstTextBaseline = Alignment(horizontal: .leading, vertical: .firstTextBaseline)
+  public static let centerFirstTextBaseline = Alignment(horizontal: .center, vertical: .firstTextBaseline)
+  public static let trailingFirstTextBaseline = Alignment(horizontal: .trailing, vertical: .firstTextBaseline)
+  public static let leadingLastTextBaseline = Alignment(horizontal: .leading, vertical: .lastTextBaseline)
+  public static let centerLastTextBaseline = Alignment(horizontal: .center, vertical: .lastTextBaseline)
+  public static let trailingLastTextBaseline = Alignment(horizontal: .trailing, vertical: .lastTextBaseline)
 }
-public enum Axis: Equatable {
-  public struct Set: OptionSet, Equatable {
+public enum Axis: Equatable, Sendable {
+  public struct Set: OptionSet, Equatable, Sendable {
     public let rawValue: Int
     public init(rawValue: Int) { self.rawValue = rawValue }
     public static let horizontal = Set(rawValue: 1), vertical = Set(rawValue: 2)

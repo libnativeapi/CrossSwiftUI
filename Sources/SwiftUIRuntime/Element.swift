@@ -34,7 +34,7 @@
 /// Collects the current tap handlers keyed by node id.
 import Foundation
 
-#if canImport(CoreGraphics)
+#if canImport(Darwin) && canImport(CoreGraphics)
   import CoreGraphics
 #endif
 
@@ -119,6 +119,8 @@ public struct NodeProps: Equatable {
   public var gridUnsizedAxes: Axis.Set = []
   public var scrollAxes: Axis.Set = .vertical
   public var scrollOffset = Point.zero
+  public var scrollContentInsets: EdgeInsets = .zero
+  package var isLazyContainer = false
   public var placeholder = ""
   public var secure = false, multiline = false
   package var plainTextField = false
@@ -192,7 +194,7 @@ public struct Element {
   var evaluationID: Int = 0
   var evaluationRevision: Int = 0
   var reusesLayout = false
-  var hasOverflow = false
+  package var hasOverflow = false
   var hasDynamicLayout = false
   var hasPresentation = false
   package var hasActivePresentation = false
@@ -227,6 +229,11 @@ public struct Element {
   var scrollTarget: ScrollTarget?
   var completeScrollTarget: (() -> Void)?
   var scrollAction: ((Point) -> Void)? = nil
+  var scrollGeometryHandlers: [(ScrollGeometry) -> Void] = []
+  var scrollPhaseHandlers: [(ScrollPhase, ScrollPhase) -> Void] = []
+  var geometryChangeHandlers: [(GeometryProxy) -> Void] = []
+  var lazyCacheKey: AnyHashable? = nil
+  package var tagValue: AnyHashable? = nil
   // Only ScrollView's private offset can use the geometry-only update path.
   var scrollStateKey: StateKey? = nil
   var secondaryAction: ((CGPoint) -> Void)? = nil

@@ -32,3 +32,21 @@ extension Button {
     StyledButton(button: self, style: style)
   }
 }
+
+public struct AccessoryBarButtonStyle: ButtonStyle {
+  public init() {}
+  public func makeBody(configuration: Configuration) -> some View { configuration.label }
+}
+
+public struct AccessoryBarActionButtonStyle: ButtonStyle {
+  public init() {}
+  public func makeBody(configuration: Configuration) -> some View { configuration.label }
+}
+
+extension ButtonStyle where Self == AccessoryBarButtonStyle {
+  public static var accessoryBar: AccessoryBarButtonStyle { AccessoryBarButtonStyle() }
+}
+
+extension ButtonStyle where Self == AccessoryBarActionButtonStyle {
+  public static var accessoryBarAction: AccessoryBarActionButtonStyle { AccessoryBarActionButtonStyle() }
+}

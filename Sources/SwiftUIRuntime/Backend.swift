@@ -18,7 +18,7 @@
 /// `SwiftUI` and `SwiftUIPort` modules are not built.
 
 import Foundation
-#if canImport(CoreGraphics)
+#if canImport(Darwin) && canImport(CoreGraphics)
   import CoreGraphics
 #endif
 

@@ -13,8 +13,18 @@ import Foundation
 public struct Text: View {
   public typealias Body = Never
 
-  public enum TruncationMode: Hashable { case head, middle, tail }
-  struct Run {
+  public enum TruncationMode: Hashable, Sendable { case head, middle, tail }
+  public enum Scale: Hashable, Sendable { case `default`, secondary }
+  public enum Case: Hashable, Sendable { case uppercase, lowercase }
+  public struct DateStyle: Hashable, Sendable {
+    let raw: Int
+    public static let time = DateStyle(raw: 0)
+    public static let date = DateStyle(raw: 1)
+    public static let relative = DateStyle(raw: 2)
+    public static let offset = DateStyle(raw: 3)
+    public static let timer = DateStyle(raw: 4)
+  }
+  struct Run: Sendable {
     var text: String
     var font: Font?
     var color: Color?
@@ -24,12 +34,59 @@ public struct Text: View {
   var runs: [Run] = []
   var textTracking: Double = 0
   var textFont: Font?, textColor: Color?
+  var localizedKey: LocalizedStringKey?
   public let content: String
 
-  public init(_ content: String) {
+  nonisolated public init(verbatim content: String) {
     self.content = content
   }
 
+  @_disfavoredOverload
+  nonisolated public init<S: StringProtocol>(_ content: S) {
+    self.content = String(content)
+  }
+
+  nonisolated public init(_ key: LocalizedStringKey) {
+    self.localizedKey = key
+    self.content = key.resolved()
+  }
+
+  nonisolated public init(
+    _ key: LocalizedStringKey,
+    tableName: String?,
+    bundle: Bundle? = nil,
+    comment: StaticString? = nil
+  ) {
+    self.localizedKey = key
+    self.content = key.resolved()
+  }
+
+  @_disfavoredOverload
+  @available(macOS 13, iOS 16, tvOS 16, watchOS 9, *)
+  nonisolated public init(_ resource: LocalizedStringResource) {
+    self.content = String(localized: resource)
+  }
+
+  nonisolated public init<F: FormatStyle>(_ input: F.FormatInput, format: F) where F.FormatOutput == String {
+    self.content = format.format(input)
+  }
+
+  nonisolated public init(_ image: Image) {
+    self.content = image.isSystemSymbol ? "" : image.name
+  }
+
+  nonisolated public init(_ date: Date, style: Text.DateStyle) {
+    switch style {
+    case .time:
+      self.content = date.formatted(date: .omitted, time: .shortened)
+    case .date:
+      self.content = date.formatted(date: .abbreviated, time: .omitted)
+    default:
+      self.content = date.formatted(.relative(presentation: .numeric))
+    }
+  }
+
+  @_disfavoredOverload
   @available(macOS 12, iOS 15, tvOS 15, watchOS 8, *)
   public init(_ content: AttributedString) {
     self.content = String(content.characters)
@@ -43,7 +100,8 @@ public struct Text: View {
 extension Text: _PrimitiveView {
   func _makeElement(path: ViewPath) -> Element {
     var props = NodeProps()
-    props.text = content
+    let resolvedText = localizedKey?.resolved(locale: EnvironmentValues.current.locale) ?? content
+    props.text = resolvedText
     props.font = textFont ?? EnvironmentValues.current.font
     props.foreground = textColor
     props.tracking = textTracking
@@ -78,16 +136,32 @@ public struct Button<Label: View>: View {
   let label: Label
   let role: ButtonRole?
 
-  public init(_ title: String, action: @escaping () -> Void) where Label == Text {
+  public init(_ titleKey: LocalizedStringKey, action: @escaping () -> Void) where Label == Text {
+    self.init(titleKey, role: nil, action: action)
+  }
+
+  public init(_ titleKey: LocalizedStringKey, role: ButtonRole?, action: @escaping () -> Void)
+  where Label == Text {
+    let resolved = titleKey.resolved()
+    self.title = resolved
+    self.role = role
+    self.action = action
+    self.label = Text(titleKey)
+  }
+
+  @_disfavoredOverload
+  public init<S: StringProtocol>(_ title: S, action: @escaping () -> Void) where Label == Text {
     self.init(title, role: nil, action: action)
   }
 
-  public init(_ title: String, role: ButtonRole?, action: @escaping () -> Void)
+  @_disfavoredOverload
+  public init<S: StringProtocol>(_ title: S, role: ButtonRole?, action: @escaping () -> Void)
   where Label == Text {
-    self.title = title
+    let str = String(title)
+    self.title = str
     self.role = role
     self.action = action
-    self.label = Text(title)
+    self.label = Text(verbatim: str)
   }
 
   public init(action: @escaping () -> Void, @ViewBuilder label: () -> Label) {
@@ -96,10 +170,23 @@ public struct Button<Label: View>: View {
     self.action = action
     self.label = label()
   }
+
+  public init(role: ButtonRole?, action: @escaping () -> Void, @ViewBuilder label: () -> Label) {
+    self.title = ""
+    self.role = role
+    self.action = action
+    self.label = label()
+  }
+
   public var body: Never { fatalError("Button is a primitive view") }
 }
 extension Button: _PrimitiveView {
   func _makeElement(path: ViewPath) -> Element {
+    if let inherited = EnvironmentValues.current.inheritedButtonStyle {
+      var el = inherited(AnyView(label), path.appending(index: 0), action)
+      if role == .cancel { el.props.keyboardShortcut = .cancelAction }
+      return el
+    }
     var props = NodeProps()
     // Unstyled buttons use the native title renderer. A custom ButtonStyle
     // renders the full label tree; the default style extracts its text.
@@ -160,6 +247,14 @@ func flattenChildren(_ element: Element) -> [Element] {
   return element.kind == .empty ? [] : [element]
 }
 extension Text {
+  nonisolated public func textScale(_ scale: Text.Scale, isEnabled: Bool = true) -> Text {
+    self
+  }
+
+  nonisolated public func baselineOffset(_ baselineOffset: CGFloat) -> Text {
+    self
+  }
+
   public func kerning(_ spacing: CGFloat) -> Text {
     var text = self
     text.textTracking = Double(spacing)
@@ -185,7 +280,6 @@ extension Text {
     text.textColor = color
     return text
   }
-  public func foregroundStyle(_ color: Color) -> Text { foregroundColor(color) }
   public static func + (lhs: Text, rhs: Text) -> Text {
     var text = Text(lhs.content + rhs.content)
     text.runs =

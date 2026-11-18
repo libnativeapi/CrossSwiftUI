@@ -1,6 +1,6 @@
 import Foundation
 
-#if canImport(CoreGraphics)
+#if canImport(Darwin) && canImport(CoreGraphics)
   import CoreGraphics
 #endif
 
@@ -69,6 +69,15 @@ public struct AnimationTimelineSchedule: Equatable {
     let requested = minimumInterval ?? 1.0 / 60
     let interval = requested.isFinite ? min(max(requested, 1.0 / 240), 86_400) : 1.0 / 60
     return Self(interval: interval, paused: paused)
+  }
+
+  public static func periodic(from startDate: Date, by interval: TimeInterval) -> Self {
+    let clamped = interval.isFinite ? min(max(interval, 1.0 / 240), 86_400) : 1.0
+    return Self(interval: clamped, paused: false)
+  }
+
+  public static var everyMinute: Self {
+    Self(interval: 60, paused: false)
   }
 }
 

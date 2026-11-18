@@ -19,8 +19,22 @@ public struct VStack<Content: View>: View {
   public var body: Never { fatalError("VStack is a primitive view") }
 }
 
+private enum EnclosingStackAxisKey: EnvironmentKey {
+  static let defaultValue: Axis = .vertical
+}
+
+extension EnvironmentValues {
+  package var enclosingStackAxis: Axis {
+    get { self[EnclosingStackAxisKey.self] }
+    set { self[EnclosingStackAxisKey.self] = newValue }
+  }
+}
+
 extension VStack: _PrimitiveView {
   func _makeElement(path: ViewPath) -> Element {
+    let saved = EnvironmentValues.current.enclosingStackAxis
+    EnvironmentValues.current.enclosingStackAxis = .vertical
+    defer { EnvironmentValues.current.enclosingStackAxis = saved }
     let contentElement = _render(content, path: path)
     var props = NodeProps()
     props.spacing = spacing
@@ -56,6 +70,9 @@ public struct HStack<Content: View>: View {
 
 extension HStack: _PrimitiveView {
   func _makeElement(path: ViewPath) -> Element {
+    let saved = EnvironmentValues.current.enclosingStackAxis
+    EnvironmentValues.current.enclosingStackAxis = .horizontal
+    defer { EnvironmentValues.current.enclosingStackAxis = saved }
     let contentElement = _render(content, path: path)
     var props = NodeProps()
     props.spacing = spacing

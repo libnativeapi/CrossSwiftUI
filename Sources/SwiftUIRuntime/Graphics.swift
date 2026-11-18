@@ -1,6 +1,6 @@
 import Foundation
 
-#if canImport(CoreGraphics)
+#if canImport(Darwin) && canImport(CoreGraphics)
   import CoreGraphics
 #endif
 
@@ -26,7 +26,7 @@ public struct Path: Equatable {
     self.init()
     addRect(rect)
   }
-  public init(roundedRect rect: CGRect, cornerRadius: CGFloat) {
+  public init(roundedRect rect: CGRect, cornerRadius: CGFloat, style: RoundedCornerStyle = .circular) {
     self.init()
     let r = min(cornerRadius, rect.width / 2, rect.height / 2)
     move(to: CGPoint(x: rect.minX + r, y: rect.minY))
@@ -61,6 +61,29 @@ public struct Path: Equatable {
     addLine(to: CGPoint(x: r.minX, y: r.maxY))
     closeSubpath()
   }
+  public mutating func addEllipse(in r: CGRect) {
+    let cx = r.midX, cy = r.midY
+    let rx = r.width / 2, ry = r.height / 2
+    let kx = rx * 0.5522847498, ky = ry * 0.5522847498
+    move(to: CGPoint(x: cx, y: r.minY))
+    addCurve(
+      to: CGPoint(x: r.maxX, y: cy),
+      control1: CGPoint(x: cx + kx, y: r.minY),
+      control2: CGPoint(x: r.maxX, y: cy - ky))
+    addCurve(
+      to: CGPoint(x: cx, y: r.maxY),
+      control1: CGPoint(x: r.maxX, y: cy + ky),
+      control2: CGPoint(x: cx + kx, y: r.maxY))
+    addCurve(
+      to: CGPoint(x: r.minX, y: cy),
+      control1: CGPoint(x: cx - kx, y: r.maxY),
+      control2: CGPoint(x: r.minX, y: cy + ky))
+    addCurve(
+      to: CGPoint(x: cx, y: r.minY),
+      control1: CGPoint(x: r.minX, y: cy - ky),
+      control2: CGPoint(x: cx - kx, y: r.minY))
+    closeSubpath()
+  }
   public mutating func addPath(_ path: Path) { commands += path.commands }
   public mutating func addArc(
     center: CGPoint, radius: CGFloat, startAngle: Angle, endAngle: Angle, clockwise: Bool
@@ -88,6 +111,14 @@ public struct Path: Equatable {
         ))
     }
   }
+  public mutating func addArc(
+    tangent1End p1: CGPoint,
+    tangent2End p2: CGPoint,
+    radius: CGFloat
+  ) {
+    addLine(to: p1)
+    addLine(to: p2)
+  }
   public func transformed(x: Double = 0, y: Double = 0, sx: Double = 1, sy: Double = 1) -> Path {
     var output = self
     var i = 0
@@ -103,9 +134,9 @@ public struct Path: Equatable {
   }
 }
 public struct Circle: Shape {
-  public init() {}
-  public var cornerRadius: CGFloat { .infinity }
-  public func path(in r: CGRect) -> Path {
+  nonisolated public init() {}
+  nonisolated public var cornerRadius: CGFloat { .infinity }
+  nonisolated public func path(in r: CGRect) -> Path {
     var p = Path()
     p.addArc(
       center: CGPoint(x: r.midX, y: r.midY), radius: min(r.width, r.height) / 2,
@@ -115,13 +146,13 @@ public struct Circle: Shape {
   }
 }
 public struct Capsule: Shape {
-  public init(style: RoundedCornerStyle = .continuous) {}
-  public var cornerRadius: CGFloat { .infinity }
+  nonisolated public init(style: RoundedCornerStyle = .continuous) {}
+  nonisolated public var cornerRadius: CGFloat { .infinity }
 }
-public struct RectangleCornerRadii {
+public struct RectangleCornerRadii: Equatable, Sendable {
   public var topLeading: CGFloat, bottomLeading: CGFloat, bottomTrailing: CGFloat,
     topTrailing: CGFloat
-  public init(
+  nonisolated public init(
     topLeading: CGFloat = 0, bottomLeading: CGFloat = 0, bottomTrailing: CGFloat = 0,
     topTrailing: CGFloat = 0
   ) {
@@ -133,10 +164,23 @@ public struct RectangleCornerRadii {
 }
 public struct UnevenRoundedRectangle: Shape {
   let radii: RectangleCornerRadii
-  public init(cornerRadii: RectangleCornerRadii, style: RoundedCornerStyle = .continuous) {
+  nonisolated public init(cornerRadii: RectangleCornerRadii, style: RoundedCornerStyle = .continuous) {
     radii = cornerRadii
   }
-  public func path(in r: CGRect) -> Path {
+  nonisolated public init(
+    topLeadingRadius: CGFloat = 0,
+    bottomLeadingRadius: CGFloat = 0,
+    bottomTrailingRadius: CGFloat = 0,
+    topTrailingRadius: CGFloat = 0,
+    style: RoundedCornerStyle = .continuous
+  ) {
+    radii = RectangleCornerRadii(
+      topLeading: topLeadingRadius,
+      bottomLeading: bottomLeadingRadius,
+      bottomTrailing: bottomTrailingRadius,
+      topTrailing: topTrailingRadius)
+  }
+  nonisolated public func path(in r: CGRect) -> Path {
     var p = Path()
     let tl = min(radii.topLeading, r.width / 2, r.height / 2)
     let tr = min(radii.topTrailing, r.width / 2, r.height / 2)
@@ -189,7 +233,7 @@ public struct TrimmedShape<S: Shape>: Shape {
   let from: CGFloat
   let to: CGFloat
   let inset: CGFloat
-  public func path(in r: CGRect) -> Path {
+  nonisolated public func path(in r: CGRect) -> Path {
     // Circular paths preserve a true arc rather than closing the trimmed span.
     if shape is Circle {
       var p = Path()
@@ -202,34 +246,31 @@ public struct TrimmedShape<S: Shape>: Shape {
   }
 }
 extension Shape {
-  public var cornerRadius: CGFloat { 0 }
-  public func path(in rect: CGRect) -> Path { Path(roundedRect: rect, cornerRadius: cornerRadius) }
+  nonisolated public var cornerRadius: CGFloat { 0 }
+  nonisolated public func path(in rect: CGRect) -> Path { Path(roundedRect: rect, cornerRadius: cornerRadius) }
   public var body: some View { fill(.black) }
-  public func trim(from: CGFloat = 0, to: CGFloat = 1) -> some Shape {
+  nonisolated public func trim(from: CGFloat = 0, to: CGFloat = 1) -> some Shape {
     TrimmedShape(shape: self, from: from, to: to, inset: 0)
   }
-  public func inset(by amount: CGFloat) -> some Shape { InsetShape(shape: self, amount: amount) }
-  public func stroke(_ color: Color, lineWidth: CGFloat = 1) -> some View {
-    PaintedShape(shape: self, fill: .clear, stroke: color, width: lineWidth, inset: false)
-  }
+  nonisolated public func inset(by amount: CGFloat) -> some Shape { InsetShape(shape: self, amount: amount) }
 }
 public struct InsetShape<S: Shape>: Shape {
   let shape: S
   let amount: CGFloat
-  public func path(in rect: CGRect) -> Path { shape.path(in: rect.insetBy(dx: amount, dy: amount)) }
-  public func trim(from: CGFloat = 0, to: CGFloat = 1) -> some Shape {
+  nonisolated public func path(in rect: CGRect) -> Path { shape.path(in: rect.insetBy(dx: amount, dy: amount)) }
+  nonisolated public func trim(from: CGFloat = 0, to: CGFloat = 1) -> some Shape {
     TrimmedShape(shape: shape, from: from, to: to, inset: amount)
   }
 }
-public struct LinearGradient: View, _PrimitiveView {
+public struct LinearGradient: View, _PrimitiveView, Sendable {
   public typealias Body = Never
-  public struct Data: Equatable {
+  public struct Data: Equatable, Sendable {
     public let colors: [Color]
     public let start: UnitPoint
     public let end: UnitPoint
   }
   let data: Data
-  public init(colors: [Color], startPoint: UnitPoint, endPoint: UnitPoint) {
+  nonisolated public init(colors: [Color], startPoint: UnitPoint, endPoint: UnitPoint) {
     data = Data(colors: colors, start: startPoint, end: endPoint)
   }
   public var body: Never { fatalError() }
@@ -245,6 +286,7 @@ public struct Image: View, _PrimitiveView {
   public typealias Body = Never
   public enum TemplateRenderingMode { case template, original }
   public enum Interpolation { case none, low, medium, high }
+  public enum Scale: Hashable, Sendable { case small, medium, large }
 
   nonisolated(unsafe) package static var assetPathResolver: ((String) -> String?)?
 
@@ -255,12 +297,12 @@ public struct Image: View, _PrimitiveView {
   var template = false
   var flexible = false
 
-  public init(_ name: String, bundle: Bundle? = nil) {
+  nonisolated public init(_ name: String, bundle: Bundle? = nil) {
     self.name = name
     self.bundle = bundle
   }
 
-  public init(systemName: String) {
+  nonisolated public init(systemName: String) {
     self.name = systemName
     self.bundle = nil
     self.isSystemSymbol = true
@@ -302,7 +344,7 @@ public struct Image: View, _PrimitiveView {
       p.imagePath = "sf://" + name
       p.font = EnvironmentValues.current.font
     } else {
-      #if os(WASI) || SWIFTUI_PORT_HARMONY
+      #if os(WASI) || CROSS_SWIFTUI_HARMONY
         p.imagePath = name
       #else
         if FileManager.default.fileExists(atPath: name) {

@@ -1,6 +1,6 @@
 import Foundation
 
-#if canImport(CoreGraphics)
+#if canImport(Darwin) && canImport(CoreGraphics)
   import CoreGraphics
 #endif
 
@@ -20,6 +20,52 @@ public struct ZStack<Content: View>: View, _PrimitiveView {
       kind: .zStack, props: props, children: flattenChildren(_render(content, path: path)))
   }
 }
+final class LazyHeightCache {
+  nonisolated(unsafe) static let shared = LazyHeightCache()
+  private var heightsByStack: [AnyHashable: [AnyHashable: Double]] = [:]
+  private var averagesByStack: [AnyHashable: Double] = [:]
+
+  func record(stack: AnyHashable, item: AnyHashable, height: Double) {
+    guard height > 1 else { return }
+    heightsByStack[stack, default: [:]][item] = height
+    let dict = heightsByStack[stack]!
+    let sample = dict.values.prefix(32)
+    if !sample.isEmpty {
+      averagesByStack[stack] = sample.reduce(0, +) / Double(sample.count)
+    }
+  }
+
+  func estimatedHeight(stack: AnyHashable, item: AnyHashable) -> Double {
+    if let exact = heightsByStack[stack]?[item] { return exact }
+    return averagesByStack[stack] ?? 44.0
+  }
+}
+
+struct ScrollViewportContext: Equatable {
+  var offsetY: Double
+  var viewportHeight: Double
+  var targetID: AnyHashable?
+}
+
+private enum ScrollViewportContextKey: EnvironmentKey {
+  static let defaultValue: ScrollViewportContext? = nil
+}
+
+private enum LazyStackKeyKey: EnvironmentKey {
+  static let defaultValue: AnyHashable? = nil
+}
+
+extension EnvironmentValues {
+  var scrollViewportContext: ScrollViewportContext? {
+    get { self[ScrollViewportContextKey.self] }
+    set { self[ScrollViewportContextKey.self] = newValue }
+  }
+  var lazyStackKey: AnyHashable? {
+    get { self[LazyStackKeyKey.self] }
+    set { self[LazyStackKeyKey.self] = newValue }
+  }
+}
+
 public struct ForEach<Data: RandomAccessCollection, ID: Hashable, Content: View>: View,
   _PrimitiveView
 {
@@ -39,9 +85,52 @@ public struct ForEach<Data: RandomAccessCollection, ID: Hashable, Content: View>
   where Data.Element: Identifiable, Data.Element.ID == ID {
     self.init(data, id: \.id, content: content)
   }
+  public init<C: MutableCollection & RandomAccessCollection>(
+    _ data: Binding<C>,
+    @ViewBuilder content: @escaping (Binding<C.Element>) -> Content
+  ) where Data == Binding<C>, C.Element: Identifiable, ID == C.Element.ID {
+    self.init(data, id: \.id, content: content)
+  }
+  public init<C: MutableCollection & RandomAccessCollection>(
+    _ data: Binding<C>,
+    id: KeyPath<C.Element, ID>,
+    @ViewBuilder content: @escaping (Binding<C.Element>) -> Content
+  ) where Data == Binding<C> {
+    self.data = data
+    self.id = (\Binding<C.Element>.wrappedValue).appending(path: id)
+    self.content = content
+  }
   public var body: Never { fatalError() }
   func _makeElement(path: ViewPath) -> Element {
-    Element(
+    let env = EnvironmentValues.current
+    if let stackKey = env.lazyStackKey, let viewport = env.scrollViewportContext, data.count > 72 {
+      let minVisibleY = viewport.offsetY - 480
+      let maxVisibleY = viewport.offsetY + max(600, viewport.viewportHeight) + 600
+      var runningY = 0.0
+      var children: [Element] = []
+      children.reserveCapacity(data.count)
+      for (index, item) in data.enumerated() {
+        let itemID = AnyHashable(item[keyPath: id])
+        let estH = LazyHeightCache.shared.estimatedHeight(stack: stackKey, item: itemID)
+        let inWindow = (runningY + estH >= minVisibleY && runningY <= maxVisibleY)
+          || index < 14
+          || itemID == viewport.targetID
+        runningY += estH
+        if inWindow {
+          var child = _render(content(item), path: path.appending(id: itemID))
+          child.explicitID = itemID
+          children.append(child)
+        } else {
+          var placeholder = NodeProps()
+          placeholder.frameHeight = estH
+          placeholder.fillWidth = true
+          children.append(Element(kind: .frame, props: placeholder, explicitID: itemID))
+        }
+      }
+      return Element(kind: .fragment, children: children)
+    }
+
+    return Element(
       kind: .fragment,
       children: data.map { item in
         var child = _render(content(item), path: path.appending(id: AnyHashable(item[keyPath: id])))
@@ -118,6 +207,13 @@ public struct ScrollView<Content: View>: View, _PrimitiveView {
     p.showsScrollIndicators = showsIndicators
     p.fillWidth = true
     p.fillHeight = axes.contains(.vertical)
+    let savedViewport = EnvironmentValues.current.scrollViewportContext
+    EnvironmentValues.current.scrollViewportContext = ScrollViewportContext(
+      offsetY: offset.y,
+      viewportHeight: 600,
+      targetID: scrollTarget?.id
+    )
+    defer { EnvironmentValues.current.scrollViewportContext = savedViewport }
     let child =
       EvaluationGraph.active?.withStoredContent { _render(content, path: path.appending(index: 0)) }
       ?? _render(content, path: path.appending(index: 0))
@@ -131,13 +227,70 @@ public struct ScrollView<Content: View>: View, _PrimitiveView {
     return result
   }
 }
-public enum CoordinateSpace {
+
+package struct ScrollCoordinateSpaceKey: Hashable, Sendable {
+  package static let shared = ScrollCoordinateSpaceKey()
+}
+
+public protocol CoordinateSpaceProtocol {
+  var coordinateSpace: CoordinateSpace { get }
+}
+
+public struct LocalCoordinateSpace: CoordinateSpaceProtocol, Equatable, Sendable {
+  public init() {}
+  public var coordinateSpace: CoordinateSpace { .local }
+}
+
+public struct GlobalCoordinateSpace: CoordinateSpaceProtocol, Equatable, Sendable {
+  public init() {}
+  public var coordinateSpace: CoordinateSpace { .global }
+}
+
+public struct NamedCoordinateSpace: CoordinateSpaceProtocol, Equatable {
+  let name: AnyHashable
+  public init(_ name: some Hashable) { self.name = AnyHashable(name) }
+  public var coordinateSpace: CoordinateSpace { .named(name) }
+}
+
+public struct ScrollViewCoordinateSpace: CoordinateSpaceProtocol, Equatable, Sendable {
+  public let axis: Axis?
+  public init(axis: Axis? = nil) { self.axis = axis }
+  public var coordinateSpace: CoordinateSpace { .named(AnyHashable(ScrollCoordinateSpaceKey.shared)) }
+}
+
+extension CoordinateSpaceProtocol where Self == LocalCoordinateSpace {
+  public static var local: LocalCoordinateSpace { LocalCoordinateSpace() }
+}
+
+extension CoordinateSpaceProtocol where Self == GlobalCoordinateSpace {
+  public static var global: GlobalCoordinateSpace { GlobalCoordinateSpace() }
+}
+
+extension CoordinateSpaceProtocol where Self == NamedCoordinateSpace {
+  public static func named(_ name: some Hashable) -> NamedCoordinateSpace {
+    NamedCoordinateSpace(name)
+  }
+}
+
+extension CoordinateSpaceProtocol where Self == ScrollViewCoordinateSpace {
+  public static var scrollView: ScrollViewCoordinateSpace { ScrollViewCoordinateSpace() }
+  public static func scrollView(axis: Axis) -> ScrollViewCoordinateSpace {
+    ScrollViewCoordinateSpace(axis: axis)
+  }
+}
+
+public enum CoordinateSpace: CoordinateSpaceProtocol, Equatable {
   case local, global
   case named(AnyHashable)
+  public var coordinateSpace: CoordinateSpace { self }
+  public static var scrollView: CoordinateSpace {
+    .named(AnyHashable(ScrollCoordinateSpaceKey.shared))
+  }
 }
 public struct GeometryProxy {
   let snapshot: GeometrySnapshot
   public var size: CGSize { snapshot.rect.size }
+  public var safeAreaInsets: EdgeInsets { .zero }
   public func frame(in space: CoordinateSpace) -> CGRect {
     switch space {
     case .local: return CGRect(origin: .zero, size: size)
@@ -151,6 +304,12 @@ public struct GeometryProxy {
         x: snapshot.rect.minX - anchor.x, y: snapshot.rect.minY - anchor.y,
         width: size.width, height: size.height)
     }
+  }
+  public func frame(in coordinateSpace: some CoordinateSpaceProtocol) -> CGRect {
+    frame(in: coordinateSpace.coordinateSpace)
+  }
+  public func bounds(of coordinateSpace: NamedCoordinateSpace) -> CGRect? {
+    frame(in: coordinateSpace.coordinateSpace)
   }
 }
 extension CoordinateSpace {
@@ -183,8 +342,89 @@ public struct GeometryReader<Content: View>: View, _PrimitiveView {
     return result
   }
 }
-public typealias LazyVStack = VStack
-public typealias LazyHStack = HStack
+
+public struct PinnedScrollableViews: OptionSet, Sendable {
+  public let rawValue: UInt32
+  public init(rawValue: UInt32) { self.rawValue = rawValue }
+  public static let sectionHeaders = PinnedScrollableViews(rawValue: 1 << 0)
+  public static let sectionFooters = PinnedScrollableViews(rawValue: 1 << 1)
+}
+
+public struct LazyVStack<Content: View>: View, _PrimitiveView {
+  public typealias Body = Never
+  public let alignment: HorizontalAlignment
+  public let spacing: Double
+  public let pinnedViews: PinnedScrollableViews
+  public let content: Content
+
+  public init(
+    alignment: HorizontalAlignment = .center,
+    spacing: CGFloat? = nil,
+    pinnedViews: PinnedScrollableViews = [],
+    @ViewBuilder content: () -> Content
+  ) {
+    self.alignment = alignment
+    self.spacing = spacing.map { Double($0) } ?? 8
+    self.pinnedViews = pinnedViews
+    self.content = content()
+  }
+
+  public var body: Never { fatalError("LazyVStack is primitive") }
+
+  func _makeElement(path: ViewPath) -> Element {
+    let stackKey = AnyHashable(path)
+    let saved = EnvironmentValues.current.lazyStackKey
+    EnvironmentValues.current.lazyStackKey = stackKey
+    defer { EnvironmentValues.current.lazyStackKey = saved }
+    let contentElement = _render(content, path: path)
+    var props = NodeProps()
+    props.spacing = spacing
+    props.horizontalAlignment = alignment
+    props.isLazyContainer = true
+    var el = Element(
+      kind: .container(.vertical),
+      props: props,
+      children: flattenChildren(contentElement)
+    )
+    el.lazyCacheKey = stackKey
+    return el
+  }
+}
+
+public struct LazyHStack<Content: View>: View, _PrimitiveView {
+  public typealias Body = Never
+  public let alignment: VerticalAlignment
+  public let spacing: Double
+  public let pinnedViews: PinnedScrollableViews
+  public let content: Content
+
+  public init(
+    alignment: VerticalAlignment = .center,
+    spacing: CGFloat? = nil,
+    pinnedViews: PinnedScrollableViews = [],
+    @ViewBuilder content: () -> Content
+  ) {
+    self.alignment = alignment
+    self.spacing = spacing.map { Double($0) } ?? 8
+    self.pinnedViews = pinnedViews
+    self.content = content()
+  }
+
+  public var body: Never { fatalError("LazyHStack is primitive") }
+
+  func _makeElement(path: ViewPath) -> Element {
+    let contentElement = _render(content, path: path)
+    var props = NodeProps()
+    props.spacing = spacing
+    props.verticalAlignment = alignment
+    props.isLazyContainer = true
+    return Element(
+      kind: .container(.horizontal),
+      props: props,
+      children: flattenChildren(contentElement)
+    )
+  }
+}
 public struct ProposedViewSize {
   public var width: CGFloat?, height: CGFloat?
   public init(width: CGFloat?, height: CGFloat?) {
@@ -199,7 +439,7 @@ public struct ProposedViewSize {
     -> CGSize
   { CGSize(width: width ?? size.width, height: height ?? size.height) }
 }
-public struct UnitPoint: Equatable {
+public struct UnitPoint: Equatable, Hashable, Sendable {
   public var x: CGFloat, y: CGFloat
   public init(x: CGFloat, y: CGFloat) {
     self.x = x
@@ -396,6 +636,18 @@ public struct Grid<Content: View>: View, _PrimitiveView {
 extension View {
   public func gridCellUnsizedAxes(_ axes: Axis.Set) -> some View {
     TransformView(content: self) { $0.props.gridUnsizedAxes = axes }
+  }
+
+  public func gridColumnAlignment(_ alignment: HorizontalAlignment) -> some View {
+    TransformView(content: self) { $0.props.horizontalAlignment = alignment }
+  }
+
+  public func gridCellColumns(_ count: Int) -> some View {
+    self
+  }
+
+  public func gridCellAnchor(_ anchor: UnitPoint) -> some View {
+    self
   }
 }
 enum GeometryContext { static var current: [AnyHashable: CGPoint] = [:] }

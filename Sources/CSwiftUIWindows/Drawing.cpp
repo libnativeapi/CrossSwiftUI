@@ -451,6 +451,9 @@ void RenderFrame(Surface *s) {
         }
         if (c.stroke_width > 0 && c.stroke >> 24) {
           Pen pen(Color(c.stroke), c.stroke_width);
+          pen.SetStartCap(LineCapRound);
+          pen.SetEndCap(LineCapRound);
+          pen.SetLineJoin(LineJoinRound);
           g.DrawPath(&pen, &path);
         }
       }

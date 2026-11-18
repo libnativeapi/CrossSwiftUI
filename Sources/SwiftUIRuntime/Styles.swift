@@ -136,30 +136,60 @@ public struct Group<Content: View>: View {
 extension Optional: View where Wrapped: View {
   public var body: some View { if let value = self { value } }
 }
-public enum RoundedCornerStyle { case circular, continuous }
-public protocol Shape: View {
-  var cornerRadius: CGFloat { get }
-  func path(in rect: CGRect) -> Path
+public enum RoundedCornerStyle: Hashable, Sendable { case circular, continuous }
+nonisolated public protocol Shape: Sendable, View {
+  nonisolated var cornerRadius: CGFloat { get }
+  nonisolated func path(in rect: CGRect) -> Path
 }
 public struct Rectangle: Shape {
-  public init() {}
-  public var cornerRadius: CGFloat { 0 }
+  nonisolated public init() {}
+  nonisolated public var cornerRadius: CGFloat { 0 }
   public var body: some View { ShapeView(radius: 0, fill: .black) }
 }
 public struct RoundedRectangle: Shape {
   public let cornerRadius: CGFloat
-  public init(cornerRadius: CGFloat, style: RoundedCornerStyle = .continuous) {
+  nonisolated public init(cornerRadius: CGFloat, style: RoundedCornerStyle = .continuous) {
     self.cornerRadius = cornerRadius
   }
   public var body: some View { ShapeView(radius: cornerRadius, fill: .black) }
 }
-extension Shape {
-  public func fill(_ color: Color) -> some View {
-    PaintedShape(shape: self, fill: color, stroke: .clear, width: 0, inset: false)
+extension Shape where Self == Rectangle {
+  nonisolated public static var rect: Rectangle { Rectangle() }
+}
+extension Shape where Self == RoundedRectangle {
+  nonisolated public static func rect(
+    cornerRadius: CGFloat, style: RoundedCornerStyle = .continuous
+  ) -> RoundedRectangle {
+    RoundedRectangle(cornerRadius: cornerRadius, style: style)
   }
-  public func strokeBorder(_ color: Color, lineWidth: CGFloat = 1) -> some View {
-    PaintedShape(shape: self, fill: .clear, stroke: color, width: lineWidth, inset: true)
+}
+extension Shape where Self == UnevenRoundedRectangle {
+  nonisolated public static func rect(
+    topLeadingRadius: CGFloat = 0,
+    bottomLeadingRadius: CGFloat = 0,
+    bottomTrailingRadius: CGFloat = 0,
+    topTrailingRadius: CGFloat = 0,
+    style: RoundedCornerStyle = .continuous
+  ) -> UnevenRoundedRectangle {
+    UnevenRoundedRectangle(
+      topLeadingRadius: topLeadingRadius,
+      bottomLeadingRadius: bottomLeadingRadius,
+      bottomTrailingRadius: bottomTrailingRadius,
+      topTrailingRadius: topTrailingRadius,
+      style: style)
   }
+}
+extension Shape where Self == Circle {
+  nonisolated public static var circle: Circle { Circle() }
+}
+extension Shape where Self == Capsule {
+  nonisolated public static var capsule: Capsule { Capsule() }
+  nonisolated public static func capsule(style: RoundedCornerStyle) -> Capsule {
+    Capsule(style: style)
+  }
+}
+extension Shape where Self == Ellipse {
+  nonisolated public static var ellipse: Ellipse { Ellipse() }
 }
 struct ShapeView: View, _PrimitiveView {
   typealias Body = Never
@@ -220,12 +250,38 @@ extension View {
     ModifierContent(content: self, modifier: modifier)
   }
   public func font(_ font: Font?) -> some View { environment(\.font, font) }
-  public func foregroundStyle(_ color: Color) -> some View { foregroundColor(color) }
   public func lineLimit(_ limit: Int?) -> some View {
     TransformView(content: self) { $0.props.lineLimit = limit }
   }
+  public func lineLimit(_ limit: Int, reservesSpace: Bool) -> some View {
+    lineLimit(limit)
+  }
+  public func lineLimit(_ limit: ClosedRange<Int>) -> some View {
+    lineLimit(limit.upperBound)
+  }
+  public func lineLimit(_ limit: PartialRangeFrom<Int>) -> some View {
+    self
+  }
+  public func lineLimit(_ limit: PartialRangeThrough<Int>) -> some View {
+    lineLimit(limit.upperBound)
+  }
+  public func imageScale(_ scale: Image.Scale) -> some View {
+    self
+  }
   public func lineSpacing(_ spacing: CGFloat) -> some View {
     TransformView(content: self) { $0.props.lineSpacing = Double(spacing) }
+  }
+  public func minimumScaleFactor(_ factor: CGFloat) -> some View {
+    self
+  }
+  public func textCase(_ textCase: Text.Case?) -> some View {
+    self
+  }
+  public func selectionDisabled(_ isDisabled: Bool = true) -> some View {
+    self
+  }
+  public func onDeleteCommand(perform action: (() -> Void)?) -> some View {
+    self
   }
   public func saturation(_ amount: Double) -> some View {
     TransformView(content: self) {
@@ -254,9 +310,6 @@ extension View {
   public func background<V: View>(@ViewBuilder content: () -> V) -> some View {
     LayerView(content: self, layer: content(), behind: true, alignment: .center)
   }
-  public func background<S: Shape>(_ color: Color, in shape: S) -> some View {
-    background { shape.fill(color) }
-  }
   public func overlay<V: View>(_ overlay: V, alignment: Alignment = .center) -> some View {
     LayerView(content: self, layer: overlay, behind: false, alignment: alignment)
   }
@@ -278,6 +331,17 @@ extension View {
   public func help(_ text: String) -> some View {
     TransformView(content: self) { $0.props.help = text }
   }
+  public func help(_ text: Text) -> some View {
+    help(text.content)
+  }
+  public func help(_ textKey: LocalizedStringKey) -> some View {
+    help(textKey.resolved())
+  }
+  public func onScrollVisibilityChange(
+    threshold: Double = 0.5, _ action: @escaping (Bool) -> Void
+  ) -> some View {
+    self
+  }
   public func focused(_ binding: FocusState<Bool>.Binding) -> some View {
     TransformView(content: self) {
       $0.focusAction = binding.set
@@ -286,7 +350,7 @@ extension View {
   }
 }
 @propertyWrapper public struct FocusState<Value: Hashable>: _StateProperty {
-  public struct Binding {
+  @propertyWrapper public struct Binding {
     let get: () -> Value
     let set: (Value) -> Void
 
@@ -294,6 +358,8 @@ extension View {
       get { get() }
       nonmutating set { set(newValue) }
     }
+
+    public var projectedValue: Binding { self }
   }
   private var state: State<Value>
   public init() where Value == Bool { state = State(wrappedValue: false) }
@@ -306,10 +372,38 @@ extension View {
   func install(_ key: StateKey) { state.install(key) }
 }
 
-public enum TextSelection { case enabled, disabled }
+public protocol TextSelectability {}
+public struct EnabledTextSelectability: TextSelectability {
+  public init() {}
+}
+public struct DisabledTextSelectability: TextSelectability {
+  public init() {}
+}
+extension TextSelectability where Self == EnabledTextSelectability {
+  public static var enabled: EnabledTextSelectability { EnabledTextSelectability() }
+}
+extension TextSelectability where Self == DisabledTextSelectability {
+  public static var disabled: DisabledTextSelectability { DisabledTextSelectability() }
+}
+
+public struct TextSelection: Hashable, Sendable {
+  public enum Indices: Hashable, Sendable {
+    case selection(Range<String.Index>)
+  }
+
+  public var indices: Indices
+
+  public init(insertionPoint: String.Index) {
+    self.indices = .selection(insertionPoint..<insertionPoint)
+  }
+
+  public init(range: Range<String.Index>) {
+    self.indices = .selection(range)
+  }
+}
 
 extension View {
-  public func textSelection(_ selection: TextSelection) -> some View {
-    TransformView(content: self) { $0.props.selectableText = selection == .enabled }
+  public func textSelection<S: TextSelectability>(_ selectability: S) -> some View {
+    TransformView(content: self) { $0.props.selectableText = selectability is EnabledTextSelectability }
   }
 }

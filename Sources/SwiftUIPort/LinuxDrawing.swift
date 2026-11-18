@@ -285,14 +285,21 @@ final class LinuxDrawing {
     let frame = node.frame
     guard frame.width > 0, frame.height > 0 else { return }
     let path = node.props.imagePath
-    if path.lowercased().hasSuffix(".svg"), let image = VectorImage.load(path),
+    if (path.hasPrefix("sf://") || path.lowercased().hasSuffix(".svg")),
+       let image = VectorImage.load(path),
        image.bounds.width > 0, image.bounds.height > 0 {
       let scale = min(frame.width / image.bounds.width, frame.height / image.bounds.height)
       let x = frame.minX + (frame.width - image.bounds.width * scale) / 2 - image.bounds.minX * scale
       let y = frame.minY + (frame.height - image.bounds.height * scale) / 2 - image.bounds.minY * scale
+      let ink = node.props.foreground ?? .black
+      let sw = image.strokeWidth > 0 ? max(1.1, image.strokeWidth * scale) : 0
       for path in image.paths {
-        shape(context, path.transformed(x: x, y: y, sx: scale, sy: scale),
-              fill: node.props.foreground ?? .black, stroke: .clear, width: 0)
+        let t = path.transformed(x: x, y: y, sx: scale, sy: scale)
+        if sw > 0 {
+          shape(context, t, fill: .clear, stroke: ink, width: sw)
+        } else {
+          shape(context, t, fill: ink, stroke: .clear, width: 0)
+        }
       }
     } else if let pixels = gdk_pixbuf_new_from_file_at_scale(path, Int32(clamping: Int(frame.width)),
                                                              Int32(clamping: Int(frame.height)), 1, nil) {

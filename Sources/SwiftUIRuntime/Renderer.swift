@@ -12,7 +12,7 @@
 /// in a real app.
 
 import Foundation
-#if canImport(CoreGraphics)
+#if canImport(Darwin) && canImport(CoreGraphics)
   import CoreGraphics
 #endif
 
@@ -565,17 +565,24 @@ import Foundation
 
   private func scroll(_ node: Element, to requested: Point) {
     var offset = requested
+    let insets = node.props.scrollContentInsets
     if let content = node.children.first {
-      offset.x = max(0, min(offset.x, content.frame.width - node.frame.width))
-      offset.y = max(0, min(offset.y, content.frame.height - node.frame.height))
+      let minX = -insets.leading
+      let maxX = max(minX, content.frame.width + insets.trailing - node.frame.width)
+      let minY = -insets.top
+      let maxY = max(minY, content.frame.height + insets.bottom - node.frame.height)
+      offset.x = max(minX, min(offset.x, maxX))
+      offset.y = max(minY, min(offset.y, maxY))
     }
     guard offset != (unpublishedOffsets[node.id] ?? node.props.scrollOffset) else { return }
     unpublishedOffsets[node.id] = offset
     // Global/named geometry and active presentations require a full pass.
     // Opaque layouts must reproduce exactly translated placement proposals.
     if !needsRender || pendingScroll?.id == node.id, !isRendering, let key = node.scrollStateKey,
+      node.scrollGeometryHandlers.isEmpty,
       mounted?.hasActivePresentation == false,
       mounted?.hasLayoutAnimation == false,
+      !containsLazyContainer(node),
       node.children.allSatisfy({
         layoutEngine.canTranslateScroll(
           $0, dx: node.props.scrollOffset.x - offset.x,
@@ -586,7 +593,22 @@ import Foundation
     } else {
       pendingScroll = nil
     }
+    for phaseHandler in node.scrollPhaseHandlers {
+      phaseHandler(.idle, .interacting)
+    }
     node.scrollAction?(offset)
+    if !node.scrollPhaseHandlers.isEmpty {
+      let handlers = node.scrollPhaseHandlers
+      Task { @MainActor in
+        try? await Task.sleep(nanoseconds: 140_000_000)
+        for h in handlers { h(.interacting, .idle) }
+      }
+    }
+  }
+
+  private func containsLazyContainer(_ element: Element) -> Bool {
+    if element.props.isLazyContainer { return true }
+    return element.children.contains { containsLazyContainer($0) }
   }
 
   private func updateScroll() -> Bool {

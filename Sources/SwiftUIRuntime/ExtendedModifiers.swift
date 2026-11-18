@@ -1,5 +1,5 @@
 import Foundation
-#if canImport(CoreGraphics)
+#if canImport(Darwin) && canImport(CoreGraphics)
   import CoreGraphics
 #endif
 
@@ -14,13 +14,21 @@ public struct ViewDimensions {
 }
 public enum LayoutDirection { case leftToRight, rightToLeft }
 public enum ContentMode { case fit, fill }
-public struct AnyTransition: Equatable {
+public struct AnyTransition: Equatable, Sendable {
   public var opacity: Double = 1, scale: Double = 1
   public static let opacity = AnyTransition(opacity: 0)
   public static let identity = AnyTransition()
-  public static func scale(scale: Double = 0) -> Self { Self(scale: scale) }
+  public static let slide = AnyTransition(opacity: 0)
+  public static func scale(scale: Double = 0, anchor: UnitPoint = .center) -> Self { Self(scale: scale) }
+  public static func move(edge: Edge) -> Self { Self(opacity: 0) }
+  public static func push(from edge: Edge) -> Self { Self(opacity: 0) }
+  public static func offset(x: CGFloat = 0, y: CGFloat = 0) -> Self { Self(opacity: 0) }
+  public static func asymmetric(insertion: Self, removal: Self) -> Self { insertion }
   public func combined(with other: Self) -> Self {
     Self(opacity: opacity * other.opacity, scale: scale * other.scale)
+  }
+  public func animation(_ animation: Animation?) -> Self {
+    self
   }
 }
 extension Font {
@@ -153,8 +161,8 @@ extension Animation {
     return animation
   }
 }
-public func withAnimation<Result>(_ animation: Animation? = .default, _ body: () -> Result)
-  -> Result
+public func withAnimation<Result>(_ animation: Animation? = .default, _ body: () throws -> Result)
+  rethrows -> Result
 {
   let old = AnimationContext.current
   let oldExplicit = AnimationContext.isExplicit
@@ -164,7 +172,7 @@ public func withAnimation<Result>(_ animation: Animation? = .default, _ body: ()
     AnimationContext.current = old
     AnimationContext.isExplicit = oldExplicit
   }
-  return body()
+  return try body()
 }
 enum AnimationContext {
   static var current: Animation?
@@ -187,21 +195,21 @@ extension View {
 }
 public struct StrokeStyle {
   public var lineWidth: CGFloat, dash: [CGFloat], dashPhase: CGFloat
-  public init(lineWidth: CGFloat = 1, dash: [CGFloat] = [], dashPhase: CGFloat = 0) {
+  public init(
+    lineWidth: CGFloat = 1,
+    lineCap: CGLineCap = .butt,
+    lineJoin: CGLineJoin = .miter,
+    miterLimit: CGFloat = 10,
+    dash: [CGFloat] = [],
+    dashPhase: CGFloat = 0
+  ) {
     self.lineWidth = lineWidth
     self.dash = dash
     self.dashPhase = dashPhase
   }
 }
-extension Shape {
-  public func strokeBorder(_ color: Color, style: StrokeStyle) -> some View {
-    TransformView(content: strokeBorder(color, lineWidth: style.lineWidth)) {
-      $0.props.dash = style.dash.map { Double($0) }
-    }
-  }
-  public func stroke(_ color: Color, style: StrokeStyle) -> some View {
-    TransformView(content: stroke(color, lineWidth: style.lineWidth)) {
-      $0.props.dash = style.dash.map { Double($0) }
-    }
-  }
-}
+
+#if !canImport(Darwin)
+  public enum CGLineCap: Int32, Sendable { case butt = 0, round = 1, square = 2 }
+  public enum CGLineJoin: Int32, Sendable { case miter = 0, round = 1, bevel = 2 }
+#endif
