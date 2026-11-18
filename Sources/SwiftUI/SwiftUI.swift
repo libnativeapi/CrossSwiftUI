@@ -8,6 +8,14 @@
   @_exported import SwiftUIWeb
 #elseif os(Android)
   @_exported import SwiftUIAndroid
-#elseif !SWIFTUI_PORT_HARMONY
-  @_exported import SwiftUIPort
+#elseif !CROSS_SWIFTUI_HARMONY
+  @_exported import CrossSwiftUI
+  #if !os(macOS)
+    @_exported import CrossAppKit
+    @_exported import CoreGraphics
+
+    extension SwiftUIRuntime.Path {
+      public var cgPath: CGPath { CGPath() }
+    }
+  #endif
 #endif

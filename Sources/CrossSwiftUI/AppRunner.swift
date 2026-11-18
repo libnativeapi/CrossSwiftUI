@@ -20,7 +20,7 @@ private func flattenScenes(_ scene: any Scene) -> [any Scene] {
 
 /// Hosts a SwiftUI `MenuBarExtra` scene on a `CrossAppKit.NSStatusItem` (`NativeAPI.TrayIcon`).
 @MainActor
-private final class MenuBarExtraHost<A: App> {
+private final class MenuBarExtraHost<A: App>: NSMenuDelegate {
   private let app: A
   private let index: Int
   private var statusItem: NSStatusItem?
@@ -29,6 +29,12 @@ private final class MenuBarExtraHost<A: App> {
     self.app = app
     self.index = index
     refresh()
+  }
+
+  func menuNeedsUpdate(_ menu: NSMenu) {
+    guard let extra = currentExtra() else { return }
+    menu.removeAllItems()
+    populateMenu(menu, from: extra._makeContentView())
   }
 
   private func currentExtra() -> (any _MenuBarExtraScene)? {
@@ -81,6 +87,7 @@ private final class MenuBarExtraHost<A: App> {
 
     // Rebuild context menu on open so dynamic labels/states stay fresh
     let menu = NSMenu(title: extra._title)
+    menu.delegate = self
     populateMenu(menu, from: extra._makeContentView())
     item.menu = menu
   }
@@ -170,7 +177,7 @@ public func runApp<A: App>(_ app: A) {
     }
 
     let title = windowScene._windowTitle
-    window.setTitle(title.isEmpty ? "SwiftUIPort" : title)
+    window.setTitle(title.isEmpty ? "CrossSwiftUI" : title)
 
     let initialWidth = windowScene._defaultSize.width
     let initialHeight = windowScene._defaultSize.height
@@ -218,7 +225,7 @@ public func runApp<A: App>(_ app: A) {
       }
     #endif
     renderer.mount()
-    if let path = ProcessInfo.processInfo.environment["SWIFTUI_PORT_TREE_PATH"],
+    if let path = ProcessInfo.processInfo.environment["CROSS_SWIFTUI_TREE_PATH"],
       let tree = renderer.tree
     {
       func encode(_ node: Element) -> [String: Any] {

@@ -22,7 +22,7 @@ sdk_options=(--swift-sdk swift-6.4.2-RELEASE_android)
 if [[ -n ${SWIFTUI_ANDROID_SDKS_PATH:-} ]]; then
   sdk_options+=(--swift-sdks-path "$SWIFTUI_ANDROID_SDKS_PATH")
 fi
-export SWIFTUI_PORT_ANDROID=1
+export CROSS_SWIFTUI_ANDROID=1
 
 for abi in "$@"; do
   case "$abi" in

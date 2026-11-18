@@ -1,11 +1,11 @@
-# SwiftUIPort
+# CrossSwiftUI
 
 **Unofficial; not affiliated with Apple.**
 
 SwiftUI's declarative API shape for Windows, Linux, the browser, and an
 initial Android host. Desktop builds use [nativeapi](https://github.com/libnativeapi/nativeapi),
 Web builds use WebAssembly and browser controls, and the Android host renders
-the shared runtime's controls with Jetpack Compose. SwiftUIPort is an
+the shared runtime's controls with Jetpack Compose. CrossSwiftUI is an
 independent implementation.
 
 ```swift
@@ -76,7 +76,7 @@ Read [docs/COMPAT.md](docs/COMPAT.md) and
   ```text
   Projects/
   ├── nativeapi/
-  └── swiftui-port/
+  └── crossswift/
   ```
 
   The Windows backend requires the view batching and update scheduling APIs
@@ -149,7 +149,7 @@ Swift.org toolchain for this build. Open [localhost:8000](http://localhost:8000)
 to try Counter. Serve `.build/web` from a static HTTP host. The directory
 includes the WebAssembly module and its JavaScript dependencies.
 
-The script selects the Web package graph with `SWIFTUI_PORT_WEB=1`, uses a
+The script selects the Web package graph with `CROSS_SWIFTUI_WEB=1`, uses a
 separate SwiftPM scratch directory and packages the executable with
 JavaScriptKit. It accepts an executable product name and a build configuration
 as optional arguments, for example `./scripts/build-web.sh Counter debug`.
@@ -162,7 +162,7 @@ HTML controls for buttons, text fields and scrolling. See
 
 For a separate Swift package, add the `SwiftUI` product from this package and
 JavaScriptKit's `PackageToJS` command plugin dependency. Set
-`SWIFTUI_PORT_WEB=1` when invoking `swift package --swift-sdk <id> js` for your
+`CROSS_SWIFTUI_WEB=1` when invoking `swift package --swift-sdk <id> js` for your
 executable. Use [Web/index.html](Web/index.html) as a host page. For deeply
 nested views in debug builds, use the WASI stack size linker setting on
 Counter's executable target in [Package.swift](Package.swift).
@@ -179,7 +179,8 @@ upcoming milestones.
 
 ```
 Sources/SwiftUIRuntime/   view protocol, element tree, layout, diff, state
-Sources/SwiftUIPort/      Windows and Linux drawing backends, app runner
+Sources/CrossSwiftUI/     Windows and Linux drawing backends, app runner
+Sources/CrossAppKit/      cross-platform AppKit and Apple-framework shims
 Sources/SwiftUIWeb/       DOM renderer and WebAssembly app runner
 Sources/SwiftUIAndroid/   Compose host and Swift renderer integration
 Sources/CSwiftUIWindows/  generic GDI+ display list and native button bridge

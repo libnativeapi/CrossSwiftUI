@@ -3,7 +3,7 @@ import Foundation
 import NativeAPI
 import XCTest
 
-@testable import SwiftUIPort
+@testable import CrossSwiftUI
 @testable import SwiftUIRuntime
 
 final class EditorPlaceholderTests: XCTestCase {

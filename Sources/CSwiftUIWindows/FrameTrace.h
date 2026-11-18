@@ -33,7 +33,7 @@ struct FrameTrace {
   }
   FrameTrace() {
     wchar_t value[32768];
-    const auto length = GetEnvironmentVariableW(L"SWIFTUI_PORT_TRACE_PATH", value, 32768);
+    const auto length = GetEnvironmentVariableW(L"CROSS_SWIFTUI_TRACE_PATH", value, 32768);
     if (length && length < 32768) {
       path.assign(value, length);
       records.reserve(200000);

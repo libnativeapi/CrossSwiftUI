@@ -1,4 +1,4 @@
-package dev.swiftuiport.android.counter
+package dev.crossswiftui.android.counter
 
 import android.os.Bundle
 import androidx.activity.ComponentActivity
@@ -10,7 +10,7 @@ import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.ui.Modifier
-import dev.swiftuiport.android.SwiftUIComposeHost
+import dev.crossswiftui.android.SwiftUIComposeHost
 
 class CounterActivity : ComponentActivity() {
     private lateinit var host: SwiftUIComposeHost

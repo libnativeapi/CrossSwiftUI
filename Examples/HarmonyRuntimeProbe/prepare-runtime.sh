@@ -37,7 +37,7 @@ compile() {
   shift 2
   "${swiftc[@]}" -target aarch64-swift-linux-musl -sdk "$sdk" -resource-dir "$resources" \
     -static-stdlib -parse-as-library -whole-module-optimization -emit-object -emit-module -O \
-    -D SWIFTUI_PORT_HARMONY -I "$inputs" -module-name "$module" \
+    -D CROSS_SWIFTUI_HARMONY -I "$inputs" -module-name "$module" \
     -emit-module-path "$inputs/$module.swiftmodule" -o "$inputs/$output.o" "$@" ${sdk_args[@]+"${sdk_args[@]}"}
 }
 
@@ -53,7 +53,7 @@ if [[ ! -f "$nativeapi/scripts/build-ohos.sh" ]]; then
 fi
 nativeapi_headers="$nativeapi/Sources/CNativeAPI/include"
 bash "$nativeapi/scripts/build-ohos.sh" "$sdk" "$inputs"
-compile SwiftUIRuntime SwiftUIRuntime -package-name SwiftUIPort ../../Sources/SwiftUIRuntime/*.swift
+compile SwiftUIRuntime SwiftUIRuntime -package-name CrossSwiftUI ../../Sources/SwiftUIRuntime/*.swift
 compile SwiftUI SwiftUI ../../Sources/SwiftUI/SwiftUI.swift
 compile FluentIcons FluentIcons "$dazzui/Windows/FluentIcons/FluentIcon.swift"
 

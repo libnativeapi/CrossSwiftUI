@@ -3,19 +3,21 @@
 import Foundation
 import PackageDescription
 
-// SwiftUIPort — a declarative SwiftUI-shaped API over nativeapi's native views.
+// CrossSwiftUI — a declarative SwiftUI-shaped API over nativeapi's native views,
+// together with CrossAppKit's cross-platform AppKit/system shims.
 // Unofficial; not affiliated with Apple.
 //
 // The package is organized into these modules:
 //   SwiftUIRuntime  engine: view protocol, element tree, layout, diff, state.
 //                   No nativeapi dependency, so it builds and tests on macOS.
-//   SwiftUIPort     the nativeapi backend and app/window integration.
+//   CrossSwiftUI    the nativeapi backend and app/window integration.
+//   CrossAppKit     cross-platform AppKit and Apple-framework shims.
 //   SwiftUIWeb      the WebAssembly backend and browser integration.
 //   SwiftUIAndroid  the Android Activity host and JNI integration.
 //   SwiftUI         the user-facing facade (`import SwiftUI`).
 //
-// The desktop macOS build contains SwiftUIRuntime, its tests, and Counter
-// compiled against Apple's SwiftUI. The WebAssembly build uses the port's
+// The desktop macOS build contains SwiftUIRuntime, CrossAppKit, their tests,
+// and Counter compiled against Apple's SwiftUI. The WebAssembly build uses the
 // SwiftUI facade on every supported host.
 //
 // The nativeapi Swift package is consumed as a sibling checkout at
@@ -24,8 +26,8 @@ import PackageDescription
 
 // SwiftPM evaluates the manifest on the host. Select the cross-build graph
 // explicitly so it never resolves desktop SDK dependencies.
-let buildForAndroid = ProcessInfo.processInfo.environment["SWIFTUI_PORT_ANDROID"] == "1"
-let buildForWeb = !buildForAndroid && ProcessInfo.processInfo.environment["SWIFTUI_PORT_WEB"] == "1"
+let buildForAndroid = ProcessInfo.processInfo.environment["CROSS_SWIFTUI_ANDROID"] == "1"
+let buildForWeb = !buildForAndroid && ProcessInfo.processInfo.environment["CROSS_SWIFTUI_WEB"] == "1"
 let buildForDesktop = !buildForWeb && !buildForAndroid
 var packageDependencies: [Package.Dependency] = []
 if buildForWeb {
@@ -39,11 +41,7 @@ if buildForDesktop {
     .package(
       name: "NativeAPI",
       path: ProcessInfo.processInfo.environment["NATIVEAPI_SWIFT_PATH"]
-        ?? "../nativeapi/bindings/swift"),
-    .package(
-      name: "CrossAppKit",
-      path: ProcessInfo.processInfo.environment["CROSS_APPKIT_PATH"]
-        ?? "../CrossAppKit"),
+        ?? "../nativeapi/bindings/swift")
   ]
 }
 #endif
@@ -57,8 +55,48 @@ var targets: [Target] = [
     ])
 ]
 
+var products: [Product] = [
+  .library(name: "SwiftUIRuntime", targets: ["SwiftUIRuntime"])
+]
+
+var crossAppKitDependencies: [Target.Dependency] = []
+if buildForDesktop {
+  products.append(.library(name: "CrossAppKit", targets: ["CrossAppKit"]))
+}
+
 #if os(Windows)
 if buildForDesktop {
+  targets.append(
+    .target(
+      name: "CAppKitWindows",
+      publicHeadersPath: "include",
+      linkerSettings: [
+        .linkedLibrary("user32"),
+        .linkedLibrary("shell32"),
+        .linkedLibrary("ole32"),
+        .linkedLibrary("oleaut32"),
+        .linkedLibrary("uuid"),
+        .linkedLibrary("dwmapi"),
+        .linkedLibrary("gdi32"),
+        .linkedLibrary("gdiplus"),
+        .linkedLibrary("imm32"),
+        .linkedLibrary("bcrypt"),
+        .linkedLibrary("advapi32"),
+        .linkedLibrary("shlwapi"),
+      ]
+    )
+  )
+  targets.append(
+    .target(
+      name: "SQLite3",
+      publicHeadersPath: "include",
+      linkerSettings: [.linkedLibrary("winsqlite3")]
+    )
+  )
+  products.append(.library(name: "CAppKitWindows", targets: ["CAppKitWindows"]))
+  products.append(.library(name: "SQLite3", targets: ["SQLite3"]))
+  crossAppKitDependencies.append("CAppKitWindows")
+
   targets.append(
     .target(
       name: "CSwiftUIWindows", dependencies: [.product(name: "CNativeAPI", package: "NativeAPI")],
@@ -74,8 +112,8 @@ if buildForDesktop {
       name: "WindowsDrawingTests",
       dependencies: [
         "CSwiftUIWindowsTestSupport",
-        "SwiftUIPort",
-        .product(name: "CrossAppKit", package: "CrossAppKit"),
+        "CrossSwiftUI",
+        "CrossAppKit",
       ]))
 }
 let drawingDependencies: [Target.Dependency] = ["CSwiftUIWindows"]
@@ -83,14 +121,11 @@ let drawingDependencies: [Target.Dependency] = ["CSwiftUIWindows"]
 let drawingDependencies: [Target.Dependency] = []
 #if os(Linux)
 if buildForDesktop {
-  targets.append(.testTarget(name: "LinuxDrawingTests", dependencies: ["SwiftUIPort"]))
+  targets.append(.testTarget(name: "LinuxDrawingTests", dependencies: ["CrossSwiftUI"]))
 }
 #endif
 #endif
 
-var products: [Product] = [
-  .library(name: "SwiftUIRuntime", targets: ["SwiftUIRuntime"])
-]
 var counterDependencies: [Target.Dependency] = []
 if buildForAndroid {
   targets += [
@@ -124,27 +159,71 @@ if buildForWeb {
 
 #if !os(macOS)
 if buildForDesktop {
+  crossAppKitDependencies.append(.product(name: "NativeAPI", package: "NativeAPI"))
+  crossAppKitDependencies.append("CoreGraphics")
+  crossAppKitDependencies.append("UniformTypeIdentifiers")
+  crossAppKitDependencies.append("Combine")
+
+  var cryptoDependencies: [Target.Dependency] = []
+  #if os(Windows)
+    cryptoDependencies.append("CAppKitWindows")
+  #endif
+
   targets += [
+    .target(name: "Carbon", publicHeadersPath: "include"),
+    .target(name: "CoreGraphics"),
+    .target(name: "UniformTypeIdentifiers"),
+    .target(name: "OSLog"),
+    .target(name: "os", dependencies: ["OSLog"]),
+    .target(name: "Combine"),
+    .target(name: "CryptoKit", dependencies: cryptoDependencies),
+    .target(name: "AppKit", dependencies: ["CrossAppKit", "CoreGraphics", "UniformTypeIdentifiers"]),
     .target(
-      name: "SwiftUIPort",
+      name: "CrossSwiftUI",
       dependencies: [
         "SwiftUIRuntime",
         .product(name: "NativeAPI", package: "NativeAPI"),
-        .product(name: "CrossAppKit", package: "CrossAppKit"),
+        "CrossAppKit",
       ] + drawingDependencies
     ),
     .target(
       name: "SwiftUI",
-      dependencies: ["SwiftUIRuntime", "SwiftUIPort"]
+      dependencies: [
+        "SwiftUIRuntime",
+        "CrossSwiftUI",
+        "CrossAppKit",
+        "CoreGraphics",
+      ]
     ),
   ]
   products += [
-    .library(name: "SwiftUIPort", targets: ["SwiftUIPort"]),
+    .library(name: "AppKit", targets: ["AppKit"]),
+    .library(name: "Carbon", targets: ["Carbon"]),
+    .library(name: "CoreGraphics", targets: ["CoreGraphics"]),
+    .library(name: "UniformTypeIdentifiers", targets: ["UniformTypeIdentifiers"]),
+    .library(name: "OSLog", targets: ["OSLog"]),
+    .library(name: "os", targets: ["os"]),
+    .library(name: "Combine", targets: ["Combine"]),
+    .library(name: "CryptoKit", targets: ["CryptoKit"]),
+    .library(name: "CrossSwiftUI", targets: ["CrossSwiftUI"]),
     .library(name: "SwiftUI", targets: ["SwiftUI"]),
   ]
   counterDependencies = ["SwiftUI"]
 }
 #endif
+
+if buildForDesktop {
+  targets += [
+    .target(
+      name: "CrossAppKit",
+      dependencies: crossAppKitDependencies
+    ),
+    .testTarget(
+      name: "CrossAppKitTests",
+      dependencies: ["CrossAppKit"]
+    ),
+  ]
+}
 
 if !buildForAndroid {
   targets.append(
@@ -169,7 +248,7 @@ targets.append(
   )
 )
 let package = Package(
-  name: "SwiftUIPort",
+  name: "CrossSwiftUI",
   platforms: [.macOS(.v14)],
   products: products,
   dependencies: packageDependencies,

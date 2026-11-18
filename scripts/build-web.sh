@@ -6,7 +6,7 @@ sdk=${SWIFT_WASM_SDK:-swift-6.4.2-RELEASE_wasm}
 product=${1:-Counter}
 configuration=${2:-release}
 
-SWIFTUI_PORT_WEB=1 swift package --swift-sdk "$sdk" --scratch-path .build/wasm \
+CROSS_SWIFTUI_WEB=1 swift package --swift-sdk "$sdk" --scratch-path .build/wasm \
   js --product "$product" -c "$configuration"
 
 package=.build/wasm/plugins/PackageToJS/outputs/Package

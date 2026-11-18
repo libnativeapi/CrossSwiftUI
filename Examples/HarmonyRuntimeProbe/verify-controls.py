@@ -19,7 +19,7 @@ def controls(node):
 deveco = Path(os.environ.get("DEVECO_STUDIO_HOME", "/Applications/DevEco-Studio.app/Contents"))
 device = os.environ.get("HARMONY_DEVICE", "127.0.0.1:5555")
 hdc = [str(deveco / "sdk/default/openharmony/toolchains/hdc"), "-t", device]
-bundle = "dev.swiftuiport.runtimeprobe"
+bundle = "dev.crossswiftui.runtimeprobe"
 guest_layout = "/data/local/tmp/swiftui-runtime-probe-layout.json"
 
 

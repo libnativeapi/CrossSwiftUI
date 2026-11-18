@@ -6,7 +6,7 @@
 
 - `SwiftUIRuntime`: platform-independent view values, builders, scoped
   environment, state, element tree, layout and diff. No native API imports.
-- `SwiftUIPort`: nativeapi window/application lifecycle and platform backends.
+- `CrossSwiftUI`: nativeapi window/application lifecycle and platform backends.
 - `SwiftUIWeb`: WebAssembly app hosting and a DOM renderer.
 - `SwiftUIAndroid`: Jetpack Compose hosting and a JNI bridge.
 - `CSwiftUIWindows`: generic Win32/GDI+ drawing, text measurement, edit and button

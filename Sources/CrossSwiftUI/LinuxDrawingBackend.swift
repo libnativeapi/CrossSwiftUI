@@ -41,7 +41,7 @@ public final class LinuxDrawingBackend: RenderBackend {
   private var motions: [NodeID: LinuxDrawing.Motion] = [:]
   private var motionDamage: [NodeID: Rect] = [:]
   private var prior: [NodeID: LinuxDrawing.DrawingValues] = [:]
-  private let trace = ProcessInfo.processInfo.environment["SWIFTUI_PORT_LINUX_TRACE"] == "1"
+  private let trace = ProcessInfo.processInfo.environment["CROSS_SWIFTUI_LINUX_TRACE"] == "1"
 
   fileprivate typealias Widget = UnsafeMutablePointer<GtkWidget>
   private static let connectAfter = GConnectFlags(rawValue: 1)

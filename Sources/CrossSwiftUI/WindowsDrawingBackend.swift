@@ -17,7 +17,7 @@
     public var interactionHandler: ((NodeID, Renderer.Interaction) -> Void)?
     public var inputHandler: ((NodeID?, Int, CGPoint, Int, EventModifiers, String) -> Bool)?
     private let schedulesUpdates: Bool
-    private let tracesFrames = ProcessInfo.processInfo.environment["SWIFTUI_PORT_TRACE_PATH"] != nil
+    private let tracesFrames = ProcessInfo.processInfo.environment["CROSS_SWIFTUI_TRACE_PATH"] != nil
     private var deliveringUpdate = false
     private var pendingRender: (() -> Void)?
     private var pendingPointer: (() -> Void)?

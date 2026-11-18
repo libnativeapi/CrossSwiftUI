@@ -15,7 +15,7 @@
 /// A backend that records commands instead of touching a platform toolkit.
 ///
 /// This is the only backend needed to test the engine on macOS, where the
-/// `SwiftUI` and `SwiftUIPort` modules are not built.
+/// `SwiftUI` and `CrossSwiftUI` modules are not built.
 
 import Foundation
 #if canImport(Darwin) && canImport(CoreGraphics)

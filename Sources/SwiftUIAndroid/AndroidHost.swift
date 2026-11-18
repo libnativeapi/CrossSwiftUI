@@ -146,7 +146,7 @@ public final class AndroidHost {
 }
 
 // SwiftUIComposeHost calls these synchronously on the Android UI thread.
-@MainActor @_cdecl("Java_dev_swiftuiport_android_SwiftUIComposeHost_nativeResize")
+@MainActor @_cdecl("Java_dev_crossswiftui_android_SwiftUIComposeHost_nativeResize")
 public func androidResize(
   _ env: SwiftUIJNIEnvironment, _ host: jobject, _ handle: jlong, _ width: jdouble, _ height: jdouble,
   _ invalidateMeasurements: jboolean
@@ -156,7 +156,7 @@ public func androidResize(
   }
 }
 
-@MainActor @_cdecl("Java_dev_swiftuiport_android_SwiftUIComposeHost_nativeTap")
+@MainActor @_cdecl("Java_dev_crossswiftui_android_SwiftUIComposeHost_nativeTap")
 public func androidTap(
   _ env: SwiftUIJNIEnvironment, _ host: jobject, _ handle: jlong, _ id: jlong
 ) -> jstring? {
@@ -165,7 +165,7 @@ public func androidTap(
   }
 }
 
-@MainActor @_cdecl("Java_dev_swiftuiport_android_SwiftUIComposeHost_nativeDestroy")
+@MainActor @_cdecl("Java_dev_crossswiftui_android_SwiftUIComposeHost_nativeDestroy")
 public func androidDestroy(_ env: SwiftUIJNIEnvironment, _ host: jobject, _ handle: jlong) {
   AndroidHost.fromHandle(handle).release()
 }

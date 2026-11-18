@@ -7,13 +7,13 @@ import SwiftUIRuntime
 @MainActor public func runApp<A: App>(_ app: A) {
   JavaScriptEventLoop.installGlobalExecutor()
   guard let scene = app.body as? any _WindowScene else {
-    fatalError("SwiftUIPort requires WindowGroup as the top-level Scene")
+    fatalError("CrossSwiftUI requires WindowGroup as the top-level Scene")
   }
   let document = JSObject.global.document.object!
   guard let host = document.getElementById!("swiftui-root").object else {
-    fatalError("SwiftUIPort requires a #swiftui-root element")
+    fatalError("CrossSwiftUI requires a #swiftui-root element")
   }
-  document.title = .string(scene._windowTitle.isEmpty ? "SwiftUIPort" : scene._windowTitle)
+  document.title = .string(scene._windowTitle.isEmpty ? "CrossSwiftUI" : scene._windowTitle)
 
   let backend = WebBackend(document: document, host: host)
   let renderer = Renderer(

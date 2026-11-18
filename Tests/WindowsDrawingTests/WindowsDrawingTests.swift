@@ -1,7 +1,7 @@
 import CSwiftUIWindowsTestSupport
 import CrossAppKit
 import NativeAPI
-import SwiftUIPort
+import CrossSwiftUI
 import SwiftUIRuntime
 import XCTest
 

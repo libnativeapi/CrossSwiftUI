@@ -5,7 +5,7 @@ cd "$(dirname "$0")"
 deveco="${DEVECO_STUDIO_HOME:-/Applications/DevEco-Studio.app/Contents}"
 device="${HARMONY_DEVICE:-127.0.0.1:5555}"
 hdc=("$deveco/sdk/default/openharmony/toolchains/hdc" -t "$device")
-bundle=dev.swiftuiport.runtimeprobe
+bundle=dev.crossswiftui.runtimeprobe
 expected=(
   'SWIFT_RUNTIME_PROBE PASS values=217,225'
   'SWIFT_FOUNDATION_PROBE PASS value=42'

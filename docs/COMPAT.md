@@ -62,7 +62,7 @@ the first Android host's supported subset and entry point.
 | `.focused` | partial | Bool and optional-value bindings; no focus scopes |
 | `.help` | partial | native button tooltips |
 | `.id(_:)` | partial | diff identity and explicit state scope |
-| `App` | supported | entry point supplied by SwiftUIPort |
+| `App` | supported | entry point supplied by CrossSwiftUI |
 | `Scene` | partial | one WindowGroup |
 | `WindowGroup` | partial | one window, defaultSize and resize events |
 | `@main` | supported | App.main() runner |

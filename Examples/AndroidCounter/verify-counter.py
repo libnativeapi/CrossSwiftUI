@@ -11,8 +11,8 @@ from xml.etree import ElementTree
 
 SDK = os.environ.get("ANDROID_HOME") or os.environ.get("ANDROID_SDK_ROOT")
 ADB = str(Path(SDK) / "platform-tools" / "adb") if SDK else "adb"
-PACKAGE = "dev.swiftuiport.android.counter"
-DUMP = "/data/local/tmp/swiftuiport-counter.xml"
+PACKAGE = "dev.crossswiftui.android.counter"
+DUMP = "/data/local/tmp/crossswiftui-counter.xml"
 
 
 def adb(*args):

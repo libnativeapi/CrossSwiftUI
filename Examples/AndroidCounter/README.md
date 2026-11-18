@@ -18,7 +18,7 @@ export ANDROID_HOME=/path/to/android/sdk
 export ANDROID_NDK_HOME=/path/to/android-ndk-r30
 cd Examples/AndroidCounter
 ./gradlew :app:installDebug
-"$ANDROID_HOME/platform-tools/adb" shell am start -n dev.swiftuiport.android.counter/.CounterActivity
+"$ANDROID_HOME/platform-tools/adb" shell am start -n dev.crossswiftui.android.counter/.CounterActivity
 ```
 
 Gradle cross-compiles Swift and bundles `arm64-v8a` and `x86_64` by default.

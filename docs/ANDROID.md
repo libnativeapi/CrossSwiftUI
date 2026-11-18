@@ -13,7 +13,7 @@ SwiftUI view → SwiftUIRuntime → SwiftUIAndroid → JNI → Compose
 ```
 
 The Android build selects its SwiftPM dependency graph with
-`SWIFTUI_PORT_ANDROID=1` because SwiftPM evaluates `Package.swift` on the
+`CROSS_SWIFTUI_ANDROID=1` because SwiftPM evaluates `Package.swift` on the
 build host. That graph builds the facade and Android host without resolving
 the desktop NativeAPI or WebAssembly dependencies. The Kotlin host uses
 Compose Material 3. Swift owns application state and publishes snapshots

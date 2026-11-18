@@ -12,7 +12,7 @@ import time
 deveco = Path(os.environ.get("DEVECO_STUDIO_HOME", "/Applications/DevEco-Studio.app/Contents"))
 device = os.environ.get("HARMONY_DEVICE", "127.0.0.1:5555")
 hdc = [str(deveco / "sdk/default/openharmony/toolchains/hdc"), "-t", device]
-bundle = "dev.swiftuiport.runtimeprobe"
+bundle = "dev.crossswiftui.runtimeprobe"
 guest_layout = "/data/local/tmp/swiftui-gallery-layout.json"
 guest_screenshot = "/data/local/tmp/swiftui-gallery-screenshot.jpeg"
 screenshot_dir = os.environ.get("HARMONY_GALLERY_SCREENSHOTS")

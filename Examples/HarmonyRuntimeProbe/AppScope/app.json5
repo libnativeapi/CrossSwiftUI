@@ -1,7 +1,7 @@
 {
   "app": {
-    "bundleName": "dev.swiftuiport.runtimeprobe",
-    "vendor": "SwiftUIPort",
+    "bundleName": "dev.crossswiftui.runtimeprobe",
+    "vendor": "CrossSwiftUI",
     "versionCode": 1,
     "versionName": "1.0.0",
     "icon": "$media:icon",

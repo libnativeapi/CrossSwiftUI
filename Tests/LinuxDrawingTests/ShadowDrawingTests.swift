@@ -2,7 +2,7 @@ import CGTK3
 import Foundation
 import XCTest
 
-@testable import SwiftUIPort
+@testable import CrossSwiftUI
 @testable import SwiftUIRuntime
 
 final class ShadowDrawingTests: XCTestCase {

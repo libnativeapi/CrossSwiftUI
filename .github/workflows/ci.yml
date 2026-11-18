@@ -20,11 +20,11 @@ jobs:
     runs-on: macos-latest
     defaults:
       run:
-        working-directory: swiftui-port
+        working-directory: crossswift
     steps:
       - uses: actions/checkout@v4
         with:
-          path: swiftui-port
+          path: crossswift
 
       - name: Show Swift version
         run: swift --version
@@ -64,11 +64,11 @@ jobs:
     timeout-minutes: 30
     defaults:
       run:
-        working-directory: swiftui-port
+        working-directory: crossswift
     steps:
       - uses: actions/checkout@v4
         with:
-          path: swiftui-port
+          path: crossswift
 
       - uses: actions/checkout@v4
         with:
@@ -104,12 +104,12 @@ jobs:
     timeout-minutes: 30
     defaults:
       run:
-        working-directory: swiftui-port
+        working-directory: crossswift
         shell: pwsh
     steps:
       - uses: actions/checkout@v4
         with:
-          path: swiftui-port
+          path: crossswift
 
       - uses: actions/checkout@v4
         with:

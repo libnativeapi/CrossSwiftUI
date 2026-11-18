@@ -48,8 +48,8 @@ The third command starts Gallery mode and exercises it through the same input
 tool. The equivalent manual launch is:
 
 ```sh
-hdc shell aa force-stop dev.swiftuiport.runtimeprobe
-hdc shell aa start -b dev.swiftuiport.runtimeprobe -a EntryAbility --ps gallery true
+hdc shell aa force-stop dev.crossswiftui.runtimeprobe
+hdc shell aa start -b dev.crossswiftui.runtimeprobe -a EntryAbility --ps gallery true
 ```
 
 Set `HARMONY_GALLERY_SCREENSHOTS` to a directory when running
