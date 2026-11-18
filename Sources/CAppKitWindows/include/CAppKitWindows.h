@@ -1,0 +1,123 @@
+#pragma once
+#include <stddef.h>
+#include <stdint.h>
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+void cak_free(void *ptr);
+
+// Clipboard
+uint32_t cak_clipboard_sequence_number(void);
+int cak_clipboard_clear(void);
+char *cak_clipboard_get_text(void);
+int cak_clipboard_set_text(const char *utf8_text);
+char *cak_clipboard_get_files_newline(void);
+int cak_clipboard_set_files(const char *const *utf8_paths, int count);
+uint8_t *cak_clipboard_get_png(size_t *out_len);
+int cak_clipboard_set_png(const uint8_t *png_data, size_t len);
+
+// Workspace, Shell & Processes
+int cak_open_url_or_path(const char *utf8_target);
+int cak_open_with_app(const char *utf8_app, const char *utf8_arg);
+int cak_reveal_in_explorer(const char *utf8_path);
+uint32_t cak_frontmost_pid(void);
+uint32_t cak_current_pid(void);
+int cak_process_info(uint32_t pid, char *exe_buf, int exe_cap, char *title_buf, int title_cap);
+int cak_activate_pid(uint32_t pid);
+int cak_hide_pid(uint32_t pid);
+int cak_terminate_pid(uint32_t pid, int force);
+uint32_t *cak_enum_gui_pids(int *out_count);
+uint8_t *cak_file_icon_png(const char *utf8_path, int size_px, size_t *out_len);
+int cak_resolve_lnk(
+    const char *utf8_lnk_path,
+    char *target_buf, int target_cap,
+    char *args_buf, int args_cap,
+    char *icon_buf, int icon_cap,
+    int *out_icon_index,
+    char *desc_buf, int desc_cap
+);
+char *cak_known_start_menu_dirs_newline(void);
+
+// Graphics, Font & Theme
+int cak_image_dimensions(const uint8_t *data, size_t len, int *out_w, int *out_h);
+int cak_image_file_dimensions(const char *utf8_path, int *out_w, int *out_h);
+uint8_t *cak_image_resize_png(const uint8_t *data, size_t len, int max_px, size_t *out_len);
+void cak_font_metrics(
+    const char *family,
+    double size,
+    double weight,
+    double *out_ascender,
+    double *out_descender,
+    double *out_cap_height,
+    double *out_x_height,
+    double *out_leading
+);
+void cak_enable_per_monitor_dpi(void);
+int cak_is_system_dark_mode(void);
+
+// Window & FieldEditor & Cursor & Synthetic Input
+void cak_window_set_backdrop(void *hwnd, int backdrop_kind, int is_dark);
+void cak_window_set_tool_style(void *hwnd, int hide_from_taskbar, int non_activating);
+void cak_cursor_pos(double *out_x, double *out_y);
+uint32_t cak_modifier_flags(void);
+void cak_set_cursor(int cursor_kind);
+void *cak_focused_hwnd(void);
+void cak_edit_get_selection(void *hwnd, int *out_start, int *out_length);
+void cak_edit_set_selection(void *hwnd, int start, int length);
+int cak_edit_has_ime_composition(void *hwnd);
+char *cak_hwnd_get_text(void *hwnd);
+int cak_send_paste_chord(void);
+int cak_send_unicode_text(const char *utf8_text);
+int cak_send_backspaces(int count);
+
+// External Window Management
+typedef struct {
+  uint64_t hwnd;
+  uint32_t pid;
+  int32_t x, y, width, height;
+  int32_t is_maximized;
+  int32_t is_minimized;
+} cak_win_entry;
+
+cak_win_entry *cak_enum_top_windows(int *out_count);
+char *cak_hwnd_title(uint64_t hwnd);
+int cak_set_window_rect(uint64_t hwnd, int x, int y, int width, int height);
+int cak_control_window(uint64_t hwnd, int action); // 1=minimize, 2=maximize, 3=restore, 4=close, 5=focus
+
+// System Actions
+int cak_lock_workstation(void);
+int cak_empty_recycle_bin(void);
+
+// Crypto (Windows CNG BCrypt)
+int cak_sha256(const uint8_t *data, size_t len, uint8_t out_digest[32]);
+int cak_sha512(const uint8_t *data, size_t len, uint8_t out_digest[64]);
+int cak_sha1(const uint8_t *data, size_t len, uint8_t out_digest[20]);
+int cak_md5(const uint8_t *data, size_t len, uint8_t out_digest[16]);
+int cak_hmac_sha256(
+    const uint8_t *key, size_t key_len,
+    const uint8_t *data, size_t data_len,
+    uint8_t out_mac[32]
+);
+int cak_aes_gcm_decrypt(
+    const uint8_t *key, size_t key_len,
+    const uint8_t *nonce, size_t nonce_len,
+    const uint8_t *ciphertext, size_t ciphertext_len,
+    const uint8_t *aad, size_t aad_len,
+    const uint8_t *tag, size_t tag_len,
+    uint8_t *out_plaintext
+);
+int cak_aes_gcm_encrypt(
+    const uint8_t *key, size_t key_len,
+    const uint8_t *nonce, size_t nonce_len,
+    const uint8_t *plaintext, size_t plaintext_len,
+    const uint8_t *aad, size_t aad_len,
+    uint8_t *out_ciphertext,
+    uint8_t *out_tag, size_t tag_len
+);
+int cak_random_bytes(uint8_t *buf, size_t len);
+
+#ifdef __cplusplus
+}
+#endif

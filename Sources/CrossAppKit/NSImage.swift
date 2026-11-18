@@ -1,0 +1,462 @@
+import Foundation
+#if !os(macOS)
+  import CoreGraphics
+  import NativeAPI
+#endif
+#if os(Windows)
+  import CAppKitWindows
+#endif
+
+public struct NSColorSpaceName: RawRepresentable, Equatable, Hashable, ExpressibleByStringLiteral, Sendable {
+  public let rawValue: String
+  public init(_ rawValue: String) { self.rawValue = rawValue }
+  public init(rawValue: String) { self.rawValue = rawValue }
+  public init(stringLiteral value: String) { self.rawValue = value }
+  public static let calibratedWhite = NSColorSpaceName("NSCalibratedWhiteColorSpace")
+  public static let calibratedRGB = NSColorSpaceName("NSCalibratedRGBColorSpace")
+  public static let deviceWhite = NSColorSpaceName("NSDeviceWhiteColorSpace")
+  public static let deviceRGB = NSColorSpaceName("NSDeviceRGBColorSpace")
+  public static let deviceCMYK = NSColorSpaceName("NSDeviceCMYKColorSpace")
+}
+
+open class NSImageRep: NSObject, @unchecked Sendable {
+  public var size: NSSize
+  public var pixelsWide: Int
+  public var pixelsHigh: Int
+
+  public init(size: NSSize = .zero, pixelsWide: Int = 0, pixelsHigh: Int = 0) {
+    self.size = size
+    self.pixelsWide = pixelsWide
+    self.pixelsHigh = pixelsHigh
+    super.init()
+  }
+}
+
+open class NSBitmapImageRep: NSImageRep, @unchecked Sendable {
+  public enum FileType: UInt, Sendable {
+    case tiff = 0
+    case bmp = 1
+    case gif = 2
+    case jpeg = 3
+    case png = 4
+    case jpeg2000 = 5
+  }
+
+  public struct PropertyKey: RawRepresentable, Hashable, Sendable {
+    public let rawValue: String
+    public init(_ rawValue: String) { self.rawValue = rawValue }
+    public init(rawValue: String) { self.rawValue = rawValue }
+    public static let compressionFactor = PropertyKey("NSImageCompressionFactor")
+    public static let frameCount = PropertyKey("NSImageFrameCount")
+    public static let currentFrame = PropertyKey("NSImageCurrentFrame")
+    public static let currentFrameDuration = PropertyKey("NSImageCurrentFrameDuration")
+  }
+
+  public struct Format: OptionSet, Sendable {
+    public let rawValue: UInt
+    public init(rawValue: UInt) { self.rawValue = rawValue }
+    public static let alphaFirst = Format(rawValue: 1 << 0)
+    public static let alphaNonpremultiplied = Format(rawValue: 1 << 1)
+    public static let floatingPointSamples = Format(rawValue: 1 << 2)
+    public static let sixteenBitLittleEndian = Format(rawValue: 1 << 8)
+    public static let thirtyTwoBitLittleEndian = Format(rawValue: 1 << 9)
+    public static let sixteenBitBigEndian = Format(rawValue: 1 << 10)
+    public static let thirtyTwoBitBigEndian = Format(rawValue: 1 << 11)
+  }
+
+  public private(set) var pngData: Data?
+  public private(set) var bytesPerRow: Int = 0
+  private var pixelBuffer: UnsafeMutableBufferPointer<UInt8>?
+  public var bitmapData: UnsafeMutablePointer<UInt8>? { pixelBuffer?.baseAddress }
+
+  deinit {
+    pixelBuffer?.deallocate()
+  }
+
+  public init?(data: Data) {
+    self.pngData = data
+    var w: Int32 = 0, h: Int32 = 0
+    #if os(Windows)
+      _ = data.withUnsafeBytes { raw in
+        cak_image_dimensions(raw.bindMemory(to: UInt8.self).baseAddress, data.count, &w, &h)
+      }
+    #endif
+    let width = max(Int(w), 1)
+    let height = max(Int(h), 1)
+    self.bytesPerRow = width * 4
+    let sz = NSSize(width: CGFloat(width), height: CGFloat(height))
+    super.init(size: sz, pixelsWide: width, pixelsHigh: height)
+  }
+
+  #if !os(macOS)
+    public init(cgImage: CGImage) {
+      self.pngData = cgImage.pngData
+      self.bytesPerRow = max(cgImage.width, 1) * 4
+      super.init(
+        size: NSSize(width: cgImage.width, height: cgImage.height),
+        pixelsWide: cgImage.width,
+        pixelsHigh: cgImage.height
+      )
+    }
+  #endif
+
+  public init?(
+    bitmapDataPlanes planes: UnsafeMutablePointer<UnsafeMutablePointer<UInt8>?>?,
+    pixelsWide width: Int,
+    pixelsHigh height: Int,
+    bitsPerSample bps: Int,
+    samplesPerPixel spp: Int,
+    hasAlpha alpha: Bool,
+    isPlanar: Bool,
+    colorSpaceName: NSColorSpaceName,
+    bytesPerRow rowBytes: Int,
+    bitsPerPixel pixelBits: Int
+  ) {
+    self.pngData = nil
+    let bpr = rowBytes > 0 ? rowBytes : max(width, 1) * max(spp, 4)
+    self.bytesPerRow = bpr
+    let total = max(bpr * max(height, 1), 1)
+    let buf = UnsafeMutableBufferPointer<UInt8>.allocate(capacity: total)
+    buf.initialize(repeating: 0)
+    self.pixelBuffer = buf
+    super.init(
+      size: NSSize(width: width, height: height),
+      pixelsWide: width,
+      pixelsHigh: height
+    )
+  }
+
+  public init?(
+    bitmapDataPlanes planes: UnsafeMutablePointer<UnsafeMutablePointer<UInt8>?>?,
+    pixelsWide width: Int,
+    pixelsHigh height: Int,
+    bitsPerSample bps: Int,
+    samplesPerPixel spp: Int,
+    hasAlpha alpha: Bool,
+    isPlanar: Bool,
+    colorSpaceName: NSColorSpaceName,
+    bitmapFormat: Format,
+    bytesPerRow rowBytes: Int,
+    bitsPerPixel pixelBits: Int
+  ) {
+    self.pngData = nil
+    let bpr = rowBytes > 0 ? rowBytes : max(width, 1) * max(spp, 4)
+    self.bytesPerRow = bpr
+    let total = max(bpr * max(height, 1), 1)
+    let buf = UnsafeMutableBufferPointer<UInt8>.allocate(capacity: total)
+    buf.initialize(repeating: 0)
+    self.pixelBuffer = buf
+    super.init(
+      size: NSSize(width: width, height: height),
+      pixelsWide: width,
+      pixelsHigh: height
+    )
+  }
+
+  public func draw(in rect: NSRect) {}
+
+  public func representation(using storageType: FileType, properties: [PropertyKey: Any] = [:]) -> Data? {
+    pngData
+  }
+
+  public func value(forProperty property: PropertyKey) -> Any? {
+    if property == .frameCount { return NSNumber(value: 1) }
+    return nil
+  }
+}
+
+open class NSGraphicsContext: NSObject, @unchecked Sendable {
+  public enum ImageInterpolation: UInt, Sendable {
+    case `default` = 0
+    case none = 1
+    case low = 2
+    case medium = 4
+    case high = 3
+  }
+
+  nonisolated(unsafe) public static var current: NSGraphicsContext? = NSGraphicsContext()
+  public var imageInterpolation: ImageInterpolation = .high
+  #if !os(macOS)
+    public let cgContext = CGContext()
+  #endif
+
+  public init?(bitmapImageRep: NSBitmapImageRep) {
+    super.init()
+  }
+
+  public override init() {
+    super.init()
+  }
+
+  public static func saveGraphicsState() {}
+  public static func restoreGraphicsState() {}
+}
+
+open class NSBezierPath: NSObject {
+  public let rect: NSRect
+  public init(rect: NSRect) {
+    self.rect = rect
+    super.init()
+  }
+  public init(roundedRect rect: NSRect, xRadius: CGFloat, yRadius: CGFloat) {
+    self.rect = rect
+    super.init()
+  }
+  public init(ovalIn rect: NSRect) {
+    self.rect = rect
+    super.init()
+  }
+  #if !os(macOS)
+    public init(cgPath: CGPath) {
+      self.rect = .zero
+      super.init()
+    }
+  #endif
+  public override init() {
+    self.rect = .zero
+    super.init()
+  }
+  public func fill() {}
+  public func stroke() {}
+  public func addClip() {}
+}
+
+open class NSImage: NSObject, @unchecked Sendable {
+  public typealias Name = String
+
+  public struct SymbolConfiguration: Equatable, Sendable {
+    public var pointSize: CGFloat
+    public var weight: NSFont.Weight
+    public var paletteColors: [NSColor]
+
+    public init(pointSize: CGFloat = 14, weight: NSFont.Weight = .regular) {
+      self.pointSize = pointSize
+      self.weight = weight
+      self.paletteColors = []
+    }
+
+    public init(textStyle: NSFont.TextStyle) {
+      let m = textStyle.metrics
+      self.pointSize = m.size
+      self.weight = m.weight
+      self.paletteColors = []
+    }
+
+    public init(paletteColors: [NSColor]) {
+      self.pointSize = 14
+      self.weight = .regular
+      self.paletteColors = paletteColors
+    }
+
+    public init(hierarchicalColor: NSColor) {
+      self.pointSize = 14
+      self.weight = .regular
+      self.paletteColors = [hierarchicalColor]
+    }
+
+    public func applying(_ other: SymbolConfiguration) -> SymbolConfiguration {
+      var copy = self
+      if other.pointSize > 0 { copy.pointSize = other.pointSize }
+      if other.weight != .regular { copy.weight = other.weight }
+      if !other.paletteColors.isEmpty { copy.paletteColors = other.paletteColors }
+      return copy
+    }
+  }
+
+  public enum CapInsetsMode: Int, Sendable {
+    case stretch = 0
+    case tile = 1
+  }
+
+  /// Registered by CrossSwiftUI's SF Symbol SVG catalog so `NSImage(systemSymbolName:)`
+  /// returns non-nil for every known symbol and carries its symbol name for rendering.
+  nonisolated(unsafe) public static var symbolLookupHandler: (@Sendable (String) -> Bool)?
+
+  /// Optional resource directory paths searched by `NSImage(named:)` for `.imageset` / PNG / SVG files.
+  nonisolated(unsafe) public static var resourceSearchPaths: [String] = []
+
+  public var size: NSSize
+  public var isTemplate: Bool = false
+  public private(set) var symbolName: String?
+  public private(set) var filePath: String?
+  public private(set) var imageData: Data?
+  public var representations: [NSImageRep] = []
+
+  public init(size: NSSize) {
+    self.size = size
+    super.init()
+  }
+
+  public convenience override init() {
+    self.init(size: .zero)
+  }
+
+  public convenience init(size: NSSize, flipped drawingHandlerShouldBeCalledWithFlippedContext: Bool, drawingHandler: @escaping (NSRect) -> Bool) {
+    self.init(size: size)
+    _ = drawingHandler(NSRect(origin: .zero, size: size))
+  }
+
+  public init?(data: Data) {
+    guard !data.isEmpty else { return nil }
+    self.imageData = data
+    var w: Int32 = 0, h: Int32 = 0
+    #if os(Windows)
+      let ok = data.withUnsafeBytes { raw in
+        cak_image_dimensions(raw.bindMemory(to: UInt8.self).baseAddress, data.count, &w, &h)
+      }
+      if ok == 0 {
+        w = 32; h = 32
+      }
+    #else
+      w = 32; h = 32
+    #endif
+    self.size = NSSize(width: CGFloat(max(Int(w), 1)), height: CGFloat(max(Int(h), 1)))
+    super.init()
+    if let rep = NSBitmapImageRep(data: data) {
+      self.representations = [rep]
+    }
+  }
+
+  public convenience init?(contentsOf url: URL) {
+    self.init(contentsOfFile: url.path)
+  }
+
+  public init?(contentsOfFile fileName: String) {
+    guard FileManager.default.fileExists(atPath: fileName) else { return nil }
+    self.filePath = fileName
+    self.imageData = try? Data(contentsOf: URL(fileURLWithPath: fileName))
+    var w: Int32 = 0, h: Int32 = 0
+    #if os(Windows)
+      _ = cak_image_file_dimensions(fileName, &w, &h)
+    #endif
+    if w <= 0 || h <= 0 { w = 32; h = 32 }
+    self.size = NSSize(width: CGFloat(w), height: CGFloat(h))
+    super.init()
+    if let data = imageData, let rep = NSBitmapImageRep(data: data) {
+      self.representations = [rep]
+    }
+  }
+
+  public init?(systemSymbolName symbolName: String, accessibilityDescription description: String?) {
+    if let lookup = Self.symbolLookupHandler, !lookup(symbolName) {
+      return nil
+    }
+    self.symbolName = symbolName
+    self.isTemplate = true
+    self.size = NSSize(width: 16, height: 16)
+    super.init()
+  }
+
+  public convenience init?(named name: Name) {
+    if let resolved = Self.resolveAssetPath(named: name) {
+      self.init(contentsOfFile: resolved)
+      return
+    }
+    return nil
+  }
+
+  #if !os(macOS)
+    public convenience init(cgImage: CGImage, size: NSSize) {
+      if let data = cgImage.pngData, let decoded = NSImage(data: data) {
+        self.init(size: size.width > 0 ? size : decoded.size)
+        self.imageData = data
+        self.representations = decoded.representations
+      } else {
+        self.init(size: size)
+      }
+    }
+
+    public func cgImage(forProposedRect proposedDestRect: UnsafeMutablePointer<NSRect>?, context referenceContext: NSGraphicsContext?, hints: [String: Any]?) -> CGImage? {
+      CGImage(width: max(Int(size.width), 1), height: max(Int(size.height), 1), pngData: imageData)
+    }
+  #endif
+
+  public func withSymbolConfiguration(_ configuration: SymbolConfiguration) -> NSImage? {
+    let copy = NSImage(size: NSSize(width: configuration.pointSize, height: configuration.pointSize))
+    copy.symbolName = symbolName
+    copy.filePath = filePath
+    copy.imageData = imageData
+    copy.isTemplate = isTemplate
+    return copy
+  }
+
+  public var tiffRepresentation: Data? {
+    imageData
+  }
+
+  public func addRepresentation(_ imageRep: NSImageRep) {
+    representations.append(imageRep)
+    if let bmp = imageRep as? NSBitmapImageRep, imageData == nil {
+      imageData = bmp.pngData
+    }
+  }
+
+  public func draw(in rect: NSRect) {}
+  public func draw(in dstSpacePortionRect: NSRect, from srcSpacePortionRect: NSRect, operation op: UInt, fraction requestedAlpha: CGFloat) {}
+  public func lockFocus() {}
+  public func unlockFocus() {}
+
+  public func ensureTemporaryFilePath() -> String? {
+    if let filePath, FileManager.default.fileExists(atPath: filePath) {
+      return filePath
+    }
+    guard let data = imageData, !data.isEmpty else { return nil }
+    let hash = data.prefix(64).reduce(UInt64(1469598103934665603)) { ($0 ^ UInt64($1)) &* 1099511628211 }
+    let dir = FileManager.default.temporaryDirectory.appendingPathComponent("CrossAppKitImages", isDirectory: true)
+    try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    let file = dir.appendingPathComponent("img_\(data.count)_\(String(hash, radix: 16)).png")
+    if !FileManager.default.fileExists(atPath: file.path) {
+      try? data.write(to: file, options: .atomic)
+    }
+    self.filePath = file.path
+    return file.path
+  }
+
+  public static func resolveAssetPath(named name: String) -> String? {
+    var roots = resourceSearchPaths
+    roots.append(Bundle.main.bundlePath)
+    if let resPath = Bundle.main.resourcePath { roots.append(resPath) }
+
+    for root in roots {
+      let base = URL(fileURLWithPath: root)
+      let candidates = [
+        base.appendingPathComponent("Assets.xcassets/\(name).imageset"),
+        base.appendingPathComponent("Tinycast/Assets.xcassets/\(name).imageset"),
+        base.appendingPathComponent("\(name).imageset"),
+      ]
+      for imageset in candidates where FileManager.default.fileExists(atPath: imageset.path) {
+        if let files = try? FileManager.default.contentsOfDirectory(atPath: imageset.path) {
+          if let svg = files.first(where: { $0.lowercased().hasSuffix(".svg") }) {
+            return imageset.appendingPathComponent(svg).path
+          }
+          if let png = files.first(where: { $0.lowercased().hasSuffix(".png") }) {
+            return imageset.appendingPathComponent(png).path
+          }
+          if let jpg = files.first(where: {
+            let lower = $0.lowercased()
+            return lower.hasSuffix(".jpg") || lower.hasSuffix(".jpeg")
+          }) {
+            return imageset.appendingPathComponent(jpg).path
+          }
+        }
+      }
+      for ext in ["svg", "png", "jpg", "ico"] {
+        let direct = base.appendingPathComponent("\(name).\(ext)")
+        if FileManager.default.fileExists(atPath: direct.path) { return direct.path }
+      }
+    }
+    return nil
+  }
+
+  #if !os(macOS)
+    public func toNativeImage() -> NativeAPI.Image? {
+      if let path = ensureTemporaryFilePath() {
+        return NativeAPI.Image.fromFile(path)
+      }
+      if let data = imageData {
+        return NativeAPI.Image.fromBase64(data.base64EncodedString())
+      }
+      return nil
+    }
+  #endif
+}
