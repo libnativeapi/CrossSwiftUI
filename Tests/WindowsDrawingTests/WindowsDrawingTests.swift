@@ -1,4 +1,5 @@
 import CSwiftUIWindowsTestSupport
+import CrossAppKit
 import NativeAPI
 import SwiftUIPort
 import SwiftUIRuntime
@@ -174,5 +175,62 @@ final class WindowsDrawingTests: XCTestCase {
     XCTAssertEqual(
       result.group_errors, 0,
       "Nested scrolling must preserve pixels, native coordinates, activation and Tab order")
+  }
+
+  @MainActor
+  func testNSPanelHostsSwiftUIViewWithObservableAndNSViewRepresentable() throws {
+    let state = PanelState()
+    weak var reportedWindow: CrossAppKit.NSWindow?
+    let panel = CrossAppKit.NSPanel(
+      contentRect: NSRect(x: 100, y: 100, width: 400, height: 120),
+      styleMask: [.borderless, .nonactivatingPanel],
+      backing: .buffered,
+      defer: false
+    )
+    panel.backgroundColor = .clear
+    let hosting = NSHostingView(rootView: PanelContent(onWindow: { reportedWindow = $0 }).environment(state))
+    hosting.sizingOptions = []
+    panel.contentView = hosting
+
+    let renderer = try XCTUnwrap(hosting.renderer)
+    XCTAssertTrue(reportedWindow === panel)
+    func hasText(_ expected: String, in node: Element) -> Bool {
+      if node.kind == .text && node.props.text == expected { return true }
+      return node.children.contains { hasText(expected, in: $0) }
+    }
+    XCTAssertTrue(hasText("Search apps", in: try XCTUnwrap(renderer.tree)))
+
+    state.query = "Calculator: 42"
+    renderer.renderIfNeeded()
+    XCTAssertTrue(hasText("Calculator: 42", in: try XCTUnwrap(renderer.tree)))
+    panel.close()
+  }
+}
+
+@Observable
+private final class PanelState {
+  var query = "Search apps"
+}
+
+private struct WindowProbe: NSViewRepresentable {
+  let onWindow: (CrossAppKit.NSWindow?) -> Void
+  func makeNSView(context: Context) -> CrossAppKit.NSView {
+    CrossAppKit.NSView(frame: .zero)
+  }
+  func updateNSView(_ nsView: CrossAppKit.NSView, context: Context) {
+    onWindow(nsView.window)
+  }
+}
+
+private struct PanelContent: SwiftUIRuntime.View {
+  @Environment(PanelState.self) var state
+  let onWindow: (CrossAppKit.NSWindow?) -> Void
+  var body: some SwiftUIRuntime.View {
+    SwiftUIRuntime.VStack(spacing: 8) {
+      SwiftUIRuntime.Text(state.query)
+      WindowProbe(onWindow: onWindow)
+        .frame(width: 10, height: 10)
+    }
+    .padding(12)
   }
 }

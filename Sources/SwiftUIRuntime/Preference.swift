@@ -93,7 +93,7 @@ func resolvePreferences(_ node: Element) -> [ObjectIdentifier: PreferenceValue] 
   for transform in node.preferenceTransforms { transform(&result) }
   if let action = node.preferenceAction {
     let values = result
-    LifecycleRegistry.shared.pending.append { action(values) }
+    LifecycleRegistry.shared.enqueue { action(values) }
   }
   return result
 }

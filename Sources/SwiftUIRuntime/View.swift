@@ -29,6 +29,22 @@
 protocol _PrimitiveView: View {
   func _makeElement(path: ViewPath) -> Element
 }
+public struct _HostedViewPrimitive: View, _PrimitiveView {
+  public typealias Body = Never
+  let adapter: any AnyObject
+  let measure: (ProposedViewSize) -> Size
+  package init(adapter: any AnyObject, measure: @escaping (ProposedViewSize) -> Size) {
+    self.adapter = adapter
+    self.measure = measure
+  }
+  public var body: Never { fatalError("_HostedViewPrimitive is primitive") }
+  func _makeElement(path: ViewPath) -> Element {
+    var el = Element(kind: .hostedView)
+    el.hostedViewAdapter = adapter
+    el.hostedViewMeasure = measure
+    return el
+  }
+}
 @MainActor func _render<V: View>(_ view: V, path: ViewPath) -> Element {
   if let graph = EvaluationGraph.active {
     return graph.evaluate(type: ObjectIdentifier(V.self), path: path) {

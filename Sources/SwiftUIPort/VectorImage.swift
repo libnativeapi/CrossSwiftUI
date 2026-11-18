@@ -8,8 +8,35 @@ struct VectorImage {
   let bounds: CGRect
   let paths: [Path]
   static var cache: [String: VectorImage] = [:]
+  nonisolated(unsafe) static var symbolDefinitions: [String: (viewBox: CGRect, paths: [String])] = [:]
+
+  static func registerSymbol(_ name: String, viewBox: CGRect = CGRect(x: 0, y: 0, width: 24, height: 24), paths: [String]) {
+    symbolDefinitions[name] = (viewBox, paths)
+  }
+
+  static func hasSymbol(_ name: String) -> Bool {
+    if symbolDefinitions[name] != nil { return true }
+    let stripped = name.replacingOccurrences(of: ".fill", with: "")
+    return symbolDefinitions[stripped] != nil
+  }
+
+  static func loadSymbol(_ rawName: String) -> VectorImage? {
+    let key = "sf://" + rawName
+    if let cached = cache[key] { return cached }
+    let def =
+      symbolDefinitions[rawName]
+      ?? symbolDefinitions[rawName.replacingOccurrences(of: ".fill", with: "")]
+      ?? symbolDefinitions["circle"]
+    guard let def else { return nil }
+    let img = VectorImage(bounds: def.viewBox, paths: def.paths.map { parse($0) })
+    cache[key] = img
+    return img
+  }
 
   static func load(_ file: String) -> VectorImage? {
+    if file.hasPrefix("sf://") {
+      return loadSymbol(String(file.dropFirst(5)))
+    }
     if let cached = cache[file] { return cached }
     guard let source = try? String(contentsOfFile: file, encoding: .utf8) else { return nil }
     func attributes(_ name: String) -> [String] {

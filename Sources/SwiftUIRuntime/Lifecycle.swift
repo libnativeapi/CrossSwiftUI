@@ -10,31 +10,44 @@ final class LifecycleRegistry {
     var task: Task<Void, Never>?
   }
   var entries: [StateKey: Entry] = [:]
-  var live = Set<StateKey>()
-  var pending: [() -> Void] = []
+  var liveByRoot: [ObjectIdentifier: Set<StateKey>] = [:]
+  var pendingByRoot: [ObjectIdentifier: [() -> Void]] = [:]
+  var activeRoot: ObjectIdentifier?
+
+  func enqueue(_ action: @escaping () -> Void) {
+    guard let activeRoot else { return }
+    pendingByRoot[activeRoot, default: []].append(action)
+  }
+
   func retain(_ keys: Set<StateKey>) {
-    live.formUnion(keys)
+    if let first = keys.first {
+      liveByRoot[ObjectIdentifier(first.path.root), default: []].formUnion(keys)
+    }
     GeometrySnapshot.active?.lifecycle.formUnion(keys)
   }
-  func begin() {
-    live.removeAll()
-    pending.removeAll()
+  func begin(root: ViewPath) {
+    let rootID = ObjectIdentifier(root)
+    liveByRoot[rootID] = []
+    pendingByRoot[rootID] = []
   }
   func register(
     _ key: StateKey, value: AnyHashable, appear: (() -> Void)?, change: (() -> Void)?,
     disappear: (() -> Void)?, task: (() async -> Void)?
   ) {
+    let rootID = ObjectIdentifier(key.path.root)
     EvaluationGraph.active?.installLifecycle(key)
     GeometrySnapshot.active?.lifecycle.insert(key)
-    live.insert(key)
+    liveByRoot[rootID, default: []].insert(key)
     let old = entries[key]
     if old == nil || old!.value != value {
       old?.task?.cancel()
       var entry = Entry(value: value, disappear: disappear)
-      if old == nil, let appear { pending.append(appear) }
-      if old != nil, let change { pending.append(change) }
+      if old == nil, let appear { pendingByRoot[rootID, default: []].append(appear) }
+      if old != nil, let change { pendingByRoot[rootID, default: []].append(change) }
       if let task {
-        pending.append { self.entries[key]?.task = Task { @MainActor in await task() } }
+        pendingByRoot[rootID, default: []].append {
+          self.entries[key]?.task = Task { @MainActor in await task() }
+        }
       }
       entry.task = nil
       entries[key] = entry
@@ -43,30 +56,35 @@ final class LifecycleRegistry {
     }
   }
   func commit(root: ViewPath) {
+    let rootID = ObjectIdentifier(root)
+    let live = liveByRoot[rootID] ?? []
     for key in Set(entries.keys).subtracting(live) where key.path.root === root {
       LifecycleSnapshots.shared.values.removeValue(forKey: key)
       LifecycleSnapshots.shared.versions.removeValue(forKey: key)
       let old = entries.removeValue(forKey: key)
       old?.task?.cancel()
-      if let action = old?.disappear { pending.append(action) }
+      if let action = old?.disappear { pendingByRoot[rootID, default: []].append(action) }
     }
-    let work = pending
-    pending.removeAll()
+    let work = pendingByRoot.removeValue(forKey: rootID) ?? []
     work.forEach { $0() }
   }
   func remove(_ root: ViewPath) {
+    let rootID = ObjectIdentifier(root)
     for key in Array(entries.keys) where key.path.root === root {
       let old = entries.removeValue(forKey: key)
       old?.task?.cancel()
       LifecycleSnapshots.shared.values.removeValue(forKey: key)
       LifecycleSnapshots.shared.versions.removeValue(forKey: key)
     }
-    live = live.filter { $0.path.root !== root }
+    liveByRoot.removeValue(forKey: rootID)
+    pendingByRoot.removeValue(forKey: rootID)
   }
   func reset() {
     entries.values.forEach { $0.task?.cancel() }
     entries.removeAll()
-    pending.removeAll()
+    liveByRoot.removeAll()
+    pendingByRoot.removeAll()
+    activeRoot = nil
     LifecycleSnapshots.shared.values.removeAll()
     LifecycleSnapshots.shared.versions.removeAll()
   }
@@ -79,7 +97,7 @@ struct LifecycleView<Content: View, Value: Equatable>: View, _PrimitiveView {
   let content: Content
   let value: Value
   let appear: (() -> Void)?
-  let change: ((Value) -> Void)?
+  let change: ((Value, Value) -> Void)?
   let disappear: (() -> Void)?
   let task: (() async -> Void)?
   var body: Never { fatalError() }
@@ -88,13 +106,15 @@ struct LifecycleView<Content: View, Value: Equatable>: View, _PrimitiveView {
     // publishing internal bookkeeping as an application state mutation.
     let key = StateKey(path: path, owner: ObjectIdentifier(Self.self), property: -1)
     let snapshot = LifecycleSnapshots.shared.values[key] as? SnapshotBox<Value>
+    let oldValue = snapshot?.value ?? value
     let changed = snapshot == nil || snapshot!.value != value
     let version = LifecycleSnapshots.shared.versions[key, default: 0] + (changed ? 1 : 0)
     LifecycleSnapshots.shared.values[key] = SnapshotBox(value: value)
     LifecycleSnapshots.shared.versions[key] = version
+    let newValue = value
     LifecycleRegistry.shared.register(
-      key, value: version, appear: appear, change: { change?(value) }, disappear: disappear,
-      task: task)
+      key, value: version, appear: appear, change: change.map { fn in { fn(oldValue, newValue) } },
+      disappear: disappear, task: task)
     return _render(content, path: path.appending(index: 0))
   }
 }
@@ -143,7 +163,22 @@ extension View {
     -> some View
   {
     LifecycleView(
-      content: self, value: value, appear: nil, change: action, disappear: nil, task: nil)
+      content: self, value: value, appear: nil, change: { _, new in action(new) }, disappear: nil,
+      task: nil)
+  }
+  public func onChange<Value: Equatable>(
+    of value: Value, initial: Bool = false, _ action: @escaping () -> Void
+  ) -> some View {
+    LifecycleView(
+      content: self, value: value, appear: initial ? action : nil,
+      change: { _, _ in action() }, disappear: nil, task: nil)
+  }
+  public func onChange<Value: Equatable>(
+    of value: Value, initial: Bool = false, _ action: @escaping (Value, Value) -> Void
+  ) -> some View {
+    LifecycleView(
+      content: self, value: value, appear: initial ? { action(value, value) } : nil,
+      change: action, disappear: nil, task: nil)
   }
   public func task<ID: Equatable>(id: ID, _ action: @escaping () async -> Void) -> some View {
     LifecycleView(content: self, value: id, appear: nil, change: nil, disappear: nil, task: action)

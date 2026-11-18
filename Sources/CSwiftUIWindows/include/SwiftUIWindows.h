@@ -18,6 +18,11 @@ void sui_surface_edit(void *surface, void *edit, int64_t id,
                       uint64_t native_view);
 void sui_surface_remove_edit(void *surface, void *edit);
 void sui_edit_order(void *surface, void *edit);
+void sui_surface_set_background(void *surface, uint32_t argb);
+void sui_surface_custom_view(void *surface, void *view_hwnd,
+                             uint64_t native_view);
+void sui_surface_remove_custom_view(void *surface, void *view_hwnd);
+void sui_custom_view_order(void *surface, void *view_hwnd);
 void sui_edit_line_metrics(void *surface, void *edit, double *center,
                            double *height);
 void sui_control_clip(void *, double, double, double, double);

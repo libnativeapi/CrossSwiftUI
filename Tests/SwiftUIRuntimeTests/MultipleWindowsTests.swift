@@ -46,12 +46,55 @@ final class MultipleWindowsTests: XCTestCase {
     first.resize(to: Size(width: 420, height: 300))
     XCTAssertEqual(appearances, 2)
     XCTAssertEqual(disappearances, 0)
-    weak var released = second
+    weak let released = second
     second = nil
     XCTAssertNil(released)
     model.value = 9
     firstBackend.tap(findNode(in: first.tree!, kind: .button)!.id)
     XCTAssertNotNil(findNode(in: first.tree!, text: "Local: 2, shared: 9"))
     XCTAssertEqual(appearances, 2)
+  }
+
+  @MainActor
+  func testObservableEnvironmentAndBindableTrackingAcrossRenderers() {
+    let store = ModernObservableStore()
+    let b1 = FakeBackend()
+    let r1 = Renderer(
+      backend: b1,
+      root: AnyView(ObservableReaderView().environment(store)),
+      size: Size(width: 320, height: 200)
+    )
+    r1.mount()
+    XCTAssertNotNil(findNode(in: r1.tree!, text: "Query: hello (0)"))
+
+    // Mutate via @Bindable button action inside transaction
+    b1.tap(findNode(in: r1.tree!, kind: .button)!.id)
+    XCTAssertNotNil(findNode(in: r1.tree!, text: "Query: hello! (1)"))
+
+    // Mutate outside transaction and flush
+    store.query = "tinycast"
+    r1.renderIfNeeded()
+    XCTAssertNotNil(findNode(in: r1.tree!, text: "Query: tinycast (1)"))
+  }
+}
+
+@Observable
+private final class ModernObservableStore {
+  var query = "hello"
+  var count = 0
+}
+
+private struct ObservableReaderView: View {
+  @Environment(ModernObservableStore.self) private var store
+
+  var body: some View {
+    @Bindable var bindable = store
+    VStack {
+      Text("Query: \(store.query) (\(store.count))")
+      Button("Mutate") {
+        $bindable.query.wrappedValue += "!"
+        store.count += 1
+      }
+    }
   }
 }

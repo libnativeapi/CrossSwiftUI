@@ -1,9 +1,12 @@
+import Observation
+
 /// Tracks state reads while evaluating bodies. A local state write invalidates
 /// its readers and their ancestors; unrelated branches retain their raw element
 /// trees, state slots and lifecycle registrations. Unknown notifications (for
 /// example ObservableObject) conservatively invalidate the whole graph.
 final class EvaluationGraph {
   static var active: EvaluationGraph?
+  var onObservableChange: (() -> Void)?
   private static var nextID = 1
   private final class Node {
     let type: ObjectIdentifier
@@ -59,6 +62,16 @@ final class EvaluationGraph {
     root?.descendantDirty = true
   }
 
+  private func markNodeDirty(_ node: Node) {
+    node.dirty = true
+    var ancestor: Node? = node
+    while let item = ancestor {
+      if item.descendantDirty { break }
+      item.descendantDirty = true
+      ancestor = item.parent
+    }
+  }
+
   func invalidate(_ key: StateKey) {
     // Layout-built content can read state outside this graph.
     guard let entries = readers[key], entries.values.contains(where: { $0.value != nil }) else {
@@ -67,13 +80,7 @@ final class EvaluationGraph {
     }
     for entry in entries.values {
       guard let node = entry.value else { continue }
-      node.dirty = true
-      var ancestor: Node? = node
-      while let item = ancestor {
-        if item.descendantDirty { break }
-        item.descendantDirty = true
-        ancestor = item.parent
-      }
+      markNodeDirty(node)
     }
   }
   func read(_ key: StateKey) {
@@ -137,7 +144,31 @@ final class EvaluationGraph {
     node.inputChanged = forced || node.result == nil
     node.cursor = 0
     current = node
-    var result = body()
+    final class WeakPair: @unchecked Sendable {
+      weak var graph: EvaluationGraph?
+      weak var node: Node?
+      init(graph: EvaluationGraph, node: Node) {
+        self.graph = graph
+        self.node = node
+      }
+    }
+    let pair = WeakPair(graph: self, node: node)
+    var result = withObservationTracking {
+      body()
+    } onChange: {
+      if Thread.isMainThread {
+        if let graph = pair.graph, let target = pair.node {
+          graph.markNodeDirty(target)
+          graph.onObservableChange?()
+        }
+      } else {
+        Task { @MainActor in
+          guard let graph = pair.graph, let target = pair.node else { return }
+          graph.markNodeDirty(target)
+          graph.onObservableChange?()
+        }
+      }
+    }
     for key in node.previousReads where !node.reads.contains(key) { removeReader(node.id, of: key) }
     result.evaluationID = node.id
     node.revision += 1

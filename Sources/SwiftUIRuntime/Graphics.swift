@@ -244,35 +244,83 @@ public struct LinearGradient: View, _PrimitiveView {
 public struct Image: View, _PrimitiveView {
   public typealias Body = Never
   public enum TemplateRenderingMode { case template, original }
+  public enum Interpolation { case none, low, medium, high }
+
+  nonisolated(unsafe) package static var assetPathResolver: ((String) -> String?)?
+
   let name: String
   let bundle: Bundle?
+  var isSystemSymbol = false
+  var naturalSize: Size?
   var template = false
   var flexible = false
+
   public init(_ name: String, bundle: Bundle? = nil) {
     self.name = name
     self.bundle = bundle
   }
+
+  public init(systemName: String) {
+    self.name = systemName
+    self.bundle = nil
+    self.isSystemSymbol = true
+    self.template = true
+  }
+
+  package init(filePath: String, size: Size?, isTemplate: Bool = false) {
+    self.name = filePath
+    self.bundle = nil
+    self.naturalSize = size
+    self.template = isTemplate
+  }
+
   public var body: Never { fatalError() }
+
   public func resizable() -> Image {
     var image = self
     image.flexible = true
     return image
   }
+
   public func renderingMode(_ mode: TemplateRenderingMode?) -> Image {
     var image = self
     image.template = mode == .template
     return image
   }
+
+  public func interpolation(_ interpolation: Interpolation) -> Image {
+    self
+  }
+
+  public func antialiased(_ isAntialiased: Bool) -> Image {
+    self
+  }
+
   func _makeElement(path: ViewPath) -> Element {
     var p = NodeProps()
-    #if os(WASI) || SWIFTUI_PORT_HARMONY
-      p.imagePath = name
-    #else
-      let resources = bundle ?? .main
-      p.imagePath =
-        resources.url(forResource: name, withExtension: "svg")?.path ?? resources.url(
-          forResource: name, withExtension: "png")?.path ?? name
-    #endif
+    if isSystemSymbol {
+      p.imagePath = "sf://" + name
+      p.font = EnvironmentValues.current.font
+    } else {
+      #if os(WASI) || SWIFTUI_PORT_HARMONY
+        p.imagePath = name
+      #else
+        if FileManager.default.fileExists(atPath: name) {
+          p.imagePath = name
+        } else if let resolved = Self.assetPathResolver?(name) {
+          p.imagePath = resolved
+        } else {
+          let resources = bundle ?? .main
+          p.imagePath =
+            resources.url(forResource: name, withExtension: "svg")?.path ?? resources.url(
+              forResource: name, withExtension: "png")?.path ?? name
+        }
+      #endif
+    }
+    if let naturalSize, !flexible {
+      p.idealWidth = naturalSize.width
+      p.idealHeight = naturalSize.height
+    }
     p.imageTemplate = template
     p.fillWidth = flexible
     p.fillHeight = flexible

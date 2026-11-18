@@ -34,15 +34,45 @@ public struct EnvironmentValues {
     set { values[ObjectIdentifier(key)] = newValue }
   }
   public static let `default` = EnvironmentValues()
-  static var current = EnvironmentValues()
+  package static var current = EnvironmentValues()
 }
 @propertyWrapper public struct Environment<Value>: _EnvironmentProperty {
   private final class Storage { var value: Value? }
+  private enum Source {
+    case keyPath(KeyPath<EnvironmentValues, Value>)
+    case resolver((EnvironmentValues) -> Value)
+  }
   private let storage = Storage()
-  let keyPath: KeyPath<EnvironmentValues, Value>
-  public init(_ keyPath: KeyPath<EnvironmentValues, Value>) { self.keyPath = keyPath }
-  public var wrappedValue: Value { storage.value ?? EnvironmentValues.current[keyPath: keyPath] }
-  func installEnvironment() { storage.value = EnvironmentValues.current[keyPath: keyPath] }
+  private let source: Source
+
+  public init(_ keyPath: KeyPath<EnvironmentValues, Value>) {
+    self.source = .keyPath(keyPath)
+  }
+
+  public init(_ objectType: Value.Type) where Value: AnyObject & Observable {
+    self.source = .resolver { env in
+      guard let object = env.objects[ObjectIdentifier(Value.self)] as? Value else {
+        preconditionFailure("No Observable object of type \(Value.self) found in environment.")
+      }
+      return object
+    }
+  }
+
+  public init<T: AnyObject & Observable>(_ objectType: T.Type) where Value == T? {
+    self.source = .resolver { env in
+      env.objects[ObjectIdentifier(T.self)] as? T
+    }
+  }
+
+  private func read(from env: EnvironmentValues) -> Value {
+    switch source {
+    case .keyPath(let kp): return env[keyPath: kp]
+    case .resolver(let fn): return fn(env)
+    }
+  }
+
+  public var wrappedValue: Value { storage.value ?? read(from: EnvironmentValues.current) }
+  func installEnvironment() { storage.value = read(from: EnvironmentValues.current) }
 }
 struct EnvironmentView<Content: View, Value>: View, _PrimitiveView {
   typealias Body = Never

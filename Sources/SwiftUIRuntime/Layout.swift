@@ -339,7 +339,7 @@ public struct LayoutEngine {
     }
     return result
   }
-  private func measure(_ e: Element, _ proposal: ProposedViewSize = .unspecified) -> Size {
+  func measure(_ e: Element, _ proposal: ProposedViewSize = .unspecified) -> Size {
     guard pass != nil, e.layoutID != 0 else { return measureUncached(e, proposal) }
     let key = Pass.Key(id: e.layoutID, width: proposal.width, height: proposal.height)
     if let result = cache.measurements[key] { return result }
@@ -373,7 +373,21 @@ public struct LayoutEngine {
       size.width = offer.width.map { Double($0) } ?? max(80, size.width)
       if textMeasurer == nil { size.height = max(size.height, 20) }
       if p.multiline { size.height *= 3 }
-    case .image: size = Size(width: 20, height: 20)
+    case .image:
+      if let iw = p.idealWidth, let ih = p.idealHeight {
+        size = Size(width: iw, height: ih)
+      } else if p.imagePath.hasPrefix("sf://") {
+        let s = Double(p.font?.size ?? 16)
+        size = Size(width: s, height: s)
+      } else {
+        size = Size(width: 20, height: 20)
+      }
+    case .hostedView:
+      if let measureFn = e.hostedViewMeasure {
+        size = measureFn(offer)
+      } else {
+        size = Size(width: Double(offer.width ?? 0), height: Double(offer.height ?? 0))
+      }
     case .padding:
       let child = ProposedViewSize(
         width: offer.width.map { max(0, $0 - p.padding.horizontal) },
@@ -752,7 +766,7 @@ public struct LayoutEngine {
         place(&e.children[0], in: frame(at: next))
         let scroll = e.scrollAction
         let complete = e.completeScrollTarget
-        LifecycleRegistry.shared.pending.append {
+        LifecycleRegistry.shared.enqueue {
           complete?()
           scroll?(next)
         }

@@ -1,119 +1,271 @@
+import CrossAppKit
 import Foundation
-
 import NativeAPI
-
-/// Runs an app: create the native window, mount the scene's root view, and
-/// enter the platform application loop.
-///
-/// v0.1 supports one `WindowGroup`. The window is sized 480×320 by default and
-/// closes through the platform's normal window-close path.
+import Observation
 import SwiftUIRuntime
 
-/// `--smoke` opens the window and asks the application to quit a few seconds
-/// later, which is what CI uses to prove the window and event loop work.
+/// Collects leaf scenes recursively from `@SceneBuilder` trees (`TupleScene`, custom `Scene`s).
+@MainActor
+private func flattenScenes(_ scene: any Scene) -> [any Scene] {
+  if let composite = scene as? any _CompositeScene {
+    return composite._childScenes.flatMap { flattenScenes($0) }
+  }
+  if scene is EmptyScene || scene is any _WindowScene || scene is any _MenuBarExtraScene {
+    return [scene]
+  }
+  let body = scene.body
+  if body is EmptyScene { return [scene] }
+  return flattenScenes(body)
+}
 
-public func runApp<A: App>(_ app: A) {
-  let scene = app.body
-  guard let windowScene = scene as? any _WindowScene else {
-    fatalError("SwiftUIPort v0.1 requires WindowGroup as the top-level Scene")
+/// Hosts a SwiftUI `MenuBarExtra` scene on a `CrossAppKit.NSStatusItem` (`NativeAPI.TrayIcon`).
+@MainActor
+private final class MenuBarExtraHost<A: App> {
+  private let app: A
+  private let index: Int
+  private var statusItem: NSStatusItem?
+
+  init(app: A, index: Int) {
+    self.app = app
+    self.index = index
+    refresh()
   }
 
-  // Touching the application singleton runs the platform initialization
-  // (gtk_init on Linux, COM/UI-thread setup on Windows) before the first window
-  // is created. Creating a GTK window before that fails with "No display
-  // available".
+  private func currentExtra() -> (any _MenuBarExtraScene)? {
+    let scenes = flattenScenes(app.body).compactMap { $0 as? any _MenuBarExtraScene }
+    guard index < scenes.count else { return nil }
+    return scenes[index]
+  }
+
+  func refresh() {
+    var inserted = true
+    var extraSnapshot: (any _MenuBarExtraScene)?
+    withObservationTracking {
+      if let extra = currentExtra() {
+        extraSnapshot = extra
+        inserted = extra._isInserted?.wrappedValue ?? true
+      } else {
+        inserted = false
+      }
+    } onChange: { [weak self] in
+      Task { @MainActor in
+        self?.refresh()
+      }
+    }
+
+    guard inserted, let extra = extraSnapshot else {
+      statusItem?.isVisible = false
+      return
+    }
+
+    if statusItem == nil {
+      statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+    }
+    guard let item = statusItem else { return }
+    item.isVisible = true
+
+    // Evaluate label view to extract icon or text
+    let labelTree = evaluateDetachedTree(extra._makeLabelView())
+    if let imgPath = findFirstImagePath(in: labelTree), !imgPath.isEmpty, !imgPath.hasPrefix("sf://") {
+      if let nsImg = NSImage(contentsOfFile: imgPath) {
+        item.button?.image = nsImg
+      }
+    }
+    let labelText = findFirstText(in: labelTree)
+    if !labelText.isEmpty {
+      item.button?.title = labelText
+    } else if !extra._title.isEmpty {
+      item.button?.toolTip = extra._title
+    }
+    item.syncButtonAppearance()
+
+    // Rebuild context menu on open so dynamic labels/states stay fresh
+    let menu = NSMenu(title: extra._title)
+    populateMenu(menu, from: extra._makeContentView())
+    item.menu = menu
+  }
+
+  private func evaluateDetachedTree(_ root: AnyView) -> Element? {
+    let renderer = Renderer(
+      backend: _HeadlessRenderBackend(),
+      root: root,
+      size: SwiftUIRuntime.Size(width: 240, height: 400)
+    )
+    renderer.mount()
+    return renderer.tree
+  }
+
+  private func findFirstImagePath(in node: Element?) -> String? {
+    guard let node else { return nil }
+    if node.kind == .image && !node.props.imagePath.isEmpty {
+      return node.props.imagePath
+    }
+    for child in node.children {
+      if let p = findFirstImagePath(in: child) { return p }
+    }
+    return nil
+  }
+
+  private func findFirstText(in node: Element?) -> String {
+    guard let node else { return "" }
+    if node.kind == .text && !node.props.text.isEmpty { return node.props.text }
+    if !node.props.accessibilityLabel.isEmpty { return node.props.accessibilityLabel }
+    for child in node.children {
+      let t = findFirstText(in: child)
+      if !t.isEmpty { return t }
+    }
+    return ""
+  }
+
+  private func populateMenu(_ menu: NSMenu, from content: AnyView) {
+    guard let tree = evaluateDetachedTree(content) else { return }
+    func walk(_ node: Element) {
+      if node.kind == .button || node.kind == .styledButton {
+        let title = !node.props.text.isEmpty ? node.props.text : findFirstText(in: node)
+        let keyEq = node.props.keyboardShortcut.map { String($0.key.character) } ?? ""
+        let mi = NSMenuItem(title: title, action: nil, keyEquivalent: keyEq)
+        mi.isEnabled = node.props.enabled
+        if let act = node.action {
+          mi.actionClosure = act
+        }
+        menu.addItem(mi)
+        return
+      }
+      if node.props.accessibilityIdentifier == "SwiftUI.Divider" {
+        menu.addItem(.separator())
+        return
+      }
+      for child in node.children {
+        walk(child)
+      }
+    }
+    walk(tree)
+  }
+}
+
+@MainActor
+public func runApp<A: App>(_ app: A) {
+  installAssetResolversOnce()
+
   let application = NativeAPI.Application.shared
   _ = application.isRunning()
 
-  guard let window = NativeAPI.Window.create() else {
-    fatalError("nativeapi failed to create a window")
+  // Install @NSApplicationDelegateAdaptor if present on `app`
+  for child in Mirror(reflecting: app).children {
+    if let provider = child.value as? any _ApplicationDelegateProvider {
+      provider._installDelegate()
+    }
   }
 
-  let title = windowScene._windowTitle
-  window.setTitle(title.isEmpty ? "SwiftUIPort" : title)
-
-  let initialWidth = windowScene._defaultSize.width
-  let initialHeight = windowScene._defaultSize.height
-  window.setContentSize(NativeAPI.Size(width: initialWidth, height: initialHeight))
-
-  #if os(Windows)
-    guard let backend = WindowsDrawingBackend(window: window, schedulesUpdates: true) else {
-      fatalError("Could not attach the Windows drawing backend")
-    }
-    let layout = LayoutEngine(textMeasurer: WindowsDrawingBackend.measureText)
-  #elseif os(Linux)
-    guard let backend = LinuxDrawingBackend(window: window) else {
-      fatalError("Could not attach the Linux drawing backend")
-    }
-    let layout = LayoutEngine(textMeasurer: backend.measureText)
-  #else
-    guard let backend = NativeViewBackend(window: window) else {
-      fatalError("nativeapi window has no content view")
-    }
-    let layout = LayoutEngine()
-  #endif
-
-  let renderer = Renderer(
-    backend: backend,
-    root: windowScene._makeRootView(),
-    size: SwiftUIRuntime.Size(width: initialWidth, height: initialHeight),
-    layoutEngine: layout
-  )
-  backend.onResize = { [weak renderer] size in
-    renderer?.resize(to: size)
+  let scenes = flattenScenes(app.body)
+  let menuExtras = scenes.enumerated().compactMap { _, s in s as? any _MenuBarExtraScene }
+  var menuHosts: [MenuBarExtraHost<A>] = []
+  for idx in menuExtras.indices {
+    menuHosts.append(MenuBarExtraHost(app: app, index: idx))
   }
-  #if os(Windows) || os(Linux)
-    #if os(Linux)
-      let usesCanvasPressState = true
+
+  if let windowScene = scenes.first(where: { $0 is any _WindowScene }) as? any _WindowScene {
+    guard let window = NativeAPI.Window.create() else {
+      fatalError("nativeapi failed to create a window")
+    }
+
+    let title = windowScene._windowTitle
+    window.setTitle(title.isEmpty ? "SwiftUIPort" : title)
+
+    let initialWidth = windowScene._defaultSize.width
+    let initialHeight = windowScene._defaultSize.height
+    window.setContentSize(NativeAPI.Size(width: initialWidth, height: initialHeight))
+
+    #if os(Windows)
+      guard let backend = WindowsDrawingBackend(window: window, schedulesUpdates: true) else {
+        fatalError("Could not attach the Windows drawing backend")
+      }
+      let layout = LayoutEngine(textMeasurer: WindowsDrawingBackend.measureText)
+    #elseif os(Linux)
+      guard let backend = LinuxDrawingBackend(window: window) else {
+        fatalError("Could not attach the Linux drawing backend")
+      }
+      let layout = LayoutEngine(textMeasurer: backend.measureText)
     #else
-      let usesCanvasPressState = false
+      guard let backend = NativeViewBackend(window: window) else {
+        fatalError("nativeapi window has no content view")
+      }
+      let layout = LayoutEngine()
     #endif
-    backend.inputHandler = { [weak renderer] id, event, point, value, modifiers, text in
-      renderer?.input(
-        id: id, event: event, point: point, value: value, modifiers: modifiers, text: text,
-        updatesPressedState: usesCanvasPressState) ?? false
-    }
-    backend.interactionHandler = { [weak renderer] id, interaction in
-      renderer?.interact(id, interaction)
-    }
-  #endif
-  renderer.mount()
-  if let path = ProcessInfo.processInfo.environment["SWIFTUI_PORT_TREE_PATH"],
-    let tree = renderer.tree
-  {
-    func encode(_ node: Element) -> [String: Any] {
-      [
-        "kind": node.kind.description, "text": node.props.text, "id": node.id.rawValue,
-        "x": node.frame.minX, "y": node.frame.minY, "width": node.frame.width,
-        "height": node.frame.height, "children": node.children.map(encode),
-      ]
-    }
-    if let data = try? JSONSerialization.data(
-      withJSONObject: encode(tree), options: [.prettyPrinted, .sortedKeys])
-    {
-      try? data.write(to: URL(fileURLWithPath: path))
-    }
-  }
-  window.show()
-  #if os(Windows) || os(Linux)
-    backend.focusInitialControl()
-  #endif
 
-  // A tiling compositor may size the window after the first map. Pick up the
-  // actual content area once it exists; later resizes arrive through the
-  // window listener.
-  let shownSize = window.contentSize
-  if shownSize.width > 0, shownSize.height > 0 {
-    renderer.resize(
-      to: SwiftUIRuntime.Size(width: shownSize.width, height: shownSize.height)
+    let renderer = Renderer(
+      backend: backend,
+      root: windowScene._makeRootView(),
+      size: SwiftUIRuntime.Size(width: initialWidth, height: initialHeight),
+      layoutEngine: layout
     )
+    backend.onResize = { [weak renderer] size in
+      renderer?.resize(to: size)
+    }
+    #if os(Windows) || os(Linux)
+      #if os(Linux)
+        let usesCanvasPressState = true
+      #else
+        let usesCanvasPressState = false
+      #endif
+      backend.inputHandler = { [weak renderer] id, event, point, value, modifiers, text in
+        renderer?.input(
+          id: id, event: event, point: point, value: value, modifiers: modifiers, text: text,
+          updatesPressedState: usesCanvasPressState) ?? false
+      }
+      backend.interactionHandler = { [weak renderer] id, interaction in
+        renderer?.interact(id, interaction)
+      }
+    #endif
+    renderer.mount()
+    if let path = ProcessInfo.processInfo.environment["SWIFTUI_PORT_TREE_PATH"],
+      let tree = renderer.tree
+    {
+      func encode(_ node: Element) -> [String: Any] {
+        [
+          "kind": node.kind.description, "text": node.props.text, "id": node.id.rawValue,
+          "x": node.frame.minX, "y": node.frame.minY, "width": node.frame.width,
+          "height": node.frame.height, "children": node.children.map(encode),
+        ]
+      }
+      if let data = try? JSONSerialization.data(
+        withJSONObject: encode(tree), options: [.prettyPrinted, .sortedKeys])
+      {
+        try? data.write(to: URL(fileURLWithPath: path))
+      }
+    }
+    window.show()
+    #if os(Windows) || os(Linux)
+      backend.focusInitialControl()
+    #endif
+
+    let shownSize = window.contentSize
+    if shownSize.width > 0, shownSize.height > 0 {
+      renderer.resize(
+        to: SwiftUIRuntime.Size(width: shownSize.width, height: shownSize.height)
+      )
+    }
+
+    if CommandLine.arguments.contains("--smoke") {
+      startSmokeTimer()
+    }
+
+    if NSApplication.shared.delegate != nil {
+      NSApplication.shared.finishLaunching()
+    }
+    withExtendedLifetime((renderer, menuHosts)) {
+      _ = application.runWithWindow(window)
+    }
+    return
   }
 
+  // Accessory / MenuBarExtra-only app (such as Tinycast): run via NSApplication.shared.run()
   if CommandLine.arguments.contains("--smoke") {
     startSmokeTimer()
   }
-
-  withExtendedLifetime(renderer) { _ = application.runWithWindow(window) }
+  withExtendedLifetime(menuHosts) {
+    NSApplication.shared.run()
+  }
 }
 
 private func startSmokeTimer() {
@@ -121,6 +273,7 @@ private func startSmokeTimer() {
     NativeAPI.Application.shared.quit(0)
   }
 }
+
 extension App {
   /// The `@main` entry point. `SwiftUI` re-exports this extension, so an app
   /// only needs `import SwiftUI`.

@@ -14,6 +14,11 @@ public struct Font: Hashable, Sendable {
   public var size: CGFloat
   public var weight: Weight
   public var family: String
+  package init(size: CGFloat, weight: Weight = .regular, family: String = "Segoe UI") {
+    self.size = size
+    self.weight = weight
+    self.family = family
+  }
   public static func system(size: CGFloat, weight: Weight = .regular, design: Design = .default)
     -> Font
   {

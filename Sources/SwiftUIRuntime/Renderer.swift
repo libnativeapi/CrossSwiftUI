@@ -73,6 +73,9 @@ import Foundation
       self?.evaluations.invalidate(key)
       self?.scheduleRender()
     })
+    evaluations.onObservableChange = { [weak self] in
+      self?.scheduleObservableRender()
+    }
     backend.tapHandler = { [weak self] id in
       self?.performTap(id)
     }
@@ -129,6 +132,18 @@ import Foundation
     resize(to: size, invalidateMeasurements: false)
   }
 
+  /// Measures the ideal / fitting size of the mounted or freshly evaluated root view.
+  public func sizeThatFits(_ proposal: ProposedViewSize = ProposedViewSize(width: nil, height: nil)) -> Size {
+    if let current = normalized ?? mounted {
+      return layoutEngine.measure(current, proposal)
+    }
+    let savedEnvironment = EnvironmentValues.current
+    EnvironmentValues.current = backend.environment
+    defer { EnvironmentValues.current = savedEnvironment }
+    let raw = normalize(_render(root, path: rootPath))
+    return layoutEngine.measure(raw, proposal)
+  }
+
   package func resize(to size: Size, invalidateMeasurements: Bool) {
     guard size != contentSize || invalidateMeasurements else { return }
     if invalidateMeasurements {
@@ -147,6 +162,30 @@ import Foundation
     evaluations.invalidateAll()
     scheduleRender()
   }
+  private var observableWakeupScheduled = false
+
+  /// `withObservationTracking`'s `onChange` fires on `willSet` before the new value lands.
+  /// Mark `needsRender = true` immediately (so synchronous callers calling `renderIfNeeded()`
+  /// after the write see it) while deferring automatic rendering until after `willSet` completes.
+  private func scheduleObservableRender() {
+    pendingScroll = nil
+    if AnimationContext.isExplicit {
+      pendingAnimation = AnimationContext.current
+      pendingAnimationExplicit = true
+    } else if let animation = AnimationContext.current {
+      pendingAnimation = animation
+    }
+    needsRender = true
+    if isRendering || transactionDepth > 0 || observableWakeupScheduled { return }
+    observableWakeupScheduled = true
+    Task { @MainActor [weak self] in
+      guard let self else { return }
+      self.observableWakeupScheduled = false
+      guard self.needsRender, !self.isRendering, self.transactionDepth == 0 else { return }
+      self.requestRender()
+    }
+  }
+
   private func scheduleRender() {
     if AnimationContext.isExplicit {
       pendingAnimation = AnimationContext.current
@@ -641,8 +680,11 @@ import Foundation
     let now = clock()
     lastTimings.removeAll(keepingCapacity: true)
     var start = Date.timeIntervalSinceReferenceDate
-    StateRegistry.shared.begin()
-    LifecycleRegistry.shared.begin()
+    StateRegistry.shared.begin(root: rootPath)
+    LifecycleRegistry.shared.begin(root: rootPath)
+    let savedActiveRoot = LifecycleRegistry.shared.activeRoot
+    LifecycleRegistry.shared.activeRoot = ObjectIdentifier(rootPath)
+    defer { LifecycleRegistry.shared.activeRoot = savedActiveRoot }
     var element = evaluations.evaluateRoot { _render(root, path: rootPath) }
     lastTimings["evaluate"] = (Date.timeIntervalSinceReferenceDate - start) * 1000
     start = Date.timeIntervalSinceReferenceDate

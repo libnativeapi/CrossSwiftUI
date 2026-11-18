@@ -210,6 +210,8 @@ struct Surface {
   HWND tooltip = nullptr;
   sui_input_callback input = nullptr;
   std::unordered_map<HWND, EditHook> edits;
+  std::unordered_set<HWND> custom_views;
+  uint32_t background_argb = 0xFFFFFFFFu;
   std::unordered_map<std::wstring, std::unique_ptr<TextFont>> fonts;
   std::unordered_map<HWND, native_view_t> native_views;
   std::unordered_map<HWND, HWND> native_parents;
@@ -406,8 +408,10 @@ void RenderFrame(Surface *s) {
                        repaint.bottom - repaint.top));
     g.SetClip(&dirty);
   }
-  SolidBrush clear(Color(255, 255, 255, 255));
+  g.SetCompositingMode(CompositingModeSourceCopy);
+  SolidBrush clear(Color(s->background_argb));
   g.FillRectangle(&clear, 0, 0, INT(width), INT(height));
+  g.SetCompositingMode(CompositingModeSourceOver);
   s->damage = {};
   g.SetSmoothingMode(SmoothingModeAntiAlias);
   g.SetPixelOffsetMode(PixelOffsetModeHalf);
@@ -558,6 +562,8 @@ void Draw(Surface *s, HWND target, HDC dc) {
     };
     for (const auto &entry : s->edits)
       exclude(entry.first);
+    for (HWND cv : s->custom_views)
+      exclude(cv);
     for (const auto &entry : s->buttons)
       if (!entry.second.custom_draw)
         exclude(entry.first);
@@ -603,6 +609,8 @@ LRESULT Paint(Surface *s, HWND hwnd, UINT msg, WPARAM wp) {
       };
       for (const auto &entry : s->edits)
         if (IsWindowVisible(entry.first)) native.push_back(bounds(entry.first));
+      for (HWND cv : s->custom_views)
+        if (IsWindowVisible(cv)) native.push_back(bounds(cv));
       for (const auto &entry : s->buttons)
         if (!entry.second.custom_draw && IsWindowVisible(entry.first))
           native.push_back(bounds(entry.first));
@@ -1315,6 +1323,46 @@ void sui_edit_order(void *handle, void *edit) {
   ParentControl(s, hwnd);
   OrderControl(s, hwnd);
 }
+void sui_surface_set_background(void *handle, uint32_t argb) {
+  auto *s = static_cast<Surface *>(handle);
+  if (!s || s->background_argb == argb)
+    return;
+  s->background_argb = argb;
+  s->buffer_dirty = true;
+  RECT client{};
+  GetClientRect(s->host, &client);
+  UnionRect(&s->damage, &s->damage, &client);
+  InvalidateRect(s->host, nullptr, FALSE);
+}
+void sui_surface_custom_view(void *handle, void *view_hwnd,
+                             uint64_t native_view) {
+  auto *s = static_cast<Surface *>(handle);
+  HWND hwnd = static_cast<HWND>(view_hwnd);
+  if (!s || !hwnd)
+    return;
+  s->native_state_changed = true;
+  if (native_view && !s->native_views.count(hwnd))
+    s->native_views.emplace(hwnd, native_handle_retain(native_view));
+  ParentControl(s, hwnd);
+  s->custom_views.insert(hwnd);
+}
+void sui_surface_remove_custom_view(void *handle, void *view_hwnd) {
+  auto *s = static_cast<Surface *>(handle);
+  HWND hwnd = static_cast<HWND>(view_hwnd);
+  if (!s || !hwnd)
+    return;
+  if (!s->custom_views.erase(hwnd))
+    return;
+  ReleaseControl(s, hwnd);
+}
+void sui_custom_view_order(void *handle, void *view_hwnd) {
+  auto *s = static_cast<Surface *>(handle);
+  HWND hwnd = static_cast<HWND>(view_hwnd);
+  if (!s || !hwnd)
+    return;
+  ParentControl(s, hwnd);
+  OrderControl(s, hwnd);
+}
 void sui_edit_line_metrics(void *handle, void *edit, double *center,
                            double *height) {
   auto *s = static_cast<Surface *>(handle);
@@ -1642,6 +1690,8 @@ void sui_surface_end(void *h) {
     };
     for (const auto &entry : s->edits)
       native_area(entry.first);
+    for (HWND cv : s->custom_views)
+      native_area(cv);
     for (const auto &entry : s->buttons)
       if (!entry.second.custom_draw)
         native_area(entry.first);

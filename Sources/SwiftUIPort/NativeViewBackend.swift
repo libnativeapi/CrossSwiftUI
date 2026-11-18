@@ -95,7 +95,7 @@ public final class NativeViewBackend: RenderBackend {
       guard let container = NativeAPI.View.create() else { return }
       view = container
     case .layer, .shape, .styledButton, .presentation, .grid, .zStack, .scroll, .geometry,
-      .customLayout, .textField, .image, .path, .gradient:
+      .customLayout, .textField, .image, .path, .gradient, .hostedView:
       preconditionFailure(
         "Custom drawing and ButtonStyle require WindowsDrawingBackend; this backend supports native controls only"
       )
@@ -181,7 +181,7 @@ public final class NativeViewBackend: RenderBackend {
       view.setFlex(1)
       view.setAlignment(.stretch)
     case .empty, .fragment, .shape, .layer, .styledButton, .presentation, .grid, .zStack, .scroll,
-      .geometry, .customLayout, .textField, .image, .path, .gradient:
+      .geometry, .customLayout, .textField, .image, .path, .gradient, .hostedView:
       break
     }
   }

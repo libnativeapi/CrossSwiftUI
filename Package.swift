@@ -39,7 +39,11 @@ if buildForDesktop {
     .package(
       name: "NativeAPI",
       path: ProcessInfo.processInfo.environment["NATIVEAPI_SWIFT_PATH"]
-        ?? "../nativeapi/bindings/swift")
+        ?? "../nativeapi/bindings/swift"),
+    .package(
+      name: "CrossAppKit",
+      path: ProcessInfo.processInfo.environment["CROSS_APPKIT_PATH"]
+        ?? "../CrossAppKit"),
   ]
 }
 #endif
@@ -67,7 +71,12 @@ if buildForDesktop {
       path: "Tests/CSwiftUIWindowsTestSupport", publicHeadersPath: "include"))
   targets.append(
     .testTarget(
-      name: "WindowsDrawingTests", dependencies: ["CSwiftUIWindowsTestSupport", "SwiftUIPort"]))
+      name: "WindowsDrawingTests",
+      dependencies: [
+        "CSwiftUIWindowsTestSupport",
+        "SwiftUIPort",
+        .product(name: "CrossAppKit", package: "CrossAppKit"),
+      ]))
 }
 let drawingDependencies: [Target.Dependency] = ["CSwiftUIWindows"]
 #elseif !os(macOS)
@@ -121,6 +130,7 @@ if buildForDesktop {
       dependencies: [
         "SwiftUIRuntime",
         .product(name: "NativeAPI", package: "NativeAPI"),
+        .product(name: "CrossAppKit", package: "CrossAppKit"),
       ] + drawingDependencies
     ),
     .target(
@@ -160,7 +170,7 @@ targets.append(
 )
 let package = Package(
   name: "SwiftUIPort",
-  platforms: [.macOS(.v11)],
+  platforms: [.macOS(.v14)],
   products: products,
   dependencies: packageDependencies,
   targets: targets,

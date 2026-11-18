@@ -3,7 +3,7 @@
 
 /// Interns structural paths for the lifetime of the nodes and state using them.
 /// Child lookup is local to the parent, so StateKey never hashes a full path.
-final class ViewPath: Hashable {
+package final class ViewPath: Hashable {
   private enum Component: Hashable {
     case index(Int)
     case id(AnyHashable)
@@ -42,8 +42,8 @@ final class ViewPath: Hashable {
     return path
   }
 
-  static func == (lhs: ViewPath, rhs: ViewPath) -> Bool { lhs === rhs }
-  func hash(into hasher: inout Hasher) { hasher.combine(ObjectIdentifier(self)) }
+  package static func == (lhs: ViewPath, rhs: ViewPath) -> Bool { lhs === rhs }
+  package func hash(into hasher: inout Hasher) { hasher.combine(ObjectIdentifier(self)) }
 }
 
 struct StateKey: Hashable {
@@ -55,7 +55,7 @@ protocol _StateProperty { func install(_ key: StateKey) }
 public final class StateRegistry {
   public static let shared = StateRegistry()
   private var values: [StateKey: Any] = [:]
-  private var live: Set<StateKey> = []
+  private var liveByRoot: [ObjectIdentifier: Set<StateKey>] = [:]
   public var onChange: (() -> Void)?
   var onStateChange: ((StateKey) -> Void)?
   private struct Observer {
@@ -67,9 +67,10 @@ public final class StateRegistry {
     observers[ObjectIdentifier(root)] = Observer(change: change, stateChange: stateChange)
   }
   func removeObserver(_ root: ViewPath) {
-    observers.removeValue(forKey: ObjectIdentifier(root))
+    let rootID = ObjectIdentifier(root)
+    observers.removeValue(forKey: rootID)
     values = values.filter { $0.key.path.root !== root }
-    live = live.filter { $0.path.root !== root }
+    liveByRoot.removeValue(forKey: rootID)
     LifecycleRegistry.shared.remove(root)
   }
   func notifyChange() {
@@ -80,29 +81,34 @@ public final class StateRegistry {
   public func reset() {
     LifecycleRegistry.shared.reset()
     values.removeAll()
-    live.removeAll()
+    liveByRoot.removeAll()
     onChange = nil
     onStateChange = nil
     observers.removeAll()
   }
-  func begin() { live.removeAll() }
+  func begin(root: ViewPath) {
+    liveByRoot[ObjectIdentifier(root)] = []
+  }
   func retain(_ keys: Set<StateKey>) {
-    live.formUnion(keys)
+    if let first = keys.first {
+      liveByRoot[ObjectIdentifier(first.path.root), default: []].formUnion(keys)
+    }
     GeometrySnapshot.active?.state.formUnion(keys)
   }
   func end(root: ViewPath) {
+    let live = liveByRoot[ObjectIdentifier(root)] ?? []
     values = values.filter { $0.key.path.root !== root || live.contains($0.key) }
   }
   func install<Value>(_ key: StateKey, initial: Value) {
     EvaluationGraph.active?.installState(key)
     GeometrySnapshot.active?.state.insert(key)
-    live.insert(key)
+    liveByRoot[ObjectIdentifier(key.path.root), default: []].insert(key)
     if values[key] == nil { values[key] = initial }
   }
   func installLazy<Value>(_ key: StateKey, initial: () -> Value) -> Value {
     EvaluationGraph.active?.installState(key)
     GeometrySnapshot.active?.state.insert(key)
-    live.insert(key)
+    liveByRoot[ObjectIdentifier(key.path.root), default: []].insert(key)
     if let value = values[key] as? Value { return value }
     let value = initial()
     values[key] = value

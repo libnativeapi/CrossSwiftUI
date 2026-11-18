@@ -62,6 +62,7 @@ public enum ElementKind: Hashable, CustomStringConvertible {
   case padding
   case frame, layer, shape, styledButton
   case presentation, grid, zStack, scroll, geometry, customLayout, textField, image, path, gradient
+  case hostedView
   case text
   case button
   case spacer
@@ -83,6 +84,7 @@ public enum ElementKind: Hashable, CustomStringConvertible {
     case .image: return "Image"
     case .path: return "Path"
     case .gradient: return "Gradient"
+    case .hostedView: return "HostedView"
     case .frame: return "Frame"
     case .layer: return "Layer"
     case .shape: return "Shape"
@@ -203,7 +205,7 @@ public struct Element {
   /// The value from `.id(_:)`, if any.
   var explicitID: AnyHashable? = nil
   /// The action of a `Button`, or of `.onTapGesture` on a Button.
-  var action: (() -> Void)? = nil
+  package var action: (() -> Void)? = nil
   var hoverAction: ((Bool) -> Void)? = nil
   var focusAction: ((Bool) -> Void)? = nil
   public var pathBuilder: ((CGRect) -> Path)? = nil
@@ -215,6 +217,8 @@ public struct Element {
   var preferenceAction: (([ObjectIdentifier: PreferenceValue]) -> Void)? = nil
   var geometryBuilder: ((CGRect) -> Element)? = nil
   var layout: (any _LayoutBridge)? = nil
+  package var hostedViewAdapter: (any AnyObject)? = nil
+  package var hostedViewMeasure: ((ProposedViewSize) -> Size)? = nil
   var textAction: ((String) -> Void)? = nil
   var submitAction: (() -> Void)? = nil
   var dragAction: ((DragGesture.Value, Bool) -> Void)? = nil
@@ -233,7 +237,7 @@ public struct Element {
   var dismissPresentation: (() -> Void)? = nil
   var pressedAction: ((Bool) -> Void)? = nil
 
-  init(
+  package init(
     id: NodeID = NodeID(rawValue: 0),
     kind: ElementKind,
     props: NodeProps = NodeProps(),
@@ -386,6 +390,7 @@ func assignKeys(_ element: inout Element, index: Int = 0) {
 }
 func resolveEnvironment(
   _ element: inout Element,
+  colorScheme: ColorScheme = EnvironmentValues.current.colorScheme,
   inheritedForeground: Color? = nil,
   inheritedDisabled: Bool = false,
   inheritedOpacity: Double = 1,
@@ -394,10 +399,19 @@ func resolveEnvironment(
   inheritedLineSpacing: Double = 0,
   previous: Element? = nil
 ) {
-  let foreground = element.props.foreground ?? inheritedForeground
+  let foreground = (element.props.foreground ?? inheritedForeground)?.resolved(in: colorScheme)
   let disabled = element.props.disabledOverride ?? inheritedDisabled
 
   element.props.foreground = foreground
+  element.props.background = element.props.background?.resolved(in: colorScheme)
+  element.props.borderColor = element.props.borderColor.resolved(in: colorScheme)
+  if let grad = element.props.gradient {
+    element.props.gradient = LinearGradient.Data(
+      colors: grad.colors.map { $0.resolved(in: colorScheme) },
+      start: grad.start,
+      end: grad.end
+    )
+  }
   element.props.enabled = !disabled
   element.props.visible = element.props.visible && inheritedVisible
   element.props.opacity *= inheritedOpacity
@@ -433,6 +447,7 @@ func resolveEnvironment(
   for index in element.children.indices {
     resolveEnvironment(
       &element.children[index],
+      colorScheme: colorScheme,
       inheritedForeground: foreground,
       inheritedDisabled: disabled,
       inheritedOpacity: element.props.opacity,

@@ -108,16 +108,28 @@
       let stats = sui_surface_paint_stats(surface)
       return ["raster": stats.raster_ms, "blit": stats.blit_ms, "count": Double(stats.paints)]
     }
-    private let window: NativeAPI.Window
-    public var environment: EnvironmentValues { .hosting(window) }
+    private let window: NativeAPI.Window?
+    public var environmentTransform: ((inout EnvironmentValues) -> Void)?
+    public var onPreInput: ((Int, CGPoint, Int, EventModifiers) -> Bool)?
+    public var environment: EnvironmentValues {
+      var env: EnvironmentValues = window.map { .hosting($0) } ?? EnvironmentValues()
+      environmentTransform?(&env)
+      return env
+    }
     private let content: NativeAPI.View
     private var surface: UnsafeMutableRawPointer?
     private var buttons: [NodeID: (view: NativeAPI.Button, listener: ListenerId)] = [:]
+    private var hostedViews: [NodeID: (mount: any _HostedViewMount, nativeHandle: UnsafeMutableRawPointer?)] = [:]
 
-    public init?(window: NativeAPI.Window, schedulesUpdates: Bool = false) {
-      guard let content = window.contentView, let handle = content.nativeObject else { return nil }
+    public convenience init?(window: NativeAPI.Window, schedulesUpdates: Bool = false) {
+      guard let content = window.contentView else { return nil }
+      self.init(view: content, window: window, schedulesUpdates: schedulesUpdates)
+    }
+
+    public init?(view content: NativeAPI.View, window: NativeAPI.Window? = nil, schedulesUpdates: Bool = false) {
+      guard let handle = content.nativeObject else { return nil }
       self.schedulesUpdates = schedulesUpdates
-      self.window = window
+      self.window = window ?? content.window
       self.content = content
       content.setLayout(.absolute)
       surface = sui_surface_create(
@@ -209,6 +221,11 @@
             // not leaving the SwiftUI surface. Reconcile the current hit path.
             return backend.inputHandler?(nil, 1, point, 0, [], "") == true ? 1 : 0
           }
+          if backend.onPreInput?(
+            Int(event), CGPoint(x: x, y: y), Int(value), EventModifiers(rawValue: Int(modifiers))
+          ) == true {
+            return 1
+          }
           return backend.inputHandler?(
             id == 0 ? nil : NodeID(rawValue: Int(id)), Int(event), CGPoint(x: x, y: y), Int(value),
             EventModifiers(rawValue: Int(modifiers)), "") == true ? 1 : 0
@@ -228,9 +245,15 @@
     deinit {
       content.cancelUpdate()
       if let contentListener { _ = content.removeListener(contentListener) }
+      for id in Array(hostedViews.keys) { removeHostedView(id) }
       for id in Array(edits.keys) { removeEdit(id) }
       for id in Array(buttons.keys) { removeButton(id) }
       if let surface { sui_surface_destroy(surface) }
+    }
+
+    public func setBackgroundColor(_ color: SwiftUIRuntime.Color) {
+      guard let surface else { return }
+      sui_surface_set_background(surface, color.argb)
     }
 
     private struct TextMeasurementKey: Hashable {
@@ -272,10 +295,12 @@
       var current: [NodeID: AnimatedValues] = [:]
       var live = Set<NodeID>()
       var liveEdits = Set<NodeID>()
+      var liveHosted = Set<NodeID>()
       var hasModal = false
       var hasFocusRequest = false
       func animate(_ node: Element, inherited: Animation?) {
         if node.kind == .textField { liveEdits.insert(node.id) }
+        if node.kind == .hostedView { liveHosted.insert(node.id) }
         if node.kind == .styledButton || node.kind == .button { live.insert(node.id) }
         hasModal =
           hasModal || node.props.accessibilityTraits & AccessibilityTraits.isModal.rawValue != 0
@@ -332,6 +357,7 @@
       if hasFocusRequest { focusTarget(root) }
       for id in Set(buttons.keys).subtracting(live) { removeButton(id) }
       for id in Set(edits.keys).subtracting(liveEdits) { removeEdit(id) }
+      for id in Set(hostedViews.keys).subtracting(liveHosted) { removeHostedView(id) }
       sui_surface_begin(surface)
       lastTimings["prepare"] = (Date.timeIntervalSinceReferenceDate - started) * 1000
       publish(root, on: surface)
@@ -686,6 +712,33 @@
             visible.width, visible.height)
         }
       }
+      if node.kind == .hostedView, let surface, let adapter = node.hostedViewAdapter as? any _HostedViewBackendBridge {
+        let r = node.frame
+        if let existing = hostedViews[node.id] {
+          adapter.updateMount(existing.mount, frame: CGRect(x: r.minX, y: r.minY, width: r.width, height: r.height))
+          if let handle = existing.nativeHandle {
+            if shownInViewport || nativeClip != nil {
+              sui_control_frame(surface, handle, r.minX, r.minY, r.width, r.height)
+            }
+            sui_custom_view_order(surface, handle)
+            let visible = shownInViewport ? r.intersection(nativeClip ?? clip) : .zero
+            sui_control_clip(
+              handle, visible.minX - r.minX, visible.minY - r.minY, visible.width, visible.height)
+          }
+        } else {
+          let created = adapter.createMount(frame: CGRect(x: r.minX, y: r.minY, width: r.width, height: r.height))
+          let handle = created.nativeView?.nativeObject
+          if let nv = created.nativeView, let handle {
+            sui_surface_custom_view(surface, handle, nv.nativeHandle)
+            sui_control_frame(surface, handle, r.minX, r.minY, r.width, r.height)
+            sui_custom_view_order(surface, handle)
+            let visible = shownInViewport ? r.intersection(nativeClip ?? clip) : .zero
+            sui_control_clip(
+              handle, visible.minX - r.minX, visible.minY - r.minY, visible.width, visible.height)
+          }
+          hostedViews[node.id] = (created.mount, handle)
+        }
+      }
       for child in orderedChildren(node) {
         updateButtons(
           child, allowed: allowed, clip: clip, background: background, nativeClip: nativeClip,
@@ -696,6 +749,13 @@
       if !node.props.accessibilityLabel.isEmpty { return node.props.accessibilityLabel }
       if !node.props.text.isEmpty { return node.props.text }
       return node.children.map(label).filter { !$0.isEmpty }.joined(separator: " ")
+    }
+    private func removeHostedView(_ id: NodeID) {
+      guard let entry = hostedViews.removeValue(forKey: id) else { return }
+      if let surface, let handle = entry.nativeHandle {
+        sui_surface_remove_custom_view(surface, handle)
+      }
+      entry.mount.dismantle()
     }
     private func removeEdit(_ id: NodeID) {
       guard let edit = edits.removeValue(forKey: id) else { return }
@@ -808,7 +868,9 @@
         }
       }
       if node.kind == .image {
-        if p.imagePath.lowercased().hasSuffix(".svg"), let image = VectorImage.load(p.imagePath) {
+        if (p.imagePath.hasPrefix("sf://") || p.imagePath.lowercased().hasSuffix(".svg")),
+          let image = VectorImage.load(p.imagePath)
+        {
           let sx = r.width / image.bounds.width
           let sy = r.height / image.bounds.height
           let scale = min(sx, sy)
@@ -819,7 +881,7 @@
                 y: r.minY + (r.height - image.bounds.height * scale) / 2 - image.bounds.minY
                   * scale, sx: scale, sy: scale), fill: p.foreground ?? .black)
           }
-        } else {
+        } else if !p.imagePath.isEmpty {
           sui_surface_image(surface, p.imagePath, r.minX, r.minY, r.width, r.height)
         }
       }

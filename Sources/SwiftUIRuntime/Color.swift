@@ -4,17 +4,41 @@
 /// type is what lets `SwiftUIRuntime` stay free of nativeapi imports. Color
 /// components are 0...1; values outside the range are clamped when converted.
 
+private final class DynamicColorProvider: @unchecked Sendable {
+  let resolve: @Sendable (ColorScheme) -> (Double, Double, Double, Double)
+  init(_ resolve: @escaping @Sendable (ColorScheme) -> (Double, Double, Double, Double)) {
+    self.resolve = resolve
+  }
+}
+
 public struct Color: Hashable, Sendable {
   public var red: Double
   public var green: Double
   public var blue: Double
   public var opacity: Double
+  private var dynamicProvider: DynamicColorProvider?
+  private var dynamicOpacityScale: Double = 1
 
   public init(red: Double, green: Double, blue: Double, opacity: Double = 1) {
     self.red = red
     self.green = green
     self.blue = blue
     self.opacity = opacity
+    self.dynamicProvider = nil
+    self.dynamicOpacityScale = 1
+  }
+
+  public init(_ dynamic: @escaping @Sendable (ColorScheme) -> (r: Double, g: Double, b: Double, a: Double)) {
+    let initial = dynamic(.dark)
+    self.red = initial.r
+    self.green = initial.g
+    self.blue = initial.b
+    self.opacity = initial.a
+    self.dynamicProvider = DynamicColorProvider { scheme in
+      let c = dynamic(scheme)
+      return (c.r, c.g, c.b, c.a)
+    }
+    self.dynamicOpacityScale = 1
   }
 
   /// A gray color with the given brightness (0 = black, 1 = white).
@@ -30,6 +54,38 @@ public struct Color: Hashable, Sendable {
       blue: Double(hex & 0xFF) / 255.0,
       opacity: opacity
     )
+  }
+
+  public func resolved(in scheme: ColorScheme) -> Color {
+    guard let provider = dynamicProvider else { return self }
+    let c = provider.resolve(scheme)
+    return Color(red: c.0, green: c.1, blue: c.2, opacity: c.3 * dynamicOpacityScale)
+  }
+
+  public static func == (lhs: Color, rhs: Color) -> Bool {
+    switch (lhs.dynamicProvider, rhs.dynamicProvider) {
+    case (nil, nil):
+      return lhs.red == rhs.red && lhs.green == rhs.green && lhs.blue == rhs.blue
+        && lhs.opacity == rhs.opacity
+    case (let l?, let r?):
+      return l === r && lhs.dynamicOpacityScale == rhs.dynamicOpacityScale
+    default:
+      return false
+    }
+  }
+
+  public func hash(into hasher: inout Hasher) {
+    if let p = dynamicProvider {
+      hasher.combine(true)
+      hasher.combine(ObjectIdentifier(p))
+      hasher.combine(dynamicOpacityScale)
+    } else {
+      hasher.combine(false)
+      hasher.combine(red)
+      hasher.combine(green)
+      hasher.combine(blue)
+      hasher.combine(opacity)
+    }
   }
 
   func saturating(_ amount: Double) -> Color {
@@ -50,19 +106,39 @@ public struct Color: Hashable, Sendable {
   public static let yellow = Color(red: 1, green: 1, blue: 0)
   public static let orange = Color(red: 1, green: 0.5, blue: 0)
   public static let purple = Color(red: 0.5, green: 0, blue: 0.5)
+  public static let pink = Color(red: 1.0, green: 0.216, blue: 0.373)
+  public static let cyan = Color(red: 0.353, green: 0.784, blue: 0.980)
+  public static let mint = Color(red: 0.388, green: 0.902, blue: 0.886)
+  public static let teal = Color(red: 0.251, green: 0.784, blue: 0.878)
+  public static let indigo = Color(red: 0.369, green: 0.361, blue: 0.902)
+  public static let brown = Color(red: 0.635, green: 0.518, blue: 0.369)
   public static let gray = Color(white: 0.5)
+  public static let accentColor = Color(red: 0.039, green: 0.518, blue: 1.0)
+  public static let primary = Color { scheme in
+    scheme == .dark ? (1, 1, 1, 1) : (0, 0, 0, 1)
+  }
   public static let secondary = Color(white: 0.35)
 }
 extension Color: View {
   public var body: some View { ShapeView(radius: 0, fill: self) }
 }
 extension Color {
-  public enum RGBColorSpace { case sRGB }
+  public enum RGBColorSpace { case sRGB, sRGBLinear, displayP3 }
   public init(_ space: RGBColorSpace, red: Double, green: Double, blue: Double, opacity: Double = 1)
   {
     self.init(red: red, green: green, blue: blue, opacity: opacity)
   }
+  public init(_ space: RGBColorSpace, white: Double, opacity: Double = 1) {
+    self.init(white: white, opacity: opacity)
+  }
   public func opacity(_ value: Double) -> Color {
-    Color(red: red, green: green, blue: blue, opacity: opacity * value)
+    if let provider = dynamicProvider {
+      var copy = self
+      copy.opacity = opacity * value
+      copy.dynamicOpacityScale = dynamicOpacityScale * value
+      _ = provider
+      return copy
+    }
+    return Color(red: red, green: green, blue: blue, opacity: opacity * value)
   }
 }

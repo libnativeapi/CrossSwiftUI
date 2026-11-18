@@ -1,4 +1,34 @@
 import Foundation
+@_exported import Observation
+
+@propertyWrapper @dynamicMemberLookup
+public struct Bindable<Value: AnyObject & Observable> {
+  public var wrappedValue: Value
+
+  public init(wrappedValue: Value) {
+    self.wrappedValue = wrappedValue
+  }
+
+  public init(_ wrappedValue: Value) {
+    self.wrappedValue = wrappedValue
+  }
+
+  public init(_ projectedValue: Bindable<Value>) {
+    self.wrappedValue = projectedValue.wrappedValue
+  }
+
+  public var projectedValue: Bindable<Value> { self }
+
+  public subscript<Subject>(
+    dynamicMember keyPath: ReferenceWritableKeyPath<Value, Subject>
+  ) -> Binding<Subject> {
+    let target = wrappedValue
+    return Binding(
+      get: { target[keyPath: keyPath] },
+      set: { target[keyPath: keyPath] = $0 }
+    )
+  }
+}
 
 public protocol ObservableObject: AnyObject {}
 public final class ObservableObjectPublisher {
@@ -94,5 +124,26 @@ struct ObjectEnvironment<Content: View, Object: ObservableObject>: View, _Primit
 extension View {
   public func environmentObject<Object: ObservableObject>(_ object: Object) -> some View {
     ObjectEnvironment(content: self, object: object)
+  }
+
+  public func environment<T: AnyObject & Observable>(_ object: T?) -> some View {
+    ObservableEnvironment(content: self, object: object)
+  }
+}
+
+struct ObservableEnvironment<Content: View, Object: AnyObject & Observable>: View, _PrimitiveView {
+  typealias Body = Never
+  let content: Content
+  let object: Object?
+  var body: Never { fatalError() }
+  func _makeElement(path: ViewPath) -> Element {
+    let old = EnvironmentValues.current
+    if let object {
+      EnvironmentValues.current.objects[ObjectIdentifier(Object.self)] = object
+    } else {
+      EnvironmentValues.current.objects.removeValue(forKey: ObjectIdentifier(Object.self))
+    }
+    defer { EnvironmentValues.current = old }
+    return _render(content, path: path)
   }
 }
