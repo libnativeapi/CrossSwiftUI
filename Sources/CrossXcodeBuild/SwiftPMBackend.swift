@@ -208,6 +208,14 @@ public final class SwiftPMBackend {
     if platform == .windows {
       buildArgs += ["--build-system", "native"]
     }
+    if configuration == .release {
+      buildArgs += [
+        "-Xcc", "-ffunction-sections",
+        "-Xcc", "-fdata-sections",
+        "-Xcxx", "-ffunction-sections",
+        "-Xcxx", "-fdata-sections",
+      ]
+    }
     let productArgs = buildArgs + ["--product", project.mainTarget.executableName]
 
     let logURL = buildRoot.appendingPathComponent("swift-build.log")
@@ -909,15 +917,24 @@ public final class SwiftPMBackend {
           if !consoleSubsystem {
             flags += ["-Xlinker", "/SUBSYSTEM:WINDOWS", "-Xlinker", "/ENTRY:mainCRTStartup"]
           }
+          if configuration == .release {
+            flags += ["-Xlinker", "/OPT:REF", "-Xlinker", "/OPT:ICF", "-Xlinker", "/DEBUG:NONE"]
+          }
           if let compiledResourceURL {
             flags += ["-Xlinker", compiledResourceURL.path]
           }
           linkerSettingLines.append("        .unsafeFlags([\(flags.map(swiftStringLiteral).joined(separator: ", "))])")
         } else if platform == .linux {
-          let flags = ["-Xlinker", "-rpath", "-Xlinker", "$ORIGIN/lib"]
+          var flags = ["-Xlinker", "-rpath", "-Xlinker", "$ORIGIN/lib"]
+          if configuration == .release {
+            flags += ["-Xlinker", "--gc-sections", "-Xlinker", "-s"]
+          }
           linkerSettingLines.append("        .unsafeFlags([\(flags.map(swiftStringLiteral).joined(separator: ", "))])")
         } else if platform == .wasm {
-          let flags = ["-Xlinker", "-z", "-Xlinker", "stack-size=16777216"]
+          var flags = ["-Xlinker", "-z", "-Xlinker", "stack-size=16777216"]
+          if configuration == .release {
+            flags += ["-Xlinker", "--gc-sections", "-Xlinker", "--strip-all"]
+          }
           linkerSettingLines.append(
             "        .unsafeFlags([\(flags.map(swiftStringLiteral).joined(separator: ", "))], .when(platforms: [.wasi]))"
           )

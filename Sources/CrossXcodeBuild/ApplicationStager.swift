@@ -198,6 +198,12 @@ public final class ApplicationStager {
     switch built.targetPlatform {
     case .windows:
       try fm.copyItem(at: built.executableURL, to: exeDestURL)
+      if project.configuration == .release {
+        stripReleaseBinaryIfPossible(
+          executableURL: exeDestURL,
+          swiftExecutableURL: built.swiftExecutableURL
+        )
+      }
       try fm.copyItem(at: built.compiledAssets.resourcesDirectory, to: resourcesDestURL)
       try copySwiftPMResourceBundles(
         from: built.executableURL.deletingLastPathComponent(),
@@ -210,6 +216,12 @@ public final class ApplicationStager {
       )
     case .linux:
       try fm.copyItem(at: built.executableURL, to: exeDestURL)
+      if project.configuration == .release {
+        stripReleaseBinaryIfPossible(
+          executableURL: exeDestURL,
+          swiftExecutableURL: built.swiftExecutableURL
+        )
+      }
       #if !os(Windows)
         try fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: exeDestURL.path)
       #endif
@@ -342,6 +354,21 @@ public final class ApplicationStager {
       windowsIconURL: built.compiledAssets.windowsIconURL,
       desktopEntryURL: desktopURL,
       linuxIconsDirectory: linuxIconsDir
+    )
+  }
+
+  private func stripReleaseBinaryIfPossible(
+    executableURL: URL,
+    swiftExecutableURL: URL
+  ) {
+    let toolchainBin = swiftExecutableURL.deletingLastPathComponent()
+    guard let stripTool = ProcessRunner.findExecutable(
+      named: ["llvm-strip", "strip"],
+      extraDirectories: [toolchainBin]
+    ) else { return }
+    _ = try? ProcessRunner.run(
+      executable: stripTool,
+      arguments: ["--strip-all", executableURL.path]
     )
   }
 

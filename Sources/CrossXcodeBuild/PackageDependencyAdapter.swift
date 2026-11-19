@@ -305,7 +305,7 @@ public enum PackageDependencyAdapter {
     let stampSummary = prunedImagesetsByCatalogKey.keys.sorted().map { key in
       "\(key)=\(prunedImagesetsByCatalogKey[key]?.joined(separator: ",") ?? "")"
     }.joined(separator: "\n")
-    let stampText = patchedManifest + "\n// PRUNED:\n" + stampSummary
+    let stampText = patchedManifest + "\n// PRUNED-V2:\n" + stampSummary
     let stampURL = outputDirectory.appendingPathComponent(".crossswift-adapt-stamp")
     let dstManifestURL = outputDirectory.appendingPathComponent("Package.swift")
     if let existingStamp = try? String(contentsOf: stampURL, encoding: .utf8),
@@ -328,11 +328,25 @@ public enum PackageDependencyAdapter {
       let srcTarget = sourceRoot.appendingPathComponent(rel)
       let dstTarget = outputDirectory.appendingPathComponent(rel)
       guard fm.fileExists(atPath: srcTarget.path) else { continue }
+
+      let targetHasPrunedCatalog = target.largeAssetCatalogs.contains {
+        prunedImagesetsByCatalogKey["\(target.name)|\($0)"] != nil
+      }
+      var keptEnumCases: Set<String>? = nil
+      if targetHasPrunedCatalog, let refs = consumerReferences, !refs.isEmpty {
+        // Union consumer member identifiers with any member identifiers referenced by
+        // smaller sibling Swift files inside the same target (e.g. #Preview blocks).
+        var kept = refs.memberIdentifiers
+        kept.formUnion(scanSmallSiblingMemberReferences(in: srcTarget))
+        keptEnumCases = kept
+      }
+
       try stageDirectory(
         from: srcTarget,
         to: dstTarget,
         skipNames: Set(target.largeAssetCatalogs.map { URL(fileURLWithPath: $0).lastPathComponent }),
-        stripObjCInSwiftFiles: needsSwiftRewrite
+        stripObjCInSwiftFiles: needsSwiftRewrite,
+        pruneEnumCases: keptEnumCases
       )
 
       var fallbackCatalogPaths: [String] = []
@@ -455,7 +469,8 @@ public enum PackageDependencyAdapter {
     from src: URL,
     to dst: URL,
     skipNames: Set<String> = [],
-    stripObjCInSwiftFiles: Bool
+    stripObjCInSwiftFiles: Bool,
+    pruneEnumCases: Set<String>? = nil
   ) throws {
     let fm = FileManager.default
     try fm.createDirectory(at: dst, withIntermediateDirectories: true)
@@ -467,7 +482,8 @@ public enum PackageDependencyAdapter {
       var isDir: ObjCBool = false
       guard fm.fileExists(atPath: srcItem.path, isDirectory: &isDir) else { continue }
       if isDir.boolValue {
-        if !stripObjCInSwiftFiles
+        let needsSwiftProcessing = stripObjCInSwiftFiles || pruneEnumCases != nil
+        if !needsSwiftProcessing
           || item.lowercased().hasSuffix(".xcassets")
           || (!directoryContainsSwiftFiles(srcItem) && !directoryContainsAnyName(srcItem, names: skipNames))
         {
@@ -477,18 +493,92 @@ public enum PackageDependencyAdapter {
             from: srcItem,
             to: dstItem,
             skipNames: skipNames,
-            stripObjCInSwiftFiles: true
+            stripObjCInSwiftFiles: stripObjCInSwiftFiles,
+            pruneEnumCases: pruneEnumCases
           )
         }
-      } else if stripObjCInSwiftFiles && srcItem.pathExtension.lowercased() == "swift",
-                let text = try? String(contentsOf: srcItem, encoding: .utf8)
+      } else if (stripObjCInSwiftFiles || pruneEnumCases != nil) && srcItem.pathExtension.lowercased() == "swift",
+                var text = try? String(contentsOf: srcItem, encoding: .utf8)
       {
-        let cleaned = stripObjCAttributes(text)
-        try cleaned.write(to: dstItem, atomically: true, encoding: .utf8)
+        if stripObjCInSwiftFiles {
+          text = stripObjCAttributes(text)
+        }
+        if let keptCases = pruneEnumCases {
+          text = pruneOversizedAssetEnumSource(text, keepingCases: keptCases)
+        }
+        try text.write(to: dstItem, atomically: true, encoding: .utf8)
       } else {
         try fm.copyItem(at: srcItem, to: dstItem)
       }
     }
+  }
+
+  /// Scans `.swift` files <= 100 KB inside `targetDir` for `.member` references so
+  /// internal references (such as `#Preview` blocks) are preserved when pruning an
+  /// oversized generated asset enum file in the same target.
+  private static func scanSmallSiblingMemberReferences(in targetDir: URL) -> Set<String> {
+    let fm = FileManager.default
+    guard let enumerator = fm.enumerator(
+      at: targetDir,
+      includingPropertiesForKeys: [.isDirectoryKey, .fileSizeKey],
+      options: [.skipsHiddenFiles]
+    ) else { return [] }
+    guard let regex = try? NSRegularExpression(pattern: "\\.([A-Za-z_][A-Za-z0-9_]*)\\b") else {
+      return []
+    }
+    var members = Set<String>()
+    for case let url as URL in enumerator {
+      let name = url.lastPathComponent
+      if name.lowercased().hasSuffix(".xcassets") || name == ".build" || name == ".git" {
+        enumerator.skipDescendants()
+        continue
+      }
+      guard url.pathExtension.lowercased() == "swift" else { continue }
+      if let size = try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize, size > 100_000 {
+        continue
+      }
+      guard let text = try? String(contentsOf: url, encoding: .utf8) else { continue }
+      let range = NSRange(text.startIndex..., in: text)
+      for m in regex.matches(in: text, range: range) {
+        if let r = Range(m.range(at: 1), in: text) {
+          members.insert(String(text[r]))
+        }
+      }
+    }
+    return members
+  }
+
+  /// Prunes unreferenced `case <ident>` and `case .<ident>:` lines from oversized
+  /// generated asset-enum Swift files (> 100 KB, > 200 cases) when a target's large
+  /// `.xcassets` catalog has been tree-shaken. Keeps all non-case lines intact and
+  /// leaves the file unchanged if fewer than 1 case matches `keepingCases`.
+  private static func pruneOversizedAssetEnumSource(_ source: String, keepingCases: Set<String>) -> String {
+    guard source.utf8.count > 100_000, !keepingCases.isEmpty else { return source }
+    var totalCases = 0
+    var matchedCases = 0
+    var outLines: [String] = []
+    outLines.reserveCapacity(1024)
+
+    source.enumerateLines { line, _ in
+      let trimmed = line.drop(while: { $0 == " " || $0 == "\t" })
+      if trimmed.hasPrefix("case ") {
+        let afterCase = trimmed.dropFirst(5).drop(while: { $0 == " " || $0 == "\t" })
+        let identStart = afterCase.hasPrefix(".") ? afterCase.dropFirst() : afterCase
+        let ident = String(identStart.prefix(while: { $0.isLetter || $0.isNumber || $0 == "_" }))
+        if !ident.isEmpty {
+          totalCases += 1
+          if keepingCases.contains(ident) {
+            matchedCases += 1
+            outLines.append(line)
+          }
+          return
+        }
+      }
+      outLines.append(line)
+    }
+
+    guard totalCases > 200, matchedCases > 0 else { return source }
+    return outLines.joined(separator: "\n") + "\n"
   }
 
   private static func directoryContainsAnyName(_ dir: URL, names: Set<String>) -> Bool {
