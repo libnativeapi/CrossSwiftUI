@@ -1354,6 +1354,7 @@ private struct SelectableListBody<SelectionValue: Hashable, Content: View>: View
           kind: .styledButton,
           props: rowProps,
           children: [Element(kind: .padding, props: rowProps, children: [el])],
+          explicitID: el.explicitID ?? tag,
           action: {
             if let typed = tag.base as? SelectionValue {
               selBind?.wrappedValue = typed

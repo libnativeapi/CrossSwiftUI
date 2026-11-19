@@ -234,14 +234,27 @@ func flattenChildren(_ element: Element) -> [Element] {
   if element.kind == .fragment {
     var children: [Element] = []
     children.reserveCapacity(element.children.count)
-    func append(_ child: Element) {
+    func append(_ child: Element, inheritedTag: AnyHashable?, inheritedID: AnyHashable?) {
+      let tag = child.tagValue ?? inheritedTag
+      let eid = child.explicitID ?? inheritedID
       switch child.kind {
-      case .fragment: child.children.forEach(append)
+      case .fragment:
+        let propagateID = child.children.count == 1 ? eid : nil
+        for nested in child.children {
+          append(nested, inheritedTag: tag, inheritedID: propagateID)
+        }
       case .empty: break
-      default: children.append(child)
+      default:
+        var resolved = child
+        if resolved.tagValue == nil { resolved.tagValue = tag }
+        if resolved.explicitID == nil { resolved.explicitID = eid }
+        children.append(resolved)
       }
     }
-    element.children.forEach(append)
+    let rootPropagateID = element.children.count == 1 ? element.explicitID : nil
+    for child in element.children {
+      append(child, inheritedTag: element.tagValue, inheritedID: rootPropagateID)
+    }
     return children
   }
   return element.kind == .empty ? [] : [element]

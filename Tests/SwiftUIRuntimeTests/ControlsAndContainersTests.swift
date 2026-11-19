@@ -1,6 +1,18 @@
 import Foundation
+import Observation
 import XCTest
 @testable import SwiftUIRuntime
+
+private enum SidebarTestTab: String, CaseIterable, Identifiable, Hashable {
+  case general, about
+  var id: Self { self }
+}
+
+@MainActor
+@Observable
+private final class SidebarTestNav {
+  var tab: SidebarTestTab = .general
+}
 
 final class ControlsAndContainersTests: XCTestCase {
   @MainActor
@@ -171,5 +183,74 @@ final class ControlsAndContainersTests: XCTestCase {
       catalog.resolve(key: "%@ (%lld items)", arguments: [.string("Emoji"), .int(3)]),
       "Emoji (3 items)"
     )
+  }
+
+  @MainActor
+  func testSidebarListSelectionSwitchesObservableTab() {
+    struct Sidebar: View {
+      @Environment(SidebarTestNav.self) private var nav
+      private var selection: Binding<SidebarTestTab?> {
+        Binding(get: { nav.tab }, set: { if let t = $0 { nav.tab = t } })
+      }
+      var body: some View {
+        List(selection: selection) {
+          ForEach(["Section1"], id: \.self) { title in
+            Section(title) {
+              ForEach(SidebarTestTab.allCases) { tab in
+                Label {
+                  Text(tab.rawValue)
+                } icon: {
+                  Image(systemName: "gear")
+                }
+                .tag(tab)
+              }
+            }
+          }
+        }
+        .listStyle(.sidebar)
+        .labelStyle(.titleAndIcon)
+      }
+    }
+    struct Root: View {
+      @Environment(SidebarTestNav.self) private var nav
+      var body: some View {
+        NavigationSplitView {
+          Sidebar()
+        } detail: {
+          Text("Detail: \(nav.tab.rawValue)")
+        }
+      }
+    }
+
+    let nav = SidebarTestNav()
+    let backend = FakeBackend()
+    let renderer = Renderer(
+      backend: backend,
+      root: AnyView(Root().environment(nav)),
+      size: Size(width: 800, height: 600)
+    )
+    renderer.mount()
+
+    func findButtons(_ el: Element) -> [Element] {
+      var out: [Element] = []
+      if el.kind == .styledButton || el.kind == .button { out.append(el) }
+      for c in el.children { out.append(contentsOf: findButtons(c)) }
+      return out
+    }
+    func findTexts(_ el: Element) -> [String] {
+      var out: [String] = []
+      if el.kind == .text { out.append(el.props.text) }
+      for c in el.children { out.append(contentsOf: findTexts(c)) }
+      return out
+    }
+
+    let buttons = findButtons(renderer.tree!)
+    XCTAssertEqual(buttons.count, 2, "Expected 2 sidebar tab buttons, got \(buttons.count)")
+    XCTAssertTrue(findTexts(renderer.tree!).contains("Detail: general"))
+
+    backend.tap(buttons[1].id)
+    renderer.renderIfNeeded()
+    XCTAssertEqual(nav.tab, .about)
+    XCTAssertTrue(findTexts(renderer.tree!).contains("Detail: about"))
   }
 }
