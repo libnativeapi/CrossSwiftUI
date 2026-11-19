@@ -6,6 +6,9 @@ import SwiftUIRuntime
 #if !os(macOS)
   import Combine
 #endif
+#if os(Windows)
+  import CSwiftUIWindows
+#endif
 
 // MARK: - Hosted NSView Bridge Protocols
 
@@ -216,6 +219,11 @@ private final class HostedViewBridge<R: NSViewRepresentable>: _HostedViewBackend
     MainActor.assumeIsolated {
       let instance = ensureInstance(key: viewKey)
       instance.typedView.frame = frame
+      #if !os(macOS)
+        if let tv = instance.typedView as? NSTextView, !tv.isFieldEditorProxy {
+          _ = tv.ensureStandaloneNativeEditor()
+        }
+      #endif
       let ctx = NSViewRepresentableContext<R>(coordinator: instance.coordinator, environment: environment)
       representable.updateNSView(instance.typedView, context: ctx)
       return (instance, instance.typedView.ownedNativeView)
@@ -235,6 +243,102 @@ private final class HostedViewBridge<R: NSViewRepresentable>: _HostedViewBackend
       representable.updateNSView(typed.typedView, context: ctx)
     }
   }
+
+  @MainActor
+  private static func makeMouseNSEvent(
+    event: Int,
+    rootPoint: CGPoint,
+    modifiers: EventModifiers,
+    window: NSWindow?
+  ) -> NSEvent? {
+    let type: NSEvent.EventType
+    let button: Int
+    let clickCount: Int
+    switch event {
+    case 2:
+      type = .leftMouseDown
+      button = 0
+      clickCount = 1
+    case 3:
+      type = .leftMouseUp
+      button = 0
+      clickCount = 1
+    case 4:
+      type = .leftMouseDown
+      button = 0
+      clickCount = 2
+    case 9:
+      type = .rightMouseDown
+      button = 1
+      clickCount = 1
+    default:
+      return nil
+    }
+    var flags: NSEvent.ModifierFlags = []
+    if modifiers.contains(.shift) { flags.insert(.shift) }
+    if modifiers.contains(.control) { flags.insert(.command) }
+    if modifiers.contains(.option) { flags.insert(.option) }
+    if modifiers.contains(.command) { flags.insert(.command) }
+    let winHeight = window?.contentLayoutRect.height ?? 0
+    let appKitLoc = NSPoint(x: rootPoint.x, y: max(0, winHeight - rootPoint.y))
+    return NSEvent(
+      type: type,
+      locationInWindow: appKitLoc,
+      modifierFlags: flags,
+      windowNumber: window?.windowNumber ?? 0,
+      window: window,
+      buttonNumber: button,
+      clickCount: clickCount
+    )
+  }
+
+  func hitTest(key: AnyHashable, event: Int, rootPoint: CGPoint, modifiers: EventModifiers) -> Bool {
+    guard event == 2 || event == 3 || event == 4 || event == 9 else { return false }
+    return MainActor.assumeIsolated {
+      guard let instance = ActiveHostingContext.mount(for: hostContainer, key: key) as? HostedMountInstance<R> else {
+        return false
+      }
+      if instance.typedView.ownedNativeView != nil {
+        return false
+      }
+      let win = instance.typedView.window ?? hostContainer?.window
+      guard let nsEv = Self.makeMouseNSEvent(event: event, rootPoint: rootPoint, modifiers: modifiers, window: win) else {
+        return false
+      }
+      let prevEvent = NSApplication.shared.currentEvent
+      NSApplication.shared.currentEvent = nsEv
+      defer { NSApplication.shared.currentEvent = prevEvent }
+      return instance.typedView.hitTest(NSPoint(x: rootPoint.x, y: rootPoint.y)) != nil
+    }
+  }
+
+  func handleMouseInput(key: AnyHashable, event: Int, rootPoint: CGPoint, modifiers: EventModifiers) -> Bool {
+    guard event == 2 || event == 4 || event == 9 else { return false }
+    return MainActor.assumeIsolated {
+      guard let instance = ActiveHostingContext.mount(for: hostContainer, key: key) as? HostedMountInstance<R> else {
+        return false
+      }
+      if instance.typedView.ownedNativeView != nil {
+        return false
+      }
+      let win = instance.typedView.window ?? hostContainer?.window
+      guard let nsEv = Self.makeMouseNSEvent(event: event, rootPoint: rootPoint, modifiers: modifiers, window: win) else {
+        return false
+      }
+      let prevEvent = NSApplication.shared.currentEvent
+      NSApplication.shared.currentEvent = nsEv
+      defer { NSApplication.shared.currentEvent = prevEvent }
+      guard let hit = instance.typedView.hitTest(NSPoint(x: rootPoint.x, y: rootPoint.y)) else {
+        return false
+      }
+      if event == 9 {
+        hit.rightMouseDown(with: nsEv)
+      } else {
+        hit.mouseDown(with: nsEv)
+      }
+      return true
+    }
+  }
 }
 
 extension NSViewRepresentable {
@@ -245,7 +349,9 @@ extension NSViewRepresentable {
     return _HostedViewPrimitive(
       adapter: bridge,
       bindPath: { key in bridge.viewKey = key },
-      measure: { key, proposal in bridge.measure(key: key, proposal: proposal) }
+      measure: { key, proposal in bridge.measure(key: key, proposal: proposal) },
+      hitTest: { key, ev, pt, mods in bridge.hitTest(key: key, event: ev, rootPoint: pt, modifiers: mods) },
+      mouseInput: { key, ev, pt, mods in bridge.handleMouseInput(key: key, event: ev, rootPoint: pt, modifiers: mods) }
     )
   }
 }
@@ -275,6 +381,8 @@ public struct NSHostingSizingOptions: OptionSet, Sendable {
 @MainActor
 open class NSHostingView<Content: SwiftUIRuntime.View>: NSView {
   public typealias SizingOptions = NSHostingSizingOptions
+
+  open override var isFlipped: Bool { true }
 
   public var sizingOptions: SizingOptions = .standardBounds
   public var rootView: Content {
@@ -571,11 +679,36 @@ open class NSHostingView<Content: SwiftUIRuntime.View>: NSView {
         createdRenderer.resize(to: newSize)
       }
       createdBackend.inputHandler = { [weak self, weak createdRenderer] id, event, point, value, modifiers, text in
+        guard let self, let createdRenderer else { return false }
         ActiveHostingContext.currentHostingView = self
-        return createdRenderer?.input(
+        if event == 6 {
+          let resolvedText = !text.isEmpty ? text : Self.keyCharacter(forWin32VK: value)
+          if modifiers.contains(.control) && !modifiers.contains(.command) {
+            var cmdMods = modifiers
+            cmdMods.remove(.control)
+            cmdMods.insert(.command)
+            if createdRenderer.input(
+              id: id, event: event, point: point, value: value, modifiers: cmdMods,
+              text: resolvedText, updatesPressedState: false
+            ) {
+              return true
+            }
+            if value == 0x58,
+              let editor = self.window?.firstResponder as? NSTextView,
+              editor.selectedRange().length > 0
+            {
+              return false
+            }
+          }
+          return createdRenderer.input(
+            id: id, event: event, point: point, value: value, modifiers: modifiers,
+            text: resolvedText, updatesPressedState: false
+          )
+        }
+        return createdRenderer.input(
           id: id, event: event, point: point, value: value, modifiers: modifiers, text: text,
           updatesPressedState: false
-        ) ?? false
+        )
       }
       createdBackend.interactionHandler = { [weak createdRenderer] id, interaction in
         createdRenderer?.interact(id, interaction)
@@ -628,6 +761,30 @@ open class NSHostingView<Content: SwiftUIRuntime.View>: NSView {
     backend = nil
   }
 
+  private static func keyCharacter(forWin32VK value: Int) -> String {
+    if (0x30...0x5A).contains(value), let scalar = UnicodeScalar(value) {
+      return String(scalar).lowercased()
+    }
+    switch value {
+    case 0xBC: return ","
+    case 0xBE: return "."
+    case 0xBD: return "-"
+    case 0xBB: return "="
+    case 0xDB: return "["
+    case 0xDD: return "]"
+    case 0xDC: return "\\"
+    case 0xBA: return ";"
+    case 0xDE: return "'"
+    case 0xBF: return "/"
+    case 0xC0: return "`"
+    case 0x1B: return "\u{1B}"
+    case 0x0D: return "\r"
+    case 0x08: return "\u{7F}"
+    case 0x09: return "\t"
+    default: return ""
+    }
+  }
+
   /// Translates low-level surface key/mouse events into `CrossAppKit.NSEvent` and lets
   /// subclasses like `PalettePanel` or `DialogPanel` run their `sendEvent` hooks!
   private func forwardToNSWindowIfIntercepted(
@@ -645,31 +802,63 @@ open class NSHostingView<Content: SwiftUIRuntime.View>: NSView {
     let winHeight = nsWin.contentLayoutRect.height
     let appKitLoc = NSPoint(x: point.x, y: max(0, winHeight - point.y))
 
+    if event == 1 || event == 2 || event == 3 || event == 4 || event == 5 || event == 9 {
+      let evType: NSEvent.EventType
+      let btn: Int
+      let clicks: Int
+      switch event {
+      case 1:
+        evType = .mouseMoved
+        btn = 0
+        clicks = 0
+      case 2:
+        evType = .leftMouseDown
+        btn = 0
+        clicks = 1
+      case 3:
+        evType = .leftMouseUp
+        btn = 0
+        clicks = 1
+      case 4:
+        evType = .leftMouseDown
+        btn = 0
+        clicks = 2
+      case 5:
+        evType = .scrollWheel
+        btn = 0
+        clicks = 0
+      default:
+        evType = .rightMouseDown
+        btn = 1
+        clicks = 1
+      }
+      let mouseEv = NSEvent(
+        type: evType,
+        locationInWindow: appKitLoc,
+        modifierFlags: flags,
+        windowNumber: nsWin.windowNumber,
+        window: nsWin,
+        buttonNumber: btn,
+        clickCount: clicks,
+        scrollingDeltaY: event == 5 ? CGFloat(value) : 0
+      )
+      let prevEvent = NSApplication.shared.currentEvent
+      NSApplication.shared.currentEvent = mouseEv
+      defer { NSApplication.shared.currentEvent = prevEvent }
+      nsWin._eventReachedBaseSendEvent = false
+      nsWin._suppressLocalMonitorInSendEvent = true
+      nsWin.sendEvent(mouseEv)
+      nsWin._suppressLocalMonitorInSendEvent = false
+      if !nsWin._eventReachedBaseSendEvent {
+        return true
+      }
+      return false
+    }
+
     if event == 6 {
       // KeyDown: value is Win32 VK code
       let carbonCode = NSEvent.carbonKeyCode(fromWin32VK: value)
-      let ch: String
-      if (0x30...0x5A).contains(value), let scalar = UnicodeScalar(value) {
-        ch = String(scalar).lowercased()
-      } else if value == 0xBC {
-        ch = ","
-      } else if value == 0xBE {
-        ch = "."
-      } else if value == 0xBD {
-        ch = "-"
-      } else if value == 0xBB {
-        ch = "="
-      } else if value == 0x1B {
-        ch = "\u{1B}"
-      } else if value == 0x0D {
-        ch = "\r"
-      } else if value == 0x08 {
-        ch = "\u{7F}"
-      } else if value == 0x09 {
-        ch = "\t"
-      } else {
-        ch = ""
-      }
+      let ch = Self.keyCharacter(forWin32VK: value)
       let nsEv = NSEvent(
         type: .keyDown,
         locationInWindow: appKitLoc,
@@ -761,6 +950,7 @@ public struct NSApplicationDelegateAdaptor<DelegateType: NSObject & NSApplicatio
   }
 
   public func _installDelegate() {
+    installAssetResolversOnce()
     NSApplication.shared.delegate = wrappedValue
   }
 }
@@ -773,12 +963,98 @@ internal func installAssetResolversOnce() {
   #if !os(macOS)
     bootstrapAppResources()
   #endif
+  _ = VectorImage.hasSymbol("circle")
   SwiftUIRuntime.Image.assetPathResolver = { name, bundle in
     CrossAppKit.NSImage.resolveAssetPath(named: name, in: bundle)
   }
   CrossAppKit.NSImage.symbolLookupHandler = { symbolName in
     VectorImage.hasSymbol(symbolName)
   }
+  #if os(Windows)
+    CrossAppKit.NSImage.offscreenRenderer = { size, flipped, ops in
+      let scale = 2.0
+      let pxW = Int32(max(1, Int(ceil(Double(size.width) * scale))))
+      let pxH = Int32(max(1, Int(ceil(Double(size.height) * scale))))
+      guard let canvas = sui_offscreen_create(pxW, pxH) else { return nil }
+
+      func mapRect(_ r: NSRect) -> CGRect {
+        let y = flipped ? Double(r.origin.y) : Double(size.height - r.origin.y - r.size.height)
+        return CGRect(
+          x: Double(r.origin.x) * scale,
+          y: y * scale,
+          width: Double(r.size.width) * scale,
+          height: Double(r.size.height) * scale
+        )
+      }
+
+      func mapCommands(_ cmds: [Double]) -> [Double] {
+        var out = cmds
+        var i = 0
+        while i < cmds.count {
+          let n = cmds[i] == 2 ? 6 : cmds[i] == 3 ? 0 : 2
+          for j in stride(from: 1, through: n, by: 2) where i + j + 1 < cmds.count {
+            let x = cmds[i + j]
+            let y = cmds[i + j + 1]
+            out[i + j] = x * scale
+            out[i + j + 1] = (flipped ? y : (Double(size.height) - y)) * scale
+          }
+          i += n + 1
+        }
+        return out
+      }
+
+      for op in ops {
+        switch op {
+        case .shape(let rect, let radius, let fillARGB, let strokeARGB, let strokeWidth):
+          let mr = mapRect(rect)
+          sui_offscreen_shape(
+            canvas, mr.minX, mr.minY, mr.width, mr.height,
+            Double(radius) * scale, fillARGB, strokeARGB, Double(strokeWidth) * scale
+          )
+        case .path(let commands, let fillARGB, let strokeARGB, let strokeWidth):
+          let mapped = mapCommands(commands)
+          mapped.withUnsafeBufferPointer { buf in
+            sui_offscreen_path(
+              canvas, buf.baseAddress, Int32(buf.count),
+              fillARGB, strokeARGB, Double(strokeWidth) * scale
+            )
+          }
+        case .symbol(let name, let rect, let colorARGB, _, let weight):
+          guard let vec = VectorImage.loadSymbol(name), vec.bounds.width > 0, vec.bounds.height > 0
+          else { continue }
+          let mr = mapRect(rect)
+          let s = min(mr.width / vec.bounds.width, mr.height / vec.bounds.height)
+          let weightBoost = (weight - 400.0) / 500.0 * 0.45
+          let sw = vec.strokeWidth > 0 ? max(1.1 * scale, (vec.strokeWidth + weightBoost) * s) : 0
+          let tx = mr.minX + (mr.width - vec.bounds.width * s) / 2 - vec.bounds.minX * s
+          let ty = mr.minY + (mr.height - vec.bounds.height * s) / 2 - vec.bounds.minY * s
+          for p in vec.paths {
+            let tp = p.transformed(x: tx, y: ty, sx: s, sy: s)
+            tp.commands.withUnsafeBufferPointer { buf in
+              sui_offscreen_path(
+                canvas, buf.baseAddress, Int32(buf.count),
+                sw > 0 ? 0 : colorARGB, sw > 0 ? colorARGB : 0, sw
+              )
+            }
+          }
+        case .image:
+          break
+        case .text(let string, let rect, let fontSize, let colorARGB):
+          let mr = mapRect(rect)
+          sui_offscreen_text(
+            canvas, mr.minX, mr.minY, mr.width, mr.height,
+            string, Double(fontSize) * scale, colorARGB
+          )
+        }
+      }
+
+      var outLen: Int32 = 0
+      guard let ptr = sui_offscreen_finish_png(canvas, &outLen), outLen > 0 else { return nil }
+      let data = Data(bytes: ptr, count: Int(outLen))
+      sui_free_bytes(ptr)
+      return data
+    }
+  #endif
 }
 
 #if !os(macOS)

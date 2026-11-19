@@ -300,6 +300,189 @@ private struct OnGeometryChangeView<Content: View, T: Equatable>: View, _Primiti
   }
 }
 
+private func isSingleScrollWrapperChain(_ node: Element) -> Bool {
+  switch node.kind {
+  case .scroll:
+    return true
+  case .padding, .frame, .fragment, .geometry:
+    return node.children.count == 1 && isSingleScrollWrapperChain(node.children[0])
+  case .layer:
+    return !node.children.isEmpty && isSingleScrollWrapperChain(node.children[0])
+  default:
+    return false
+  }
+}
+
+private func isThinVerticalRule(_ node: Element) -> Bool {
+  if node.kind == .shape, let fw = node.props.frameWidth, fw <= 2 { return true }
+  if node.kind == .frame, let fw = node.props.frameWidth, fw <= 2,
+    node.children.count == 1, node.children[0].kind == .shape
+  {
+    return true
+  }
+  return false
+}
+
+private func isThinHorizontalRule(_ node: Element) -> Bool {
+  if node.kind == .shape, let fh = node.props.frameHeight, fh <= 2 { return true }
+  if node.kind == .frame, let fh = node.props.frameHeight, fh <= 2,
+    node.children.count == 1, node.children[0].kind == .shape
+  {
+    return true
+  }
+  return false
+}
+
+private func canPropagateVerticalSafeArea(_ node: Element) -> Bool {
+  if isSingleScrollWrapperChain(node) { return true }
+  switch node.kind {
+  case .container(.horizontal):
+    return true
+  case .padding, .frame, .fragment, .geometry:
+    return node.children.count == 1 && canPropagateVerticalSafeArea(node.children[0])
+  case .layer:
+    return !node.children.isEmpty && canPropagateVerticalSafeArea(node.children[0])
+  default:
+    return false
+  }
+}
+
+private func canPropagateHorizontalSafeArea(_ node: Element) -> Bool {
+  if isSingleScrollWrapperChain(node) { return true }
+  switch node.kind {
+  case .container(.vertical):
+    return true
+  case .padding, .frame, .fragment, .geometry:
+    return node.children.count == 1 && canPropagateHorizontalSafeArea(node.children[0])
+  case .layer:
+    return !node.children.isEmpty && canPropagateHorizontalSafeArea(node.children[0])
+  default:
+    return false
+  }
+}
+
+private func applyVerticalSafeArea(_ node: inout Element, edge: VerticalEdge, amount: Double) {
+  if isSingleScrollWrapperChain(node) {
+    func updateScroll(_ cur: inout Element) -> Bool {
+      if cur.kind == .scroll {
+        if edge == .top {
+          let oldTop = cur.props.scrollContentInsets.top
+          cur.props.scrollContentInsets.top += amount
+          if abs(cur.props.scrollOffset.y - (-oldTop)) < 0.5 {
+            cur.props.scrollOffset.y = -cur.props.scrollContentInsets.top
+          }
+        } else {
+          cur.props.scrollContentInsets.bottom += amount
+        }
+        return true
+      }
+      if !cur.children.isEmpty {
+        return updateScroll(&cur.children[0])
+      }
+      return false
+    }
+    _ = updateScroll(&node)
+    return
+  }
+  switch node.kind {
+  case .fragment, .frame, .geometry:
+    if node.children.count == 1 {
+      applyVerticalSafeArea(&node.children[0], edge: edge, amount: amount)
+      return
+    }
+  case .layer:
+    if !node.children.isEmpty {
+      applyVerticalSafeArea(&node.children[0], edge: edge, amount: amount)
+      return
+    }
+  case .padding:
+    if node.children.count == 1 && canPropagateVerticalSafeArea(node.children[0]) {
+      applyVerticalSafeArea(&node.children[0], edge: edge, amount: amount)
+      return
+    }
+    if edge == .top {
+      node.props.padding.top += amount
+    } else {
+      node.props.padding.bottom += amount
+    }
+    return
+  case .container(.horizontal):
+    for i in node.children.indices {
+      if isThinVerticalRule(node.children[i]) { continue }
+      applyVerticalSafeArea(&node.children[i], edge: edge, amount: amount)
+    }
+    return
+  default:
+    break
+  }
+  var p = NodeProps()
+  if edge == .top {
+    p.padding = EdgeInsets(top: amount, leading: 0, bottom: 0, trailing: 0)
+  } else {
+    p.padding = EdgeInsets(top: 0, leading: 0, bottom: amount, trailing: 0)
+  }
+  node = Element(kind: .padding, props: p, children: [node])
+}
+
+private func applyHorizontalSafeArea(_ node: inout Element, edge: HorizontalEdge, amount: Double) {
+  if isSingleScrollWrapperChain(node) {
+    func updateScroll(_ cur: inout Element) -> Bool {
+      if cur.kind == .scroll {
+        if edge == .leading {
+          cur.props.scrollContentInsets.leading += amount
+        } else {
+          cur.props.scrollContentInsets.trailing += amount
+        }
+        return true
+      }
+      if !cur.children.isEmpty {
+        return updateScroll(&cur.children[0])
+      }
+      return false
+    }
+    _ = updateScroll(&node)
+    return
+  }
+  switch node.kind {
+  case .fragment, .frame, .geometry:
+    if node.children.count == 1 {
+      applyHorizontalSafeArea(&node.children[0], edge: edge, amount: amount)
+      return
+    }
+  case .layer:
+    if !node.children.isEmpty {
+      applyHorizontalSafeArea(&node.children[0], edge: edge, amount: amount)
+      return
+    }
+  case .padding:
+    if node.children.count == 1 && canPropagateHorizontalSafeArea(node.children[0]) {
+      applyHorizontalSafeArea(&node.children[0], edge: edge, amount: amount)
+      return
+    }
+    if edge == .leading {
+      node.props.padding.leading += amount
+    } else {
+      node.props.padding.trailing += amount
+    }
+    return
+  case .container(.vertical):
+    for i in node.children.indices {
+      if isThinHorizontalRule(node.children[i]) { continue }
+      applyHorizontalSafeArea(&node.children[i], edge: edge, amount: amount)
+    }
+    return
+  default:
+    break
+  }
+  var p = NodeProps()
+  if edge == .leading {
+    p.padding = EdgeInsets(top: 0, leading: amount, bottom: 0, trailing: 0)
+  } else {
+    p.padding = EdgeInsets(top: 0, leading: 0, bottom: 0, trailing: amount)
+  }
+  node = Element(kind: .padding, props: p, children: [node])
+}
+
 private struct SafeAreaInsetVerticalView<Content: View, Bar: View>: View, _PrimitiveView {
   typealias Body = Never
   let content: Content
@@ -313,34 +496,12 @@ private struct SafeAreaInsetVerticalView<Content: View, Bar: View>: View, _Primi
   func _makeElement(path: ViewPath) -> Element {
     var base = _render(content, path: path.appending(index: 0))
     let barEl = _render(bar, path: path.appending(index: 1))
-    var padProps = NodeProps()
+    let padProps = NodeProps()
     if barEl.kind != .empty {
       let measuredBar = LayoutEngine().measuredSize(of: barEl)
       let insetAmount = measuredBar.height + Double(spacing)
-      if containsScrollNode(base) {
-        func applyScrollInset(_ node: inout Element) -> Bool {
-          if node.kind == .scroll {
-            if edge == .top {
-              let oldTop = node.props.scrollContentInsets.top
-              node.props.scrollContentInsets.top += insetAmount
-              if abs(node.props.scrollOffset.y - (-oldTop)) < 0.5 {
-                node.props.scrollOffset.y = -node.props.scrollContentInsets.top
-              }
-            } else {
-              node.props.scrollContentInsets.bottom += insetAmount
-            }
-            return true
-          }
-          for i in node.children.indices {
-            if applyScrollInset(&node.children[i]) { return true }
-          }
-          return false
-        }
-        _ = applyScrollInset(&base)
-      } else if edge == .top {
-        padProps.padding = EdgeInsets(top: insetAmount, leading: 0, bottom: 0, trailing: 0)
-      } else {
-        padProps.padding = EdgeInsets(top: 0, leading: 0, bottom: insetAmount, trailing: 0)
+      if insetAmount > 0 {
+        applyVerticalSafeArea(&base, edge: edge, amount: insetAmount)
       }
     }
     // Keep a single `.layer -> [.padding(base), bar]` shape across empty/non-empty
@@ -367,30 +528,12 @@ private struct SafeAreaInsetHorizontalView<Content: View, Bar: View>: View, _Pri
   func _makeElement(path: ViewPath) -> Element {
     var base = _render(content, path: path.appending(index: 0))
     let barEl = _render(bar, path: path.appending(index: 1))
-    var padProps = NodeProps()
+    let padProps = NodeProps()
     if barEl.kind != .empty {
       let measuredBar = LayoutEngine().measuredSize(of: barEl)
       let insetAmount = measuredBar.width + Double(spacing)
-      if containsScrollNode(base) {
-        func applyScrollInset(_ node: inout Element) -> Bool {
-          if node.kind == .scroll {
-            if edge == .leading {
-              node.props.scrollContentInsets.leading += insetAmount
-            } else {
-              node.props.scrollContentInsets.trailing += insetAmount
-            }
-            return true
-          }
-          for i in node.children.indices {
-            if applyScrollInset(&node.children[i]) { return true }
-          }
-          return false
-        }
-        _ = applyScrollInset(&base)
-      } else if edge == .leading {
-        padProps.padding = EdgeInsets(top: 0, leading: insetAmount, bottom: 0, trailing: 0)
-      } else {
-        padProps.padding = EdgeInsets(top: 0, leading: 0, bottom: 0, trailing: insetAmount)
+      if insetAmount > 0 {
+        applyHorizontalSafeArea(&base, edge: edge, amount: insetAmount)
       }
     }
     let paddedBase = Element(kind: .padding, props: padProps, children: [base])

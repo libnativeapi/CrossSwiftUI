@@ -238,16 +238,89 @@ uint32_t cak_clipboard_sequence_number(void) {
   return (uint32_t)GetClipboardSequenceNumber();
 }
 
+static bool OpenClipboardRetry() {
+  for (int attempt = 0; attempt < 5; ++attempt) {
+    if (OpenClipboard(nullptr)) return true;
+    Sleep(3);
+  }
+  return false;
+}
+
 int cak_clipboard_clear(void) {
-  if (!OpenClipboard(nullptr)) return 0;
+  if (!OpenClipboardRetry()) return 0;
   BOOL ok = EmptyClipboard();
   CloseClipboard();
   return ok ? 1 : 0;
 }
 
+int cak_clipboard_has_text(void) {
+  return IsClipboardFormatAvailable(CF_UNICODETEXT) ? 1 : 0;
+}
+
+int cak_clipboard_has_files(void) {
+  return IsClipboardFormatAvailable(CF_HDROP) ? 1 : 0;
+}
+
+int cak_clipboard_has_image(void) {
+  static UINT png_fmt = RegisterClipboardFormatW(L"PNG");
+  static UINT mime_png_fmt = RegisterClipboardFormatW(L"image/png");
+  return (IsClipboardFormatAvailable(png_fmt) ||
+          IsClipboardFormatAvailable(mime_png_fmt) ||
+          IsClipboardFormatAvailable(CF_DIBV5) ||
+          IsClipboardFormatAvailable(CF_DIB) ||
+          IsClipboardFormatAvailable(CF_BITMAP))
+             ? 1
+             : 0;
+}
+
+int cak_clipboard_has_rtf(void) {
+  static UINT rtf_fmt = RegisterClipboardFormatW(L"Rich Text Format");
+  return IsClipboardFormatAvailable(rtf_fmt) ? 1 : 0;
+}
+
+int cak_clipboard_has_html(void) {
+  static UINT html_fmt = RegisterClipboardFormatW(L"HTML Format");
+  return IsClipboardFormatAvailable(html_fmt) ? 1 : 0;
+}
+
+int cak_clipboard_has_custom(const char *utf8_format) {
+  std::wstring w = ToWide(utf8_format);
+  if (w.empty()) return 0;
+  UINT fmt = RegisterClipboardFormatW(w.c_str());
+  return (fmt != 0 && IsClipboardFormatAvailable(fmt)) ? 1 : 0;
+}
+
+int cak_clipboard_is_concealed(void) {
+  static UINT fmt_exclude = RegisterClipboardFormatW(L"ExcludeClipboardContentFromMonitorProcessing");
+  static UINT fmt_viewer_ignore = RegisterClipboardFormatW(L"Clipboard Viewer Ignore");
+  static UINT fmt_concealed = RegisterClipboardFormatW(L"org.nspasteboard.ConcealedType");
+  static UINT fmt_transient = RegisterClipboardFormatW(L"org.nspasteboard.TransientType");
+  static UINT fmt_history = RegisterClipboardFormatW(L"CanIncludeInClipboardHistory");
+  if (IsClipboardFormatAvailable(fmt_exclude) ||
+      IsClipboardFormatAvailable(fmt_viewer_ignore) ||
+      IsClipboardFormatAvailable(fmt_concealed) ||
+      IsClipboardFormatAvailable(fmt_transient)) {
+    return 1;
+  }
+  if (IsClipboardFormatAvailable(fmt_history) && OpenClipboardRetry()) {
+    bool excluded = false;
+    HANDLE h = GetClipboardData(fmt_history);
+    if (h && GlobalSize(h) >= sizeof(DWORD)) {
+      const DWORD *val = static_cast<const DWORD *>(GlobalLock(h));
+      if (val) {
+        excluded = (*val == 0);
+        GlobalUnlock(h);
+      }
+    }
+    CloseClipboard();
+    if (excluded) return 1;
+  }
+  return 0;
+}
+
 char *cak_clipboard_get_text(void) {
   if (!IsClipboardFormatAvailable(CF_UNICODETEXT)) return nullptr;
-  if (!OpenClipboard(nullptr)) return nullptr;
+  if (!OpenClipboardRetry()) return nullptr;
   char *result = nullptr;
   HANDLE hData = GetClipboardData(CF_UNICODETEXT);
   if (hData) {
@@ -261,11 +334,11 @@ char *cak_clipboard_get_text(void) {
   return result;
 }
 
-int cak_clipboard_set_text(const char *utf8_text) {
+static int WriteClipboardTextImpl(const char *utf8_text, bool clear_first) {
   if (!utf8_text) return 0;
   std::wstring wide = ToWide(utf8_text);
-  if (!OpenClipboard(nullptr)) return 0;
-  EmptyClipboard();
+  if (!OpenClipboardRetry()) return 0;
+  if (clear_first) EmptyClipboard();
   size_t bytes = (wide.size() + 1) * sizeof(wchar_t);
   HGLOBAL hMem = GlobalAlloc(GMEM_MOVEABLE, bytes);
   int ok = 0;
@@ -287,9 +360,17 @@ int cak_clipboard_set_text(const char *utf8_text) {
   return ok;
 }
 
+int cak_clipboard_set_text(const char *utf8_text) {
+  return WriteClipboardTextImpl(utf8_text, true);
+}
+
+int cak_clipboard_add_text(const char *utf8_text) {
+  return WriteClipboardTextImpl(utf8_text, false);
+}
+
 char *cak_clipboard_get_files_newline(void) {
   if (!IsClipboardFormatAvailable(CF_HDROP)) return nullptr;
-  if (!OpenClipboard(nullptr)) return nullptr;
+  if (!OpenClipboardRetry()) return nullptr;
   std::string joined;
   HDROP hDrop = static_cast<HDROP>(GetClipboardData(CF_HDROP));
   if (hDrop) {
@@ -309,19 +390,26 @@ char *cak_clipboard_get_files_newline(void) {
   return joined.empty() ? nullptr : DupString(joined);
 }
 
-int cak_clipboard_set_files(const char *const *utf8_paths, int count) {
+static int WriteClipboardFilesImpl(const char *const *utf8_paths, int count, bool clear_first) {
   if (!utf8_paths || count <= 0) return 0;
   std::vector<wchar_t> multi;
   for (int i = 0; i < count; ++i) {
     std::wstring w = ToWide(utf8_paths[i]);
     if (w.empty()) continue;
+    for (auto &ch : w) {
+      if (ch == L'/') ch = L'\\';
+    }
+    if (w.size() >= 3 && w[0] == L'\\' && iswalpha(w[1]) && w[2] == L':') {
+      w.erase(0, 1);
+    }
     multi.insert(multi.end(), w.begin(), w.end());
     multi.push_back(L'\0');
   }
+  if (multi.empty()) return 0;
   multi.push_back(L'\0');
   size_t total = sizeof(DROPFILES) + multi.size() * sizeof(wchar_t);
-  if (!OpenClipboard(nullptr)) return 0;
-  EmptyClipboard();
+  if (!OpenClipboardRetry()) return 0;
+  if (clear_first) EmptyClipboard();
   HGLOBAL hMem = GlobalAlloc(GMEM_MOVEABLE | GMEM_ZEROINIT, total);
   int ok = 0;
   if (hMem) {
@@ -341,48 +429,140 @@ int cak_clipboard_set_files(const char *const *utf8_paths, int count) {
   return ok;
 }
 
+int cak_clipboard_set_files(const char *const *utf8_paths, int count) {
+  return WriteClipboardFilesImpl(utf8_paths, count, true);
+}
+
+int cak_clipboard_add_files(const char *const *utf8_paths, int count) {
+  return WriteClipboardFilesImpl(utf8_paths, count, false);
+}
+
+static Gdiplus::Bitmap *BitmapFromHBitmapPreservingAlpha(HBITMAP hbmp) {
+  if (!hbmp) return nullptr;
+  EnsureGdiPlus();
+  BITMAP bm{};
+  if (GetObjectW(hbmp, sizeof(bm), &bm) && bm.bmWidth > 0 && bm.bmHeight != 0) {
+    const int w = bm.bmWidth;
+    const int h = std::abs(bm.bmHeight);
+    BITMAPINFO bmi{};
+    bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+    bmi.bmiHeader.biWidth = w;
+    bmi.bmiHeader.biHeight = -h; // top-down
+    bmi.bmiHeader.biPlanes = 1;
+    bmi.bmiHeader.biBitCount = 32;
+    bmi.bmiHeader.biCompression = BI_RGB;
+    std::vector<uint8_t> pixels((size_t)w * (size_t)h * 4);
+    HDC hdc = GetDC(nullptr);
+    int scanlines = GetDIBits(hdc, hbmp, 0, (UINT)h, pixels.data(), &bmi, DIB_RGB_COLORS);
+    ReleaseDC(nullptr, hdc);
+    if (scanlines > 0) {
+      bool any_alpha = false;
+      if (bm.bmBitsPixel == 32) {
+        for (size_t i = 3; i < pixels.size(); i += 4) {
+          if (pixels[i] != 0) {
+            any_alpha = true;
+            break;
+          }
+        }
+      }
+      if (!any_alpha) {
+        for (size_t i = 3; i < pixels.size(); i += 4) {
+          pixels[i] = 255;
+        }
+      }
+      auto *out = new Gdiplus::Bitmap(w, h, PixelFormat32bppARGB);
+      Gdiplus::BitmapData bd{};
+      Gdiplus::Rect rect(0, 0, w, h);
+      if (out->LockBits(&rect, Gdiplus::ImageLockModeWrite, PixelFormat32bppARGB, &bd) == Gdiplus::Ok) {
+        for (int y = 0; y < h; ++y) {
+          std::memcpy(
+              static_cast<uint8_t *>(bd.Scan0) + y * bd.Stride,
+              pixels.data() + (size_t)y * (size_t)w * 4,
+              (size_t)w * 4);
+        }
+        out->UnlockBits(&bd);
+        return out;
+      }
+      delete out;
+    }
+  }
+  return Gdiplus::Bitmap::FromHBITMAP(hbmp, nullptr);
+}
+
 uint8_t *cak_clipboard_get_png(size_t *out_len) {
   if (out_len) *out_len = 0;
-  UINT png_fmt = RegisterClipboardFormatW(L"PNG");
-  if (!IsClipboardFormatAvailable(png_fmt) && !IsClipboardFormatAvailable(CF_BITMAP)) return nullptr;
-  if (!OpenClipboard(nullptr)) return nullptr;
+  if (!cak_clipboard_has_image()) return nullptr;
+  if (!OpenClipboardRetry()) return nullptr;
   uint8_t *result = nullptr;
-  if (IsClipboardFormatAvailable(png_fmt)) {
-    HANDLE hData = GetClipboardData(png_fmt);
-    if (hData) {
-      SIZE_T sz = GlobalSize(hData);
-      const void *ptr = GlobalLock(hData);
-      if (ptr && sz > 0) {
-        result = (uint8_t *)std::malloc(sz);
-        if (result) {
-          std::memcpy(result, ptr, sz);
-          if (out_len) *out_len = sz;
+  const UINT png_fmts[2] = {
+      RegisterClipboardFormatW(L"PNG"),
+      RegisterClipboardFormatW(L"image/png")};
+  for (UINT fmt : png_fmts) {
+    if (fmt && IsClipboardFormatAvailable(fmt)) {
+      HANDLE hData = GetClipboardData(fmt);
+      if (hData) {
+        SIZE_T sz = GlobalSize(hData);
+        const void *ptr = GlobalLock(hData);
+        if (ptr && sz > 0) {
+          result = (uint8_t *)std::malloc(sz);
+          if (result) {
+            std::memcpy(result, ptr, sz);
+            if (out_len) *out_len = sz;
+          }
+          GlobalUnlock(hData);
+          if (result) break;
         }
-        GlobalUnlock(hData);
       }
     }
   }
   if (!result && IsClipboardFormatAvailable(CF_BITMAP)) {
-    EnsureGdiPlus();
     HBITMAP hBmp = static_cast<HBITMAP>(GetClipboardData(CF_BITMAP));
     if (hBmp) {
-      Gdiplus::Bitmap *bmp = Gdiplus::Bitmap::FromHBITMAP(hBmp, nullptr);
+      Gdiplus::Bitmap *bmp = BitmapFromHBitmapPreservingAlpha(hBmp);
       result = EncodeBitmapToPng(bmp, out_len);
       delete bmp;
+    }
+  }
+  if (!result && IsClipboardFormatAvailable(CF_DIB)) {
+    HANDLE hDib = GetClipboardData(CF_DIB);
+    if (hDib) {
+      const auto *bi = static_cast<const BITMAPINFO *>(GlobalLock(hDib));
+      if (bi && bi->bmiHeader.biSize >= sizeof(BITMAPINFOHEADER)) {
+        EnsureGdiPlus();
+        HDC hdc = GetDC(nullptr);
+        const uint8_t *base = reinterpret_cast<const uint8_t *>(bi);
+        size_t palette_bytes = 0;
+        if (bi->bmiHeader.biCompression == BI_BITFIELDS) {
+          palette_bytes = (bi->bmiHeader.biSize == sizeof(BITMAPINFOHEADER)) ? 12 : 0;
+        } else if (bi->bmiHeader.biBitCount <= 8) {
+          UINT colors = bi->bmiHeader.biClrUsed ? bi->bmiHeader.biClrUsed : (1u << bi->bmiHeader.biBitCount);
+          palette_bytes = colors * sizeof(RGBQUAD);
+        }
+        const void *bits = base + bi->bmiHeader.biSize + palette_bytes;
+        HBITMAP hBmp = CreateDIBitmap(hdc, &bi->bmiHeader, CBM_INIT, bits, bi, DIB_RGB_COLORS);
+        ReleaseDC(nullptr, hdc);
+        if (hBmp) {
+          Gdiplus::Bitmap *bmp = BitmapFromHBitmapPreservingAlpha(hBmp);
+          result = EncodeBitmapToPng(bmp, out_len);
+          delete bmp;
+          DeleteObject(hBmp);
+        }
+      }
+      if (bi) GlobalUnlock(hDib);
     }
   }
   CloseClipboard();
   return result;
 }
 
-int cak_clipboard_set_png(const uint8_t *png_data, size_t len) {
+static int WriteClipboardPngImpl(const uint8_t *png_data, size_t len, bool clear_first) {
   Gdiplus::Bitmap *bmp = DecodeBitmapFromMemory(png_data, len);
   if (!bmp) return 0;
-  if (!OpenClipboard(nullptr)) {
+  if (!OpenClipboardRetry()) {
     delete bmp;
     return 0;
   }
-  EmptyClipboard();
+  if (clear_first) EmptyClipboard();
   int ok = 0;
   UINT png_fmt = RegisterClipboardFormatW(L"PNG");
   HGLOBAL hPng = GlobalAlloc(GMEM_MOVEABLE, len);
@@ -397,14 +577,175 @@ int cak_clipboard_set_png(const uint8_t *png_data, size_t len) {
       GlobalFree(hPng);
     }
   }
-  HBITMAP hBitmap = nullptr;
-  if (bmp->GetHBITMAP(Gdiplus::Color(0, 0, 0, 0), &hBitmap) == Gdiplus::Ok && hBitmap) {
-    if (SetClipboardData(CF_BITMAP, hBitmap)) ok = 1;
-    else DeleteObject(hBitmap);
+  const int w = (int)bmp->GetWidth();
+  const int h = (int)bmp->GetHeight();
+  if (w > 0 && h > 0) {
+    Gdiplus::BitmapData bd{};
+    Gdiplus::Rect rect(0, 0, w, h);
+    if (bmp->LockBits(&rect, Gdiplus::ImageLockModeRead, PixelFormat32bppARGB, &bd) == Gdiplus::Ok) {
+      const size_t pixel_bytes = (size_t)w * (size_t)h * 4;
+      HGLOBAL hDib = GlobalAlloc(GMEM_MOVEABLE, sizeof(BITMAPINFOHEADER) + pixel_bytes);
+      if (hDib) {
+        auto *hdr = static_cast<BITMAPINFOHEADER *>(GlobalLock(hDib));
+        if (hdr) {
+          std::memset(hdr, 0, sizeof(BITMAPINFOHEADER));
+          hdr->biSize = sizeof(BITMAPINFOHEADER);
+          hdr->biWidth = w;
+          hdr->biHeight = h; // bottom-up DIB for maximum Win32 compatibility
+          hdr->biPlanes = 1;
+          hdr->biBitCount = 32;
+          hdr->biCompression = BI_RGB;
+          hdr->biSizeImage = (DWORD)pixel_bytes;
+          uint8_t *dst = reinterpret_cast<uint8_t *>(hdr) + sizeof(BITMAPINFOHEADER);
+          for (int y = 0; y < h; ++y) {
+            const uint8_t *src_row =
+                static_cast<const uint8_t *>(bd.Scan0) + (size_t)(h - 1 - y) * bd.Stride;
+            std::memcpy(dst + (size_t)y * (size_t)w * 4, src_row, (size_t)w * 4);
+          }
+          GlobalUnlock(hDib);
+          if (SetClipboardData(CF_DIB, hDib)) ok = 1;
+          else GlobalFree(hDib);
+        } else {
+          GlobalFree(hDib);
+        }
+      }
+      bmp->UnlockBits(&bd);
+    }
   }
   CloseClipboard();
   delete bmp;
   return ok;
+}
+
+int cak_clipboard_set_png(const uint8_t *png_data, size_t len) {
+  return WriteClipboardPngImpl(png_data, len, true);
+}
+
+int cak_clipboard_add_png(const uint8_t *png_data, size_t len) {
+  return WriteClipboardPngImpl(png_data, len, false);
+}
+
+int cak_clipboard_add_custom(const char *utf8_format, const uint8_t *data, size_t len) {
+  std::wstring w = ToWide(utf8_format);
+  if (w.empty()) return 0;
+  UINT fmt = RegisterClipboardFormatW(w.c_str());
+  if (!fmt) return 0;
+  if (!OpenClipboardRetry()) return 0;
+  const size_t alloc_bytes = sizeof(uint64_t) + len;
+  HGLOBAL hMem = GlobalAlloc(GMEM_MOVEABLE, alloc_bytes);
+  int ok = 0;
+  if (hMem) {
+    auto *ptr = static_cast<uint8_t *>(GlobalLock(hMem));
+    if (ptr) {
+      uint64_t sz = (uint64_t)len;
+      std::memcpy(ptr, &sz, sizeof(uint64_t));
+      if (len > 0 && data) {
+        std::memcpy(ptr + sizeof(uint64_t), data, len);
+      }
+      GlobalUnlock(hMem);
+      if (SetClipboardData(fmt, hMem)) ok = 1;
+      else GlobalFree(hMem);
+    } else {
+      GlobalFree(hMem);
+    }
+  }
+  CloseClipboard();
+  return ok;
+}
+
+uint8_t *cak_clipboard_get_custom(const char *utf8_format, size_t *out_len) {
+  if (out_len) *out_len = 0;
+  std::wstring w = ToWide(utf8_format);
+  if (w.empty()) return nullptr;
+  UINT fmt = RegisterClipboardFormatW(w.c_str());
+  if (!fmt || !IsClipboardFormatAvailable(fmt)) return nullptr;
+  if (!OpenClipboardRetry()) return nullptr;
+  uint8_t *result = nullptr;
+  HANDLE hData = GetClipboardData(fmt);
+  if (hData) {
+    SIZE_T raw_sz = GlobalSize(hData);
+    const auto *ptr = static_cast<const uint8_t *>(GlobalLock(hData));
+    if (ptr && raw_sz >= sizeof(uint64_t)) {
+      uint64_t payload_sz = 0;
+      std::memcpy(&payload_sz, ptr, sizeof(uint64_t));
+      if (payload_sz <= raw_sz - sizeof(uint64_t)) {
+        result = (uint8_t *)std::malloc(std::max<size_t>(1, (size_t)payload_sz));
+        if (result) {
+          if (payload_sz > 0) std::memcpy(result, ptr + sizeof(uint64_t), (size_t)payload_sz);
+          else result[0] = 0;
+          if (out_len) *out_len = (size_t)payload_sz;
+        }
+      }
+    }
+    if (ptr) GlobalUnlock(hData);
+  }
+  CloseClipboard();
+  return result;
+}
+
+uint8_t *cak_clipboard_get_rtf(size_t *out_len) {
+  if (out_len) *out_len = 0;
+  static UINT rtf_fmt = RegisterClipboardFormatW(L"Rich Text Format");
+  if (!rtf_fmt || !IsClipboardFormatAvailable(rtf_fmt)) return nullptr;
+  if (!OpenClipboardRetry()) return nullptr;
+  uint8_t *result = nullptr;
+  HANDLE hData = GetClipboardData(rtf_fmt);
+  if (hData) {
+    SIZE_T sz = GlobalSize(hData);
+    const char *ptr = static_cast<const char *>(GlobalLock(hData));
+    if (ptr && sz > 0) {
+      size_t actual = strnlen(ptr, sz);
+      if (actual > 0) {
+        result = (uint8_t *)std::malloc(actual);
+        if (result) {
+          std::memcpy(result, ptr, actual);
+          if (out_len) *out_len = actual;
+        }
+      }
+      GlobalUnlock(hData);
+    }
+  }
+  CloseClipboard();
+  return result;
+}
+
+uint8_t *cak_clipboard_get_html(size_t *out_len) {
+  if (out_len) *out_len = 0;
+  static UINT html_fmt = RegisterClipboardFormatW(L"HTML Format");
+  if (!html_fmt || !IsClipboardFormatAvailable(html_fmt)) return nullptr;
+  if (!OpenClipboardRetry()) return nullptr;
+  uint8_t *result = nullptr;
+  HANDLE hData = GetClipboardData(html_fmt);
+  if (hData) {
+    SIZE_T sz = GlobalSize(hData);
+    const char *ptr = static_cast<const char *>(GlobalLock(hData));
+    if (ptr && sz > 0) {
+      size_t actual = strnlen(ptr, sz);
+      std::string raw(ptr, actual);
+      size_t start_off = 0, end_off = actual;
+      auto sf = raw.find("StartFragment:");
+      auto ef = raw.find("EndFragment:");
+      if (sf != std::string::npos && ef != std::string::npos) {
+        long s = std::strtol(raw.c_str() + sf + 14, nullptr, 10);
+        long e = std::strtol(raw.c_str() + ef + 12, nullptr, 10);
+        if (s >= 0 && e > s && (size_t)e <= actual) {
+          start_off = (size_t)s;
+          end_off = (size_t)e;
+        }
+      }
+      const size_t frag_len = end_off - start_off;
+      if (frag_len > 0) {
+        result = (uint8_t *)std::malloc(frag_len);
+        if (result) {
+          std::memcpy(result, raw.data() + start_off, frag_len);
+          if (out_len) *out_len = frag_len;
+        }
+      }
+      GlobalUnlock(hData);
+    }
+  }
+  CloseClipboard();
+  return result;
 }
 
 int cak_open_url_or_path(const char *utf8_target) {
@@ -444,8 +785,33 @@ uint32_t cak_frontmost_pid(void) {
   return (uint32_t)pid;
 }
 
+uint32_t cak_frontmost_real_pid(void) {
+  HWND fg = GetForegroundWindow();
+  if (fg && IsRealAppWindow(fg)) {
+    DWORD pid = 0;
+    GetWindowThreadProcessId(fg, &pid);
+    if (pid != 0) return (uint32_t)pid;
+  }
+  DWORD found_pid = 0;
+  EnumWindows([](HWND hwnd, LPARAM lp) -> BOOL {
+    if (!IsRealAppWindow(hwnd) || IsIconic(hwnd)) return TRUE;
+    DWORD pid = 0;
+    GetWindowThreadProcessId(hwnd, &pid);
+    if (pid != 0) {
+      *reinterpret_cast<DWORD *>(lp) = pid;
+      return FALSE;
+    }
+    return TRUE;
+  }, reinterpret_cast<LPARAM>(&found_pid));
+  return (uint32_t)found_pid;
+}
+
 uint32_t cak_current_pid(void) {
   return (uint32_t)GetCurrentProcessId();
+}
+
+uint32_t cak_current_thread_id(void) {
+  return (uint32_t)GetCurrentThreadId();
 }
 
 int cak_process_info(uint32_t pid, char *exe_buf, int exe_cap, char *title_buf, int title_cap) {
@@ -504,13 +870,27 @@ int cak_activate_pid(uint32_t pid) {
   if (!target) return 0;
   if (IsIconic(target)) ShowWindow(target, SW_RESTORE);
   HWND fg = GetForegroundWindow();
+  if (fg == target) return 1;
   DWORD fgThread = fg ? GetWindowThreadProcessId(fg, nullptr) : 0;
+  DWORD targetThread = GetWindowThreadProcessId(target, nullptr);
   DWORD curThread = GetCurrentThreadId();
   if (fgThread && fgThread != curThread) AttachThreadInput(curThread, fgThread, TRUE);
+  if (targetThread && targetThread != curThread && targetThread != fgThread) {
+    AttachThreadInput(curThread, targetThread, TRUE);
+  }
+  INPUT unlock{};
+  unlock.type = INPUT_KEYBOARD;
+  unlock.ki.wVk = 0xFF;
+  unlock.ki.dwFlags = KEYEVENTF_KEYUP;
+  SendInput(1, &unlock, sizeof(INPUT));
   BringWindowToTop(target);
   BOOL ok = SetForegroundWindow(target);
+  SetActiveWindow(target);
+  if (targetThread && targetThread != curThread && targetThread != fgThread) {
+    AttachThreadInput(curThread, targetThread, FALSE);
+  }
   if (fgThread && fgThread != curThread) AttachThreadInput(curThread, fgThread, FALSE);
-  return ok ? 1 : 0;
+  return (ok || GetForegroundWindow() == target) ? 1 : 0;
 }
 
 int cak_hide_pid(uint32_t pid) {
@@ -612,6 +992,71 @@ uint8_t *cak_file_icon_png(const char *utf8_path, int size_px, size_t *out_len) 
   return png;
 }
 
+uint8_t *cak_shell_thumbnail_png(const char *utf8_path, int max_px, int *out_w, int *out_h, size_t *out_len) {
+  if (out_w) *out_w = 0;
+  if (out_h) *out_h = 0;
+  if (out_len) *out_len = 0;
+  std::wstring w = ToWide(utf8_path);
+  if (w.empty() || max_px <= 0) return nullptr;
+  for (auto &ch : w) {
+    if (ch == L'/') ch = L'\\';
+  }
+  if (w.size() >= 3 && w[0] == L'\\' && iswalpha(w[1]) && w[2] == L':') {
+    w.erase(0, 1);
+  }
+  HRESULT hrInit = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+  uint8_t *png = nullptr;
+  IShellItemImageFactory *factory = nullptr;
+  if (SUCCEEDED(SHCreateItemFromParsingName(w.c_str(), nullptr, IID_PPV_ARGS(&factory))) && factory) {
+    SIZE req{max_px, max_px};
+    HBITMAP hbmp = nullptr;
+    if (SUCCEEDED(factory->GetImage(req, SIIGBF_BIGGERSIZEOK, &hbmp)) && hbmp) {
+      Gdiplus::Bitmap *bmp = BitmapFromHBitmapPreservingAlpha(hbmp);
+      if (bmp && bmp->GetWidth() > 0 && bmp->GetHeight() > 0) {
+        int bw = (int)bmp->GetWidth();
+        int bh = (int)bmp->GetHeight();
+        if (bw > max_px || bh > max_px) {
+          double scale = (double)max_px / (double)std::max(bw, bh);
+          int nw = std::max(1, (int)(bw * scale + 0.5));
+          int nh = std::max(1, (int)(bh * scale + 0.5));
+          Gdiplus::Bitmap dst(nw, nh, PixelFormat32bppARGB);
+          {
+            Gdiplus::Graphics g(&dst);
+            g.SetInterpolationMode(Gdiplus::InterpolationModeHighQualityBicubic);
+            g.SetSmoothingMode(Gdiplus::SmoothingModeHighQuality);
+            g.DrawImage(bmp, 0, 0, nw, nh);
+          }
+          png = EncodeBitmapToPng(&dst, out_len);
+          if (png) {
+            if (out_w) *out_w = nw;
+            if (out_h) *out_h = nh;
+          }
+        } else {
+          png = EncodeBitmapToPng(bmp, out_len);
+          if (png) {
+            if (out_w) *out_w = bw;
+            if (out_h) *out_h = bh;
+          }
+        }
+      }
+      delete bmp;
+      DeleteObject(hbmp);
+    }
+    factory->Release();
+  }
+  if (SUCCEEDED(hrInit)) CoUninitialize();
+  if (png) return png;
+
+  png = cak_file_icon_png(utf8_path, max_px, out_len);
+  if (png && out_len && *out_len > 0) {
+    int iw = 32, ih = 32;
+    cak_image_dimensions(png, *out_len, &iw, &ih);
+    if (out_w) *out_w = iw;
+    if (out_h) *out_h = ih;
+  }
+  return png;
+}
+
 int cak_resolve_lnk(
     const char *utf8_lnk_path,
     char *target_buf, int target_cap,
@@ -707,7 +1152,9 @@ int cak_image_file_dimensions(const char *utf8_path, int *out_w, int *out_h) {
   return 1;
 }
 
-uint8_t *cak_image_resize_png(const uint8_t *data, size_t len, int max_px, size_t *out_len) {
+uint8_t *cak_image_resize_png_dims(const uint8_t *data, size_t len, int max_px, int *out_w, int *out_h, size_t *out_len) {
+  if (out_w) *out_w = 0;
+  if (out_h) *out_h = 0;
   if (out_len) *out_len = 0;
   Gdiplus::Bitmap *src = DecodeBitmapFromMemory(data, len);
   if (!src) return nullptr;
@@ -723,6 +1170,15 @@ uint8_t *cak_image_resize_png(const uint8_t *data, size_t len, int max_px, size_
   }
   int nw = std::max(1, (int)(w * scale + 0.5));
   int nh = std::max(1, (int)(h * scale + 0.5));
+  if (nw == w && nh == h) {
+    uint8_t *png = EncodeBitmapToPng(src, out_len);
+    delete src;
+    if (png) {
+      if (out_w) *out_w = w;
+      if (out_h) *out_h = h;
+    }
+    return png;
+  }
   Gdiplus::Bitmap dst(nw, nh, PixelFormat32bppARGB);
   {
     Gdiplus::Graphics g(&dst);
@@ -731,7 +1187,16 @@ uint8_t *cak_image_resize_png(const uint8_t *data, size_t len, int max_px, size_
     g.DrawImage(src, 0, 0, nw, nh);
   }
   delete src;
-  return EncodeBitmapToPng(&dst, out_len);
+  uint8_t *png = EncodeBitmapToPng(&dst, out_len);
+  if (png) {
+    if (out_w) *out_w = nw;
+    if (out_h) *out_h = nh;
+  }
+  return png;
+}
+
+uint8_t *cak_image_resize_png(const uint8_t *data, size_t len, int max_px, size_t *out_len) {
+  return cak_image_resize_png_dims(data, len, max_px, nullptr, nullptr, out_len);
 }
 
 void cak_font_metrics(
@@ -953,34 +1418,82 @@ char *cak_hwnd_get_text(void *hwnd_ptr) {
   return DupString(ToUtf8(w));
 }
 
+static int SendCtrlLetterChord(WORD letter) {
+  std::vector<INPUT> inputs;
+  inputs.reserve(10);
+  auto push_key = [&](WORD vk, DWORD flags) {
+    INPUT in{};
+    in.type = INPUT_KEYBOARD;
+    in.ki.wVk = vk;
+    in.ki.dwFlags = flags;
+    inputs.push_back(in);
+  };
+  // Release any held Alt/Shift/Win modifiers so e.g. Alt+Enter ("Paste and Keep Window Open")
+  // sends a clean Ctrl+V rather than Ctrl+Alt+V.
+  const WORD mods_to_clear[] = {VK_MENU, VK_LMENU, VK_RMENU, VK_SHIFT, VK_LSHIFT, VK_RSHIFT, VK_LWIN, VK_RWIN};
+  for (WORD m : mods_to_clear) {
+    if (GetAsyncKeyState(m) & 0x8000) {
+      push_key(m, KEYEVENTF_KEYUP);
+    }
+  }
+  push_key(VK_CONTROL, 0);
+  push_key(letter, 0);
+  push_key(letter, KEYEVENTF_KEYUP);
+  push_key(VK_CONTROL, KEYEVENTF_KEYUP);
+  return SendInput((UINT)inputs.size(), inputs.data(), sizeof(INPUT)) == inputs.size() ? 1 : 0;
+}
+
 int cak_send_paste_chord(void) {
-  INPUT inputs[4] = {};
-  inputs[0].type = INPUT_KEYBOARD;
-  inputs[0].ki.wVk = VK_CONTROL;
-  inputs[1].type = INPUT_KEYBOARD;
-  inputs[1].ki.wVk = 'V';
-  inputs[2].type = INPUT_KEYBOARD;
-  inputs[2].ki.wVk = 'V';
-  inputs[2].ki.dwFlags = KEYEVENTF_KEYUP;
-  inputs[3].type = INPUT_KEYBOARD;
-  inputs[3].ki.wVk = VK_CONTROL;
-  inputs[3].ki.dwFlags = KEYEVENTF_KEYUP;
-  return SendInput(4, inputs, sizeof(INPUT)) == 4 ? 1 : 0;
+  return SendCtrlLetterChord('V');
 }
 
 int cak_send_copy_chord(void) {
-  INPUT inputs[4] = {};
-  inputs[0].type = INPUT_KEYBOARD;
-  inputs[0].ki.wVk = VK_CONTROL;
-  inputs[1].type = INPUT_KEYBOARD;
-  inputs[1].ki.wVk = 'C';
-  inputs[2].type = INPUT_KEYBOARD;
-  inputs[2].ki.wVk = 'C';
-  inputs[2].ki.dwFlags = KEYEVENTF_KEYUP;
-  inputs[3].type = INPUT_KEYBOARD;
-  inputs[3].ki.wVk = VK_CONTROL;
-  inputs[3].ki.dwFlags = KEYEVENTF_KEYUP;
-  return SendInput(4, inputs, sizeof(INPUT)) == 4 ? 1 : 0;
+  return SendCtrlLetterChord('C');
+}
+
+int cak_pump_mouse_tracking_step(int *out_event, double *out_screen_x, double *out_screen_y) {
+  if (out_event) *out_event = 0;
+  auto fill_pos = [&]() {
+    POINT pt{};
+    GetCursorPos(&pt);
+    if (out_screen_x) *out_screen_x = (double)pt.x;
+    if (out_screen_y) *out_screen_y = (double)pt.y;
+  };
+  if (!(GetAsyncKeyState(VK_LBUTTON) & 0x8000)) {
+    fill_pos();
+    if (out_event) *out_event = 2; // leftMouseUp
+    return 1;
+  }
+  MsgWaitForMultipleObjectsEx(0, nullptr, 12, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
+  int reported = 0;
+  MSG msg{};
+  while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE)) {
+    if (msg.message == WM_QUIT) {
+      PostQuitMessage((int)msg.wParam);
+      fill_pos();
+      if (out_event) *out_event = 2;
+      return 1;
+    }
+    if (msg.message == WM_LBUTTONUP || msg.message == WM_NCLBUTTONUP ||
+        msg.message == WM_CANCELMODE) {
+      TranslateMessage(&msg);
+      DispatchMessageW(&msg);
+      fill_pos();
+      if (out_event) *out_event = 2; // leftMouseUp
+      return 1;
+    }
+    if (msg.message == WM_MOUSEMOVE || msg.message == WM_NCMOUSEMOVE) {
+      reported = 1; // leftMouseDragged
+    }
+    TranslateMessage(&msg);
+    DispatchMessageW(&msg);
+  }
+  fill_pos();
+  if (!(GetAsyncKeyState(VK_LBUTTON) & 0x8000)) {
+    reported = 2;
+  }
+  if (out_event) *out_event = reported;
+  return reported != 0 ? 1 : 0;
 }
 
 int cak_send_vk_key(uint16_t vk) {

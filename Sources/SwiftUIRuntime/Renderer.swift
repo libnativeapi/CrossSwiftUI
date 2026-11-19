@@ -375,7 +375,7 @@ import Foundation
       if let id, id.rawValue != 0 {
         _ = ancestry(id, in: tree, into: &chain)
       } else if let root = tree {
-        chain = hitChain(root, point: point, hover: false)
+        chain = hitChain(root, point: point, hover: false, event: event, modifiers: modifiers)
       }
     }
     if event == 2, usesCustomScrollIndicators,
@@ -397,6 +397,14 @@ import Foundation
             y: drag.offset.y + (point.y - drag.start.y) * drag.ratio))
       }
       if event == 3 { scrollDrag = nil }
+      return true
+    }
+    if (event == 2 || event == 4 || event == 9),
+      let top = chain.first,
+      top.kind == .hostedView,
+      let handler = top.hostedViewMouseInput,
+      handler(event, point, modifiers)
+    {
       return true
     }
     if event == 2 {
@@ -466,7 +474,9 @@ import Foundation
         35: .end, 36: .home, 37: .leftArrow, 38: .upArrow, 39: .rightArrow, 40: .downArrow,
         46: .deleteForward,
       ]
-      let characters = UnicodeScalar(value).map { String($0).lowercased() } ?? ""
+      let characters = !text.isEmpty
+        ? text.lowercased()
+        : (UnicodeScalar(value).map { String($0).lowercased() } ?? "")
       let key = special[value] ?? KeyEquivalent(characters.first ?? " ")
       let press = KeyPress(key: key, characters: characters, modifiers: modifiers)
       if let focus = (id?.rawValue ?? 0) != 0 ? id : focused {
@@ -495,15 +505,15 @@ import Foundation
   }
   private func hitChain(
     _ node: Element, point: CGPoint,
-    hover: Bool = false
+    hover: Bool = false, event: Int = 0, modifiers: EventModifiers = []
   ) -> [Element] {
     var result: [Element] = []
-    _ = collectHitChain(node, point: point, hover: hover, into: &result)
+    _ = collectHitChain(node, point: point, hover: hover, event: event, modifiers: modifiers, into: &result)
     return result
   }
   private func collectHitChain(
     _ node: Element, point: CGPoint,
-    hover: Bool, into result: inout [Element]
+    hover: Bool, event: Int = 0, modifiers: EventModifiers = [], into result: inout [Element]
   ) -> Bool {
     guard node.props.visible, node.props.hitTesting, node.props.enabled else { return false }
     let inside =
@@ -525,21 +535,21 @@ import Foundation
             ? $0.offset < $1.offset : $0.element.props.zIndex < $1.element.props.zIndex
         }
         for entry in sorted.reversed() {
-          if collectHitChain(entry.element, point: childPoint, hover: hover, into: &result) {
+          if collectHitChain(entry.element, point: childPoint, hover: hover, event: event, modifiers: modifiers, into: &result) {
             result.append(node)
             return true
           }
         }
       } else if behind {
         for i in 0..<count {
-          if collectHitChain(node.children[i], point: childPoint, hover: hover, into: &result) {
+          if collectHitChain(node.children[i], point: childPoint, hover: hover, event: event, modifiers: modifiers, into: &result) {
             result.append(node)
             return true
           }
         }
       } else {
         for i in stride(from: count - 1, through: 0, by: -1) {
-          if collectHitChain(node.children[i], point: childPoint, hover: hover, into: &result) {
+          if collectHitChain(node.children[i], point: childPoint, hover: hover, event: event, modifiers: modifiers, into: &result) {
             result.append(node)
             return true
           }
@@ -547,6 +557,13 @@ import Foundation
       }
     }
     guard inside else { return false }
+    if !hover && node.kind == .hostedView, let hitTest = node.hostedViewHitTest {
+      if hitTest(event, point, modifiers) {
+        result.append(node)
+        return true
+      }
+      return false
+    }
     // Layout-only containers, especially an empty overlay, do not occlude
     // interactive content underneath them.
     let interactive =

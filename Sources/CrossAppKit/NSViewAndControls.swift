@@ -87,12 +87,14 @@ open class NSDraggingSession: NSObject {
 open class NSDraggingItem: NSObject {
   public let pasteboardWriter: any NSPasteboardWriting
   public var draggingFrame: NSRect = .zero
+  public private(set) var draggingContents: Any?
   public init(pasteboardWriter: any NSPasteboardWriting) {
     self.pasteboardWriter = pasteboardWriter
     super.init()
   }
   public func setDraggingFrame(_ frame: NSRect, contents: Any?) {
     self.draggingFrame = frame
+    self.draggingContents = contents
   }
 }
 
@@ -365,9 +367,14 @@ open class NSView: NSResponder {
         chain.append(c)
         cur = c.superview
       }
+      var parentFlipped = false
       for v in chain.reversed() {
         p.x -= v.frame.origin.x
         p.y -= v.frame.origin.y
+        if v.isFlipped != parentFlipped {
+          p.y = v.frame.height - p.y
+        }
+        parentFlipped = v.isFlipped
       }
       return p
     }
@@ -380,6 +387,10 @@ open class NSView: NSResponder {
       var p = point
       var cur: NSView? = self
       while let c = cur {
+        let parentFlipped = c.superview?.isFlipped ?? false
+        if c.isFlipped != parentFlipped {
+          p.y = c.frame.height - p.y
+        }
         p.x += c.frame.origin.x
         p.y += c.frame.origin.y
         cur = c.superview
@@ -413,7 +424,63 @@ open class NSView: NSResponder {
 
   @discardableResult
   public func beginDraggingSession(with items: [NSDraggingItem], event: NSEvent, source: any NSDraggingSource) -> NSDraggingSession {
-    NSDraggingSession()
+    let session = NSDraggingSession()
+    #if !os(macOS)
+      guard !items.isEmpty, let dragSource = NativeAPI.DragSource.create() else {
+        return session
+      }
+      var filePaths: [String] = []
+      var texts: [String] = []
+      for item in items {
+        let writer = item.pasteboardWriter
+        if let nsurl = writer as? NSURL, let u = nsurl as URL? {
+          if u.isFileURL { filePaths.append(u.path) }
+          else { texts.append(u.absoluteString) }
+        } else if let nsstr = writer as? NSString {
+          texts.append(nsstr as String)
+        } else if let pbItem = writer as? NSPasteboardItem {
+          if let s = pbItem.string(forType: .string) ?? pbItem.string(forType: .URL) {
+            texts.append(s)
+          }
+          if let f = pbItem.string(forType: .fileURL), let u = URL(string: f), u.isFileURL {
+            filePaths.append(u.path)
+          }
+        }
+      }
+      if !filePaths.isEmpty {
+        dragSource.setFilePaths(filePaths)
+      }
+      if let firstText = texts.first {
+        dragSource.setText(firstText)
+      }
+      if let img = items.first?.draggingContents as? NSImage, let nativeImg = img.toNativeImage() {
+        dragSource.setImage(nativeImg)
+      }
+      let mask = source.draggingSession(session, sourceOperationMaskFor: .outsideApplication)
+      if mask.contains(.copy) {
+        dragSource.setDragOperation(.copy)
+      } else if mask.contains(.move) {
+        dragSource.setDragOperation(.move)
+      } else if mask.contains(.link) {
+        dragSource.setDragOperation(.link)
+      }
+      _ = dragSource.addListener { [weak source] dragEvent in
+        guard case let .ended(_, _, operation) = dragEvent else { return }
+        MainActor.assumeIsolated {
+          let nsOp: NSDragOperation
+          switch operation {
+          case .copy: nsOp = .copy
+          case .move: nsOp = .move
+          case .link: nsOp = .link
+          case .none: nsOp = []
+          }
+          source?.draggingSession(session, endedAt: NSEvent.mouseLocation, operation: nsOp)
+          dragSource.dispose()
+        }
+      }
+      _ = dragSource.startDragging(window?.nativeWindow)
+    #endif
+    return session
   }
 
   open func draggingEntered(_ sender: any NSDraggingInfo) -> NSDragOperation { [] }
@@ -674,16 +741,26 @@ open class NSTextView: NSText {
 
   public weak var delegate: (any NSTextViewDelegate)?
   public var isFieldEditorProxy: Bool = false
-  public var isEditable: Bool = true
+  public var isEditable: Bool = true {
+    didSet { syncStandaloneNativeEditor() }
+  }
   public var isSelectable: Bool = true
   public var isRichText: Bool = false
   public var importsGraphics: Bool = false
   public var allowsUndo: Bool = true
-  public var drawsBackground: Bool = false
-  public var backgroundColor: NSColor = .clear
-  public var textColor: NSColor? = .labelColor
+  public var drawsBackground: Bool = false {
+    didSet { syncStandaloneNativeEditor() }
+  }
+  public var backgroundColor: NSColor = .clear {
+    didSet { syncStandaloneNativeEditor() }
+  }
+  public var textColor: NSColor? = .labelColor {
+    didSet { syncStandaloneNativeEditor() }
+  }
   public var insertionPointColor: NSColor = .labelColor
-  public var font: NSFont? = .systemFont(ofSize: NSFont.systemFontSize)
+  public var font: NSFont? = .systemFont(ofSize: NSFont.systemFontSize) {
+    didSet { syncStandaloneNativeEditor() }
+  }
   public var textContainerInset: NSSize = .zero
   public var isVerticallyResizable: Bool = true
   public var isHorizontallyResizable: Bool = false
@@ -707,6 +784,101 @@ open class NSTextView: NSText {
   public private(set) var textContentStorage: NSTextContentStorage?
   public private(set) var textLayoutManager: NSTextLayoutManager?
   private var localSelection: NSRange = NSRange(location: 0, length: 0)
+  #if !os(macOS)
+    private var standaloneEditor: NativeAPI.TextField?
+    private var standaloneEditorListener: NativeAPI.ListenerId?
+    private var isSyncingStandaloneText = false
+
+    @discardableResult
+    public func ensureStandaloneNativeEditor() -> NativeAPI.View? {
+      guard !isFieldEditorProxy else { return nil }
+      if let existing = standaloneEditor {
+        syncStandaloneNativeEditor()
+        return existing
+      }
+      guard let tf = NativeAPI.TextField.create(textStorage?.string ?? "") else { return nil }
+      tf.setMultiline(true)
+      tf.setBordered(false)
+      standaloneEditor = tf
+      ownedNativeView = tf
+      syncStandaloneNativeEditor()
+      standaloneEditorListener = tf.addListener { [weak self] event in
+        guard let self else { return }
+        if case let .textFieldChanged(_, rawText) = event {
+          let newText = rawText ?? ""
+          MainActor.assumeIsolated {
+            guard !self.isSyncingStandaloneText else { return }
+            let normalized = newText.replacingOccurrences(of: "\r\n", with: "\n")
+            if self.textStorage?.string != normalized {
+              self.isSyncingStandaloneText = true
+              if let storage = self.textStorage {
+                storage.replaceCharacters(
+                  in: NSRange(location: 0, length: storage.length),
+                  with: normalized
+                )
+              }
+              self.didChangeText()
+              self.isSyncingStandaloneText = false
+            }
+          }
+        }
+      }
+      return tf
+    }
+
+    internal func syncStandaloneNativeEditor() {
+      guard !isFieldEditorProxy, let tf = standaloneEditor else { return }
+      tf.setEditable(isEditable)
+      if let font {
+        tf.setFontSize(Double(font.pointSize))
+        if font.fontName.lowercased().contains("mono") || font.fontName.lowercased().contains("consolas") {
+          tf.setFontFamily("Consolas")
+        }
+      }
+      let app = window?.effectiveAppearance ?? NSAppearance.systemAppearance
+      if let tc = textColor?.resolved(for: app) {
+        tf.setTextColor(NativeAPI.Color(
+          r: UInt8(clamping: Int((tc.r * 255).rounded())),
+          g: UInt8(clamping: Int((tc.g * 255).rounded())),
+          b: UInt8(clamping: Int((tc.b * 255).rounded())),
+          a: UInt8(clamping: Int((tc.a * 255).rounded()))
+        ))
+      }
+      let isDark = app.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
+      if drawsBackground {
+        let bg = backgroundColor.resolved(for: app)
+        tf.setBackgroundColor(NativeAPI.Color(
+          r: UInt8(clamping: Int((bg.r * 255).rounded())),
+          g: UInt8(clamping: Int((bg.g * 255).rounded())),
+          b: UInt8(clamping: Int((bg.b * 255).rounded())),
+          a: UInt8(clamping: Int((bg.a * 255).rounded()))
+        ))
+      } else {
+        tf.setBackgroundColor(
+          isDark
+            ? NativeAPI.Color(r: 36, g: 36, b: 39, a: 255)
+            : NativeAPI.Color(r: 244, g: 244, b: 246, a: 255)
+        )
+      }
+    }
+
+    internal func syncStandaloneTextFromStorage() {
+      guard !isFieldEditorProxy, !isSyncingStandaloneText, let tf = standaloneEditor else { return }
+      let desired = (textStorage?.string ?? "").replacingOccurrences(of: "\n", with: "\r\n")
+      if tf.text != desired {
+        isSyncingStandaloneText = true
+        tf.setText(desired)
+        isSyncingStandaloneText = false
+      }
+    }
+
+    internal func focusStandaloneNativeEditor() {
+      _ = ensureStandaloneNativeEditor()
+      standaloneEditor?.focus()
+    }
+  #else
+    internal func syncStandaloneNativeEditor() {}
+  #endif
 
   public var textContainerOrigin: NSPoint {
     NSPoint(x: textContainerInset.width, y: textContainerInset.height)
@@ -777,12 +949,20 @@ open class NSTextView: NSText {
           return String(cString: cstr)
         }
       #endif
+      #if !os(macOS)
+        if !isFieldEditorProxy, let raw = standaloneEditor?.text {
+          return raw.replacingOccurrences(of: "\r\n", with: "\n")
+        }
+      #endif
       return textStorage?.string ?? ""
     }
     set {
       if let storage = textStorage {
         storage.replaceCharacters(in: NSRange(location: 0, length: storage.length), with: newValue)
       }
+      #if !os(macOS)
+        syncStandaloneTextFromStorage()
+      #endif
     }
   }
 
@@ -843,6 +1023,9 @@ open class NSTextView: NSText {
   }
 
   open func didChangeText() {
+    #if !os(macOS)
+      syncStandaloneTextFromStorage()
+    #endif
     let note = Notification(name: Self.didChangeNotification, object: self)
     delegate?.textDidChange(note)
     NotificationCenter.default.post(note)

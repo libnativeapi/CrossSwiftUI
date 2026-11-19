@@ -221,6 +221,8 @@ public struct Element {
   var layout: (any _LayoutBridge)? = nil
   package var hostedViewAdapter: (any AnyObject)? = nil
   package var hostedViewMeasure: ((ProposedViewSize) -> Size)? = nil
+  package var hostedViewHitTest: ((Int, CGPoint, EventModifiers) -> Bool)? = nil
+  package var hostedViewMouseInput: ((Int, CGPoint, EventModifiers) -> Bool)? = nil
   var textAction: ((String) -> Void)? = nil
   var submitAction: (() -> Void)? = nil
   var dragAction: ((DragGesture.Value, Bool) -> Void)? = nil

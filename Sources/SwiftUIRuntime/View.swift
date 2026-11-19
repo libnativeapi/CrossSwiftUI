@@ -34,14 +34,20 @@ public struct _HostedViewPrimitive: View, _PrimitiveView {
   let adapter: any AnyObject
   let bindPath: ((AnyHashable) -> Void)?
   let measure: (AnyHashable, ProposedViewSize) -> Size
+  let hitTest: ((AnyHashable, Int, CGPoint, EventModifiers) -> Bool)?
+  let mouseInput: ((AnyHashable, Int, CGPoint, EventModifiers) -> Bool)?
   package init(
     adapter: any AnyObject,
     bindPath: ((AnyHashable) -> Void)? = nil,
-    measure: @escaping (AnyHashable, ProposedViewSize) -> Size
+    measure: @escaping (AnyHashable, ProposedViewSize) -> Size,
+    hitTest: ((AnyHashable, Int, CGPoint, EventModifiers) -> Bool)? = nil,
+    mouseInput: ((AnyHashable, Int, CGPoint, EventModifiers) -> Bool)? = nil
   ) {
     self.adapter = adapter
     self.bindPath = bindPath
     self.measure = measure
+    self.hitTest = hitTest
+    self.mouseInput = mouseInput
   }
   public var body: Never { fatalError("_HostedViewPrimitive is primitive") }
   func _makeElement(path: ViewPath) -> Element {
@@ -50,6 +56,12 @@ public struct _HostedViewPrimitive: View, _PrimitiveView {
     var el = Element(kind: .hostedView)
     el.hostedViewAdapter = adapter
     el.hostedViewMeasure = { proposal in measure(key, proposal) }
+    if let hitTest {
+      el.hostedViewHitTest = { ev, pt, mods in hitTest(key, ev, pt, mods) }
+    }
+    if let mouseInput {
+      el.hostedViewMouseInput = { ev, pt, mods in mouseInput(key, ev, pt, mods) }
+    }
     return el
   }
 }

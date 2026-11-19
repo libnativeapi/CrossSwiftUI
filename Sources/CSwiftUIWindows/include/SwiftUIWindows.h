@@ -112,6 +112,18 @@ sui_size sui_measure_text(const char *text, const char *family, double size,
                           double weight);
 // Sends BM_CLICK to one owned native control. Does not post global input.
 void sui_button_activate(void *button);
+
+void *sui_offscreen_create(int width, int height);
+void sui_offscreen_shape(void *canvas, double x, double y, double width,
+                         double height, double radius, uint32_t fill,
+                         uint32_t stroke, double stroke_width);
+void sui_offscreen_path(void *canvas, const double *commands, int count,
+                        uint32_t fill, uint32_t stroke, double stroke_width);
+void sui_offscreen_text(void *canvas, double x, double y, double width,
+                        double height, const char *text, double size,
+                        uint32_t color);
+uint8_t *sui_offscreen_finish_png(void *canvas, int *out_len);
+void sui_free_bytes(void *ptr);
 #ifdef __cplusplus
 }
 #endif

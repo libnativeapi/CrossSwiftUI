@@ -11,18 +11,33 @@ void cak_free(void *ptr);
 // Clipboard
 uint32_t cak_clipboard_sequence_number(void);
 int cak_clipboard_clear(void);
+int cak_clipboard_has_text(void);
+int cak_clipboard_has_files(void);
+int cak_clipboard_has_image(void);
+int cak_clipboard_has_rtf(void);
+int cak_clipboard_has_html(void);
+int cak_clipboard_has_custom(const char *utf8_format);
+int cak_clipboard_is_concealed(void);
 char *cak_clipboard_get_text(void);
 int cak_clipboard_set_text(const char *utf8_text);
+int cak_clipboard_add_text(const char *utf8_text);
 char *cak_clipboard_get_files_newline(void);
 int cak_clipboard_set_files(const char *const *utf8_paths, int count);
+int cak_clipboard_add_files(const char *const *utf8_paths, int count);
 uint8_t *cak_clipboard_get_png(size_t *out_len);
 int cak_clipboard_set_png(const uint8_t *png_data, size_t len);
+int cak_clipboard_add_png(const uint8_t *png_data, size_t len);
+int cak_clipboard_add_custom(const char *utf8_format, const uint8_t *data, size_t len);
+uint8_t *cak_clipboard_get_custom(const char *utf8_format, size_t *out_len);
+uint8_t *cak_clipboard_get_rtf(size_t *out_len);
+uint8_t *cak_clipboard_get_html(size_t *out_len);
 
 // Workspace, Shell & Processes
 int cak_open_url_or_path(const char *utf8_target);
 int cak_open_with_app(const char *utf8_app, const char *utf8_arg);
 int cak_reveal_in_explorer(const char *utf8_path);
 uint32_t cak_frontmost_pid(void);
+uint32_t cak_frontmost_real_pid(void);
 uint32_t cak_current_pid(void);
 int cak_process_info(uint32_t pid, char *exe_buf, int exe_cap, char *title_buf, int title_cap);
 int cak_activate_pid(uint32_t pid);
@@ -30,6 +45,7 @@ int cak_hide_pid(uint32_t pid);
 int cak_terminate_pid(uint32_t pid, int force);
 uint32_t *cak_enum_gui_pids(int *out_count);
 uint8_t *cak_file_icon_png(const char *utf8_path, int size_px, size_t *out_len);
+uint8_t *cak_shell_thumbnail_png(const char *utf8_path, int max_px, int *out_w, int *out_h, size_t *out_len);
 int cak_resolve_lnk(
     const char *utf8_lnk_path,
     char *target_buf, int target_cap,
@@ -44,6 +60,7 @@ char *cak_known_start_menu_dirs_newline(void);
 int cak_image_dimensions(const uint8_t *data, size_t len, int *out_w, int *out_h);
 int cak_image_file_dimensions(const char *utf8_path, int *out_w, int *out_h);
 uint8_t *cak_image_resize_png(const uint8_t *data, size_t len, int max_px, size_t *out_len);
+uint8_t *cak_image_resize_png_dims(const uint8_t *data, size_t len, int max_px, int *out_w, int *out_h, size_t *out_len);
 void cak_font_metrics(
     const char *family,
     double size,
@@ -74,6 +91,8 @@ int cak_send_copy_chord(void);
 int cak_send_vk_key(uint16_t vk);
 int cak_send_unicode_text(const char *utf8_text);
 int cak_send_backspaces(int count);
+uint32_t cak_current_thread_id(void);
+int cak_pump_mouse_tracking_step(int *out_event, double *out_screen_x, double *out_screen_y);
 
 // External Window Management
 typedef struct {

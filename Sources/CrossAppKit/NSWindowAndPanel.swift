@@ -540,13 +540,15 @@ open class NSWindow: NSResponder {
     #endif
   }
 
+  @MainActor internal static var _suppressResignKeyCount: Int = 0
+
   #if !os(macOS)
     private func handleNativeWindowEvent(_ event: NativeAPI.WindowEvent) {
       switch event {
       case .focused:
         becomeKey()
       case .blurred:
-        if isKeyWindow { resignKey() }
+        if isKeyWindow && Self._suppressResignKeyCount == 0 { resignKey() }
       case .moved(_, let newPos):
         let currentSize = storedFrame.size
         #if os(Windows)
@@ -1022,6 +1024,11 @@ open class NSWindow: NSResponder {
       // Allow explicit nil or window reset
     }
     explicitFirstResponder = (responder === self) ? nil : responder
+    #if !os(macOS)
+      if let tv = responder as? NSTextView, !tv.isFieldEditorProxy {
+        tv.focusStandaloneNativeEditor()
+      }
+    #endif
     return true
   }
 
@@ -1067,7 +1074,49 @@ open class NSWindow: NSResponder {
     mode: RunLoop.Mode,
     handler trackingHandler: (NSEvent?, UnsafeMutablePointer<ObjCBool>) -> Void
   ) {
-    #if !os(macOS)
+    #if os(Windows)
+      let startTime = Date.timeIntervalSinceReferenceDate
+      let deadline = timeout.isFinite && timeout < 1e9 ? (startTime + max(0, timeout)) : Double.greatestFiniteMagnitude
+      var stop = ObjCBool(false)
+      while !stop.boolValue && Date.timeIntervalSinceReferenceDate < deadline {
+        var evKind: Int32 = 0
+        var sx: Double = 0
+        var sy: Double = 0
+        let got = cak_pump_mouse_tracking_step(&evKind, &sx, &sy)
+        if got == 0 { continue }
+        let screenPt = NSEvent.mouseLocation
+        let winPt = convertPoint(fromScreen: screenPt)
+        let mods = NSEvent.modifierFlags
+        if evKind == 1 {
+          if mask.contains(.leftMouseDragged) {
+            let ev = NSEvent(
+              type: .leftMouseDragged,
+              locationInWindow: winPt,
+              modifierFlags: mods,
+              windowNumber: windowNumber,
+              window: self,
+              clickCount: 1
+            )
+            NSApplication.shared.currentEvent = ev
+            trackingHandler(ev, &stop)
+          }
+        } else if evKind == 2 {
+          if mask.contains(.leftMouseUp) {
+            let ev = NSEvent(
+              type: .leftMouseUp,
+              locationInWindow: winPt,
+              modifierFlags: mods,
+              windowNumber: windowNumber,
+              window: self,
+              clickCount: 1
+            )
+            NSApplication.shared.currentEvent = ev
+            trackingHandler(ev, &stop)
+          }
+          break
+        }
+      }
+    #elseif !os(macOS)
       nativeWindow?.startDragging()
     #endif
   }

@@ -162,7 +162,9 @@
   }
 
   open class CGPath: @unchecked Sendable {
+    public var commands: [Double] = []
     public init() {}
+    public init(commands: [Double]) { self.commands = commands }
     public init(roundedRect rect: CGRect, cornerWidth: CGFloat, cornerHeight: CGFloat, transform: UnsafePointer<CGAffineTransform>?) {}
     public init(rect: CGRect, transform: UnsafePointer<CGAffineTransform>?) {}
     public init(ellipseIn rect: CGRect, transform: UnsafePointer<CGAffineTransform>?) {}
@@ -286,6 +288,8 @@
     CGEventTapProxy, CGEventType, CGEvent, UnsafeMutableRawPointer?
   ) -> Unmanaged<CGEvent>?
 
+  public nonisolated(unsafe) var _cgPostToPidHook: ((_ pid: Int32, _ sendAction: @escaping () -> Void) -> Bool)?
+
   public final class CGEvent: @unchecked Sendable {
     public var flags: CGEventFlags = []
     public var type: CGEventType = .null
@@ -344,47 +348,53 @@
     private func dispatchSyntheticKeyboardEvent(targetPid: Int32?) {
       #if os(Windows)
         guard keyDown || type == .keyDown else { return }
+        let performSend = { [unicodeChars, virtualKey, flags] in
+          if !unicodeChars.isEmpty {
+            let text = String(utf16CodeUnits: unicodeChars, count: unicodeChars.count)
+            _ = cak_send_unicode_text(text)
+            return
+          }
+          let code = Int(virtualKey)
+          if flags.contains(.maskCommand) {
+            if code == Int(kVK_ANSI_V) {
+              _ = cak_send_paste_chord()
+            } else if code == Int(kVK_ANSI_C) {
+              _ = cak_send_copy_chord()
+            }
+            return
+          }
+          switch code {
+          case Int(kVK_Delete):
+            _ = cak_send_backspaces(1)
+          case Int(kVK_ForwardDelete):
+            _ = cak_send_vk_key(0x2E)
+          case Int(kVK_Return), Int(kVK_ANSI_KeypadEnter):
+            _ = cak_send_vk_key(0x0D)
+          case Int(kVK_Tab):
+            _ = cak_send_vk_key(0x09)
+          case Int(kVK_Escape):
+            _ = cak_send_vk_key(0x1B)
+          case Int(kVK_Space):
+            _ = cak_send_vk_key(0x20)
+          case Int(kVK_LeftArrow):
+            _ = cak_send_vk_key(0x25)
+          case Int(kVK_UpArrow):
+            _ = cak_send_vk_key(0x26)
+          case Int(kVK_RightArrow):
+            _ = cak_send_vk_key(0x27)
+          case Int(kVK_DownArrow):
+            _ = cak_send_vk_key(0x28)
+          default:
+            break
+          }
+        }
         if let pid = targetPid, pid > 0 {
+          if _cgPostToPidHook?(pid, performSend) == true {
+            return
+          }
           _ = cak_activate_pid(UInt32(bitPattern: pid))
         }
-        if !unicodeChars.isEmpty {
-          let text = String(utf16CodeUnits: unicodeChars, count: unicodeChars.count)
-          _ = cak_send_unicode_text(text)
-          return
-        }
-        let code = Int(virtualKey)
-        if flags.contains(.maskCommand) {
-          if code == Int(kVK_ANSI_V) {
-            _ = cak_send_paste_chord()
-          } else if code == Int(kVK_ANSI_C) {
-            _ = cak_send_copy_chord()
-          }
-          return
-        }
-        switch code {
-        case Int(kVK_Delete):
-          _ = cak_send_backspaces(1)
-        case Int(kVK_ForwardDelete):
-          _ = cak_send_vk_key(0x2E)
-        case Int(kVK_Return), Int(kVK_ANSI_KeypadEnter):
-          _ = cak_send_vk_key(0x0D)
-        case Int(kVK_Tab):
-          _ = cak_send_vk_key(0x09)
-        case Int(kVK_Escape):
-          _ = cak_send_vk_key(0x1B)
-        case Int(kVK_Space):
-          _ = cak_send_vk_key(0x20)
-        case Int(kVK_LeftArrow):
-          _ = cak_send_vk_key(0x25)
-        case Int(kVK_UpArrow):
-          _ = cak_send_vk_key(0x26)
-        case Int(kVK_RightArrow):
-          _ = cak_send_vk_key(0x27)
-        case Int(kVK_DownArrow):
-          _ = cak_send_vk_key(0x28)
-        default:
-          break
-        }
+        performSend()
       #endif
     }
 

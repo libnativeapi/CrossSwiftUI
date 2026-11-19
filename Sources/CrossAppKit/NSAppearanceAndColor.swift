@@ -6,6 +6,14 @@ import Foundation
   import CAppKitWindows
 #endif
 
+internal func _crossAppKitThreadKey() -> UInt64 {
+  #if os(Windows)
+    return UInt64(cak_current_thread_id())
+  #else
+    return UInt64(UInt(bitPattern: ObjectIdentifier(Thread.current)))
+  #endif
+}
+
 open class NSAppearance: NSObject, @unchecked Sendable {
   public struct Name: RawRepresentable, Equatable, Hashable, Sendable {
     public let rawValue: String
@@ -20,8 +28,24 @@ open class NSAppearance: NSObject, @unchecked Sendable {
 
   public let name: Name
 
-  nonisolated(unsafe) private static var _currentDrawingAppearance: NSAppearance?
+  private static let threadAppearanceLock = NSLock()
+  nonisolated(unsafe) private static var threadAppearances: [UInt64: NSAppearance] = [:]
   nonisolated(unsafe) internal static var _appAppearanceOverride: NSAppearance?
+
+  private static var _currentDrawingAppearance: NSAppearance? {
+    get {
+      let tid = _crossAppKitThreadKey()
+      threadAppearanceLock.lock()
+      defer { threadAppearanceLock.unlock() }
+      return threadAppearances[tid]
+    }
+    set {
+      let tid = _crossAppKitThreadKey()
+      threadAppearanceLock.lock()
+      defer { threadAppearanceLock.unlock() }
+      threadAppearances[tid] = newValue
+    }
+  }
 
   public static func currentDrawing() -> NSAppearance {
     if let current = _currentDrawingAppearance { return current }
@@ -160,9 +184,29 @@ open class NSColor: NSObject, @unchecked Sendable {
     return NSColor(srgbRed: fixedRed, green: fixedGreen, blue: fixedBlue, alpha: clamped)
   }
 
-  public func set() {}
-  public func setFill() {}
-  public func setStroke() {}
+  internal var packedARGB: UInt32 {
+    let c = resolved()
+    let a = UInt32(min(max((c.a * 255).rounded(), 0), 255))
+    let r = UInt32(min(max((c.r * 255).rounded(), 0), 255))
+    let g = UInt32(min(max((c.g * 255).rounded(), 0), 255))
+    let b = UInt32(min(max((c.b * 255).rounded(), 0), 255))
+    return (a << 24) | (r << 16) | (g << 8) | b
+  }
+
+  public func set() {
+    guard let ctx = _OffscreenDrawingContext.current else { return }
+    let argb = packedARGB
+    ctx.fillARGB = argb
+    ctx.strokeARGB = argb
+  }
+
+  public func setFill() {
+    _OffscreenDrawingContext.current?.fillARGB = packedARGB
+  }
+
+  public func setStroke() {
+    _OffscreenDrawingContext.current?.strokeARGB = packedARGB
+  }
 
   #if !os(macOS)
     public convenience init?(cgColor: CGColor) {

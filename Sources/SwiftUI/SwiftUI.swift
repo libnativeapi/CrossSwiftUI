@@ -16,7 +16,7 @@
     @_exported import CoreGraphics
 
     extension SwiftUIRuntime.Path {
-      public var cgPath: CGPath { CGPath() }
+      public var cgPath: CGPath { CGPath(commands: self.commands) }
     }
   #endif
 #endif

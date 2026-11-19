@@ -16,7 +16,7 @@ extension NSImage: NSPasteboardWriting, NSPasteboardReading {}
 open class NSPasteboardItem: NSObject, NSPasteboardWriting, NSPasteboardReading {
   private var storage: [NSPasteboard.PasteboardType: Data] = [:]
 
-  public var types: [NSPasteboard.PasteboardType] {
+  open var types: [NSPasteboard.PasteboardType] {
     Array(storage.keys)
   }
 
@@ -25,26 +25,54 @@ open class NSPasteboardItem: NSObject, NSPasteboardWriting, NSPasteboardReading 
   }
 
   @discardableResult
-  public func setData(_ data: Data, forType type: NSPasteboard.PasteboardType) -> Bool {
+  open func setData(_ data: Data, forType type: NSPasteboard.PasteboardType) -> Bool {
     storage[type] = data
     return true
   }
 
   @discardableResult
-  public func setString(_ string: String, forType type: NSPasteboard.PasteboardType) -> Bool {
+  open func setString(_ string: String, forType type: NSPasteboard.PasteboardType) -> Bool {
     storage[type] = Data(string.utf8)
     return true
   }
 
-  public func data(forType type: NSPasteboard.PasteboardType) -> Data? {
+  open func data(forType type: NSPasteboard.PasteboardType) -> Data? {
     storage[type]
   }
 
-  public func string(forType type: NSPasteboard.PasteboardType) -> String? {
+  open func string(forType type: NSPasteboard.PasteboardType) -> String? {
     guard let data = storage[type] else { return nil }
     return String(data: data, encoding: .utf8)
   }
 }
+
+#if os(Windows)
+  private final class WindowsSystemPasteboardItem: NSPasteboardItem {
+    private unowned let board: NSPasteboard
+    private let resolvedTypes: [NSPasteboard.PasteboardType]
+
+    init(board: NSPasteboard, types: [NSPasteboard.PasteboardType]) {
+      self.board = board
+      self.resolvedTypes = types
+      super.init()
+    }
+
+    override var types: [NSPasteboard.PasteboardType] {
+      let extra = super.types.filter { !resolvedTypes.contains($0) }
+      return resolvedTypes + extra
+    }
+
+    override func data(forType type: NSPasteboard.PasteboardType) -> Data? {
+      if let local = super.data(forType: type) { return local }
+      return board.readSystemData(forType: type)
+    }
+
+    override func string(forType type: NSPasteboard.PasteboardType) -> String? {
+      if let local = super.string(forType: type) { return local }
+      return board.readSystemString(forType: type)
+    }
+  }
+#endif
 
 open class NSPasteboard: NSObject, @unchecked Sendable {
   public struct Name: RawRepresentable, Equatable, Hashable, Sendable {
@@ -83,6 +111,12 @@ open class NSPasteboard: NSObject, @unchecked Sendable {
   private let isSystemGeneral: Bool
   private var localChangeCount: Int = 0
   private var localItems: [NSPasteboardItem] = []
+  private var knownCustomTypes: Set<PasteboardType> = [
+    PasteboardType("com.tinycast.internal"),
+    PasteboardType("org.nspasteboard.ConcealedType"),
+    PasteboardType("org.nspasteboard.TransientType"),
+    PasteboardType("com.apple.is-sensitive"),
+  ]
 
   public init(name: Name, isSystemGeneral: Bool = false) {
     self.name = name
@@ -97,7 +131,7 @@ open class NSPasteboard: NSObject, @unchecked Sendable {
   public var changeCount: Int {
     #if os(Windows)
       if isSystemGeneral {
-        return Int(cak_clipboard_sequence_number()) + localChangeCount
+        return Int(cak_clipboard_sequence_number())
       }
     #endif
     return localChangeCount
@@ -118,7 +152,34 @@ open class NSPasteboard: NSObject, @unchecked Sendable {
 
   @discardableResult
   public func declareTypes(_ newTypes: [PasteboardType], owner newOwner: Any?) -> Int {
-    clearContents()
+    for t in newTypes where !Self.isStandardType(t) {
+      knownCustomTypes.insert(t)
+    }
+    return clearContents()
+  }
+
+  private static func isStandardType(_ type: PasteboardType) -> Bool {
+    switch type {
+    case .string, .fileURL, .URL, .png, .tiff, .html, .rtf, .pdf:
+      return true
+    default:
+      return false
+    }
+  }
+
+  private static func decodeFileURL(from data: Data) -> URL? {
+    if let url = URL(dataRepresentation: data, relativeTo: nil), url.isFileURL {
+      return url
+    }
+    if let str = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) {
+      if let url = URL(string: str), url.isFileURL {
+        return url
+      }
+      if !str.isEmpty && FileManager.default.fileExists(atPath: str) {
+        return URL(fileURLWithPath: str)
+      }
+    }
+    return nil
   }
 
   @discardableResult
@@ -127,20 +188,24 @@ open class NSPasteboard: NSObject, @unchecked Sendable {
     _ = localItems[0].setString(string, forType: dataType)
     #if os(Windows)
       if isSystemGeneral {
-        if dataType == .fileURL, let url = URL(string: string), url.isFileURL {
-          let path = url.path
-          return path.withCString { cstr in
-            var ptr: UnsafePointer<CChar>? = cstr
-            return withUnsafePointer(to: &ptr) { arr in
-              cak_clipboard_set_files(arr, 1) != 0
-            }
+        if dataType == .fileURL {
+          if let url = URL(string: string), url.isFileURL {
+            return writeSystemFiles([url.path], clearFirst: false)
           }
+          return writeSystemFiles([string], clearFirst: false)
         }
         if dataType == .string || dataType == .URL || dataType == .html {
-          return cak_clipboard_set_text(string) != 0
+          return cak_clipboard_add_text(string) != 0
         }
-        localChangeCount += 1
-        return true
+        knownCustomTypes.insert(dataType)
+        let utf8 = Data(string.utf8)
+        return utf8.withUnsafeBytes { raw in
+          cak_clipboard_add_custom(
+            dataType.rawValue,
+            raw.bindMemory(to: UInt8.self).baseAddress,
+            utf8.count
+          ) != 0
+        }
       }
     #endif
     localChangeCount += 1
@@ -150,18 +215,7 @@ open class NSPasteboard: NSObject, @unchecked Sendable {
   public func string(forType dataType: PasteboardType) -> String? {
     #if os(Windows)
       if isSystemGeneral {
-        if dataType == .string {
-          if let cstr = cak_clipboard_get_text() {
-            defer { cak_free(cstr) }
-            return String(cString: cstr)
-          }
-          return nil
-        }
-        if dataType == .fileURL {
-          if let files = readSystemFileURLs().first {
-            return files.absoluteString
-          }
-        }
+        return readSystemString(forType: dataType)
       }
     #endif
     return localItems.first?.string(forType: dataType)
@@ -173,9 +227,27 @@ open class NSPasteboard: NSObject, @unchecked Sendable {
     if localItems.isEmpty { localItems.append(NSPasteboardItem()) }
     _ = localItems[0].setData(data, forType: dataType)
     #if os(Windows)
-      if isSystemGeneral && (dataType == .png || dataType == .tiff) {
+      if isSystemGeneral {
+        if dataType == .png || dataType == .tiff {
+          return data.withUnsafeBytes { raw in
+            cak_clipboard_add_png(raw.bindMemory(to: UInt8.self).baseAddress, data.count) != 0
+          }
+        }
+        if dataType == .fileURL {
+          guard let url = Self.decodeFileURL(from: data) else { return false }
+          return writeSystemFiles([url.path], clearFirst: false)
+        }
+        if dataType == .string || dataType == .URL {
+          guard let str = String(data: data, encoding: .utf8) else { return false }
+          return cak_clipboard_add_text(str) != 0
+        }
+        knownCustomTypes.insert(dataType)
         return data.withUnsafeBytes { raw in
-          cak_clipboard_set_png(raw.bindMemory(to: UInt8.self).baseAddress, data.count) != 0
+          cak_clipboard_add_custom(
+            dataType.rawValue,
+            raw.bindMemory(to: UInt8.self).baseAddress,
+            data.count
+          ) != 0
         }
       }
     #endif
@@ -185,13 +257,8 @@ open class NSPasteboard: NSObject, @unchecked Sendable {
 
   public func data(forType dataType: PasteboardType) -> Data? {
     #if os(Windows)
-      if isSystemGeneral && (dataType == .png || dataType == .tiff) {
-        var len: Int = 0
-        if let ptr = cak_clipboard_get_png(&len), len > 0 {
-          let d = Data(bytes: ptr, count: len)
-          cak_free(ptr)
-          return d
-        }
+      if isSystemGeneral {
+        return readSystemData(forType: dataType)
       }
     #endif
     return localItems.first?.data(forType: dataType)
@@ -218,42 +285,50 @@ open class NSPasteboard: NSObject, @unchecked Sendable {
       }
     }
 
-    if !items.isEmpty {
-      localItems = items
-    }
-
     #if os(Windows)
       if isSystemGeneral {
+        _ = clearContents()
+        var wroteAny = false
         if !urls.isEmpty {
-          let cStrings = urls.map { _strdup($0.path) }
-          defer { for p in cStrings { free(p) } }
-          let ptrs: [UnsafePointer<CChar>?] = cStrings.map { UnsafePointer($0) }
-          return ptrs.withUnsafeBufferPointer { buf in
-            cak_clipboard_set_files(buf.baseAddress, Int32(buf.count)) != 0
-          }
+          if writeSystemFiles(urls.map(\.path), clearFirst: false) { wroteAny = true }
         }
         if let firstImg = images.first, let data = firstImg.imageData {
-          return setData(data, forType: .png)
+          if setData(data, forType: .png) { wroteAny = true }
         }
         if let firstStr = strings.first {
-          return setString(firstStr, forType: .string)
+          if setString(firstStr, forType: .string) { wroteAny = true }
         }
+        for item in items {
+          for t in item.types {
+            if let d = item.data(forType: t), setData(d, forType: t) {
+              wroteAny = true
+            }
+          }
+        }
+        return wroteAny
       }
     #endif
 
-    if !urls.isEmpty {
+    localItems.removeAll()
+    if !items.isEmpty {
+      localItems = items
+    } else if !urls.isEmpty {
       localItems = urls.map { u in
         let item = NSPasteboardItem()
-        item.setString(u.absoluteString, forType: .fileURL)
+        item.setData(u.dataRepresentation, forType: .fileURL)
         return item
       }
     } else if let firstImg = images.first, let data = firstImg.imageData {
-      _ = setData(data, forType: .png)
+      let item = NSPasteboardItem()
+      item.setData(data, forType: .png)
+      localItems = [item]
     } else if let firstStr = strings.first {
-      _ = setString(firstStr, forType: .string)
+      let item = NSPasteboardItem()
+      item.setString(firstStr, forType: .string)
+      localItems = [item]
     }
     localChangeCount += 1
-    return true
+    return !localItems.isEmpty
   }
 
   public func readObjects(forClasses classArray: [AnyClass], options: [ReadingOptionKey: Any]? = nil) -> [Any]? {
@@ -278,41 +353,35 @@ open class NSPasteboard: NSObject, @unchecked Sendable {
   public var pasteboardItems: [NSPasteboardItem]? {
     #if os(Windows)
       if isSystemGeneral {
-        let urls = readSystemFileURLs()
-        if !urls.isEmpty {
-          return urls.map { u in
-            let item = NSPasteboardItem()
-            item.setString(u.absoluteString, forType: .fileURL)
-            return item
-          }
-        }
-        var synthetic: [NSPasteboardItem] = []
-        let item = NSPasteboardItem()
-        var hasAny = false
-        if let s = string(forType: .string) {
-          item.setString(s, forType: .string)
-          hasAny = true
-        }
-        if let png = data(forType: .png) {
-          item.setData(png, forType: .png)
-          hasAny = true
-        }
-        if hasAny { synthetic.append(item) }
-        if !localItems.isEmpty {
-          for (k, v) in localItems[0].types.compactMap({ t in localItems[0].data(forType: t).map { (t, $0) } }) {
-            if item.data(forType: k) == nil {
-              item.setData(v, forType: k)
-              if synthetic.isEmpty { synthetic.append(item) }
+        let sysTypes = querySystemTypes()
+        if sysTypes.contains(.fileURL) {
+          let urls = readSystemFileURLs()
+          if !urls.isEmpty {
+            let extraTypes = sysTypes.filter { $0 != .fileURL }
+            return urls.enumerated().map { idx, u in
+              let item: NSPasteboardItem =
+                idx == 0
+                ? WindowsSystemPasteboardItem(board: self, types: [.fileURL] + extraTypes)
+                : NSPasteboardItem()
+              item.setData(u.dataRepresentation, forType: .fileURL)
+              return item
             }
           }
         }
-        return synthetic.isEmpty ? nil : synthetic
+        guard !sysTypes.isEmpty else { return nil }
+        return [WindowsSystemPasteboardItem(board: self, types: sysTypes)]
       }
     #endif
     return localItems.isEmpty ? nil : localItems
   }
 
   public var types: [PasteboardType]? {
+    #if os(Windows)
+      if isSystemGeneral {
+        let sys = querySystemTypes()
+        return sys.isEmpty ? nil : sys
+      }
+    #endif
     guard let items = pasteboardItems, let first = items.first else { return nil }
     return first.types
   }
@@ -322,14 +391,17 @@ open class NSPasteboard: NSObject, @unchecked Sendable {
       return !readFileURLs().isEmpty
     }
     if classArray.contains(where: { $0 == NSString.self }) {
-      return string(forType: .string) != nil
+      return (types?.contains(.string) == true) || string(forType: .string) != nil
+    }
+    if classArray.contains(where: { $0 == NSImage.self }) {
+      return availableType(from: [.png, .tiff]) != nil
     }
     return false
   }
 
-  public func availableType(from types: [PasteboardType]) -> PasteboardType? {
+  public func availableType(from candidateTypes: [PasteboardType]) -> PasteboardType? {
     let available = Set(self.types ?? [])
-    return types.first { available.contains($0) }
+    return candidateTypes.first { available.contains($0) }
   }
 
   private func readFileURLs() -> [URL] {
@@ -339,12 +411,99 @@ open class NSPasteboard: NSObject, @unchecked Sendable {
       }
     #endif
     return localItems.compactMap { item in
+      if let d = item.data(forType: .fileURL), let u = Self.decodeFileURL(from: d) {
+        return u
+      }
       guard let str = item.string(forType: .fileURL) else { return nil }
       return URL(string: str)
     }
   }
 
   #if os(Windows)
+    private func writeSystemFiles(_ paths: [String], clearFirst: Bool) -> Bool {
+      guard !paths.isEmpty else { return false }
+      let cStrings = paths.map { _strdup($0) }
+      defer { for p in cStrings { free(p) } }
+      let ptrs: [UnsafePointer<CChar>?] = cStrings.map { UnsafePointer($0) }
+      return ptrs.withUnsafeBufferPointer { buf in
+        if clearFirst {
+          return cak_clipboard_set_files(buf.baseAddress, Int32(buf.count)) != 0
+        } else {
+          return cak_clipboard_add_files(buf.baseAddress, Int32(buf.count)) != 0
+        }
+      }
+    }
+
+    private func querySystemTypes() -> [PasteboardType] {
+      var out: [PasteboardType] = []
+      if cak_clipboard_is_concealed() != 0 {
+        out.append(PasteboardType("org.nspasteboard.ConcealedType"))
+      }
+      for custom in knownCustomTypes {
+        if !out.contains(custom) && cak_clipboard_has_custom(custom.rawValue) != 0 {
+          out.append(custom)
+        }
+      }
+      if cak_clipboard_has_files() != 0 { out.append(.fileURL) }
+      if cak_clipboard_has_text() != 0 { out.append(.string) }
+      if cak_clipboard_has_image() != 0 { out.append(.png) }
+      if cak_clipboard_has_rtf() != 0 { out.append(.rtf) }
+      if cak_clipboard_has_html() != 0 { out.append(.html) }
+      return out
+    }
+
+    fileprivate func readSystemString(forType dataType: PasteboardType) -> String? {
+      switch dataType {
+      case .string, .URL:
+        if let cstr = cak_clipboard_get_text() {
+          defer { cak_free(cstr) }
+          return String(cString: cstr)
+        }
+        return nil
+      case .fileURL:
+        return readSystemFileURLs().first?.absoluteString
+      case .html, .rtf:
+        guard let d = readSystemData(forType: dataType) else { return nil }
+        return String(data: d, encoding: .utf8) ?? String(data: d, encoding: .isoLatin1)
+      default:
+        guard let d = readSystemData(forType: dataType) else { return nil }
+        return String(data: d, encoding: .utf8)
+      }
+    }
+
+    fileprivate func readSystemData(forType dataType: PasteboardType) -> Data? {
+      switch dataType {
+      case .png, .tiff:
+        var len: Int = 0
+        guard let ptr = cak_clipboard_get_png(&len), len > 0 else { return nil }
+        let d = Data(bytes: ptr, count: len)
+        cak_free(ptr)
+        return d
+      case .fileURL:
+        return readSystemFileURLs().first?.dataRepresentation
+      case .string, .URL:
+        return readSystemString(forType: dataType).map { Data($0.utf8) }
+      case .rtf:
+        var len: Int = 0
+        guard let ptr = cak_clipboard_get_rtf(&len), len > 0 else { return nil }
+        let d = Data(bytes: ptr, count: len)
+        cak_free(ptr)
+        return d
+      case .html:
+        var len: Int = 0
+        guard let ptr = cak_clipboard_get_html(&len), len > 0 else { return nil }
+        let d = Data(bytes: ptr, count: len)
+        cak_free(ptr)
+        return d
+      default:
+        var len: Int = 0
+        guard let ptr = cak_clipboard_get_custom(dataType.rawValue, &len) else { return nil }
+        let d = len > 0 ? Data(bytes: ptr, count: len) : Data()
+        cak_free(ptr)
+        return d
+      }
+    }
+
     private func readSystemFileURLs() -> [URL] {
       guard let cstr = cak_clipboard_get_files_newline() else { return [] }
       defer { cak_free(cstr) }

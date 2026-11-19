@@ -204,8 +204,19 @@ public enum NSLineBreakMode: UInt, Sendable {
       self.init(string: "\u{FFFC}", attributes: [.attachment: attachment])
     }
 
-    public func draw(at point: NSPoint) {}
-    public func draw(in rect: NSRect) {}
+    public func draw(at point: NSPoint) {
+      let sz = size()
+      draw(in: NSRect(origin: point, size: sz))
+    }
+
+    public func draw(in rect: NSRect) {
+      guard let ctx = _OffscreenDrawingContext.current, !string.isEmpty else { return }
+      let font = (length > 0 ? attribute(.font, at: 0, effectiveRange: nil) as? NSFont : nil)
+        ?? .systemFont(ofSize: NSFont.systemFontSize)
+      let color = (length > 0 ? attribute(.foregroundColor, at: 0, effectiveRange: nil) as? NSColor : nil)
+      let argb = color?.packedARGB ?? ctx.fillARGB
+      ctx.ops.append(.text(string: string, rect: rect, fontSize: font.pointSize, colorARGB: argb))
+    }
 
     public func size() -> NSSize {
       let font = (length > 0 ? attribute(.font, at: 0, effectiveRange: nil) as? NSFont : nil)
@@ -263,8 +274,20 @@ public enum NSLineBreakMode: UInt, Sendable {
       )
     }
 
-    public func draw(at point: NSPoint, withAttributes attrs: [NSAttributedString.Key: Any]? = nil) {}
-    public func draw(in rect: NSRect, withAttributes attrs: [NSAttributedString.Key: Any]? = nil) {}
+    public func draw(at point: NSPoint, withAttributes attrs: [NSAttributedString.Key: Any]? = nil) {
+      let sz = size(withAttributes: attrs)
+      draw(in: NSRect(origin: point, size: sz), withAttributes: attrs)
+    }
+
+    public func draw(in rect: NSRect, withAttributes attrs: [NSAttributedString.Key: Any]? = nil) {
+      guard let ctx = _OffscreenDrawingContext.current else { return }
+      let str = self as String
+      guard !str.isEmpty else { return }
+      let font = (attrs?[.font] as? NSFont) ?? .systemFont(ofSize: NSFont.systemFontSize)
+      let color = attrs?[.foregroundColor] as? NSColor
+      let argb = color?.packedARGB ?? ctx.fillARGB
+      ctx.ops.append(.text(string: str, rect: rect, fontSize: font.pointSize, colorARGB: argb))
+    }
 
     public var abbreviatingWithTildeInPath: String {
       let raw = self as String

@@ -69,11 +69,50 @@ final class CrossAppKitTests: XCTestCase {
       resolved.map { URL(fileURLWithPath: $0).standardizedFileURL.path },
       pdfURL.standardizedFileURL.path
     )
-    let nsImg = bundle.image(forResource: "ic_fluent_home_20_regular")
+    let nsImg: CrossAppKit.NSImage? = bundle.image(forResource: "ic_fluent_home_20_regular")
     XCTAssertNotNil(nsImg)
     XCTAssertEqual(
       nsImg?.filePath.map { URL(fileURLWithPath: $0).standardizedFileURL.path },
       pdfURL.standardizedFileURL.path
     )
+  }
+
+  func testOffscreenImageDrawingRecordsTileAndSymbol() {
+    let previousRenderer = CrossAppKit.NSImage.offscreenRenderer
+    let previousLookup = CrossAppKit.NSImage.symbolLookupHandler
+    defer {
+      CrossAppKit.NSImage.offscreenRenderer = previousRenderer
+      CrossAppKit.NSImage.symbolLookupHandler = previousLookup
+    }
+
+    nonisolated(unsafe) var capturedOps: [_OffscreenDrawOp] = []
+    CrossAppKit.NSImage.symbolLookupHandler = { $0 == "doc.text" }
+    CrossAppKit.NSImage.offscreenRenderer = { _, _, ops in
+      capturedOps = ops
+      return Data([0x89, 0x50, 0x4E, 0x47])
+    }
+
+    let img = CrossAppKit.NSImage(size: NSSize(width: 48, height: 48), flipped: false) { _ in
+      CrossAppKit.NSColor(srgbRed: 0, green: 0, blue: 0, alpha: 0.09).setFill()
+      CrossAppKit.NSBezierPath(roundedRect: NSRect(x: 4, y: 4, width: 40, height: 40), xRadius: 10, yRadius: 10).fill()
+      let ink = CrossAppKit.NSColor(srgbRed: 0, green: 0, blue: 0, alpha: 0.85)
+      let cfg = CrossAppKit.NSImage.SymbolConfiguration(pointSize: 21, weight: .medium)
+        .applying(.init(paletteColors: [ink]))
+      if let sym = CrossAppKit.NSImage(systemSymbolName: "doc.text", accessibilityDescription: nil)?
+        .withSymbolConfiguration(cfg)
+      {
+        sym.draw(in: NSRect(x: 12, y: 12, width: sym.size.width, height: sym.size.height))
+      }
+      return true
+    }
+
+    XCTAssertEqual(capturedOps.count, 2)
+    XCTAssertNotNil(img.imageData)
+    if case .symbol(let name, _, _, let pt, _) = capturedOps[1] {
+      XCTAssertEqual(name, "doc.text")
+      XCTAssertEqual(pt, 21, accuracy: 0.001)
+    } else {
+      XCTFail("Expected symbol op at index 1")
+    }
   }
 }

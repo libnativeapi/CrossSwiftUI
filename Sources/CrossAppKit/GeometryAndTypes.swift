@@ -215,7 +215,10 @@ public enum CrossAppKitCoordinates {
   }
 
   extension CGRect {
-    public func fill(using operation: NSCompositingOperation = .sourceOver) {}
+    public func fill(using operation: NSCompositingOperation = .sourceOver) {
+      guard let ctx = _OffscreenDrawingContext.current else { return }
+      ctx.ops.append(.shape(rect: self, radius: 0, fillARGB: ctx.fillARGB, strokeARGB: 0, strokeWidth: 0))
+    }
   }
 
   extension RunLoop.Mode {

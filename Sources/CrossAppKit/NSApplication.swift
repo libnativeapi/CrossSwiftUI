@@ -113,6 +113,29 @@ open class NSApplication: NSResponder, @unchecked Sendable {
   private override init() {
     #if os(Windows)
       cak_enable_per_monitor_dpi()
+      _cgPostToPidHook = { pid, sendAction in
+        guard pid > 0 else { return false }
+        MainActor.assumeIsolated {
+          let activePanel = NSApplication.shared.keyWindow
+          let keepPanelOpen = activePanel?.isVisible == true && activePanel?.styleMask.contains(.nonactivatingPanel) == true
+          if keepPanelOpen {
+            NSWindow._suppressResignKeyCount += 1
+          }
+          _ = cak_activate_pid(UInt32(bitPattern: pid))
+          DispatchQueue.main.asyncAfter(deadline: .now() + 0.025) {
+            sendAction()
+            if keepPanelOpen {
+              DispatchQueue.main.asyncAfter(deadline: .now() + 0.045) {
+                if let panel = activePanel, panel.isVisible {
+                  panel.makeKeyAndOrderFront(nil)
+                }
+                NSWindow._suppressResignKeyCount = max(0, NSWindow._suppressResignKeyCount - 1)
+              }
+            }
+          }
+        }
+        return true
+      }
     #endif
     #if !os(macOS)
       CarbonHotKeyBridge.install()
@@ -215,10 +238,14 @@ open class NSApplication: NSResponder, @unchecked Sendable {
     isRunning = true
     #if !os(macOS)
       NativeAPI.Application.shared.installMainQueue()
+      let runLoopPump = NativeAPI.RunLoopTimer(milliseconds: 25) {
+        _ = RunLoop.main.limitDate(forMode: .default)
+      }
     #endif
     finishLaunching()
     #if !os(macOS)
       _ = NativeAPI.Application.shared.run()
+      runLoopPump.invalidate()
     #endif
     isRunning = false
   }

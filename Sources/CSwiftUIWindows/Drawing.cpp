@@ -1547,7 +1547,10 @@ LRESULT CALLBACK HostProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp, UINT_PTR,
   }
   if (msg == WM_LBUTTONDOWN) {
     SetCapture(hwnd);
-    SetFocus(hwnd);
+    HWND cur_focus = GetFocus();
+    if (!cur_focus || (cur_focus != s->host && !IsChild(s->host, cur_focus))) {
+      SetFocus(s->host);
+    }
   }
   if (msg == WM_LBUTTONUP && GetCapture() == hwnd)
     ReleaseCapture();
@@ -1555,8 +1558,13 @@ LRESULT CALLBACK HostProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp, UINT_PTR,
     TRACKMOUSEEVENT track = {sizeof(track), TME_LEAVE, hwnd, 0};
     TrackMouseEvent(&track);
   }
-  if (Input(s, hwnd, 0, msg, wp, lp))
+  if (Input(s, hwnd, 0, msg, wp, lp)) {
+    if (msg == WM_LBUTTONDOWN && GetCapture() == hwnd &&
+        !(GetAsyncKeyState(VK_LBUTTON) & 0x8000)) {
+      ReleaseCapture();
+    }
     return 0;
+  }
   if (msg == WM_KEYDOWN && wp == VK_TAB) {
     sui_surface_focus_next(s, nullptr, (GetKeyState(VK_SHIFT) & 0x8000) != 0);
     return 0;
@@ -2128,6 +2136,8 @@ void *sui_surface_create(void *host, sui_event_callback callback, void *context,
 void sui_surface_destroy(void *handle) {
   auto *s = static_cast<Surface *>(handle);
   KillTimer(s->host, subclass_id);
+  while (!s->custom_views.empty())
+    sui_surface_remove_custom_view(s, *s->custom_views.begin());
   while (!s->edits.empty())
     sui_surface_remove_edit(s, s->edits.begin()->first);
   for (const auto &entry : s->buttons)
@@ -2361,6 +2371,19 @@ void sui_surface_set_pending_offset(void *handle, double ox, double oy) {
   s->pending_offset_y = oy;
   s->has_pending_offset = true;
 }
+namespace {
+LRESULT CALLBACK CustomViewProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp,
+                                UINT_PTR, DWORD_PTR data) {
+  auto *s = reinterpret_cast<Surface *>(data);
+  if (s && (msg == WM_KEYDOWN || msg == WM_SYSKEYDOWN || msg == WM_MOUSEWHEEL)) {
+    if (Input(s, hwnd, 0, msg, wp, lp))
+      return 0;
+  }
+  if (msg == WM_CHAR && (wp == 0x0A || wp == 0x1B))
+    return 0;
+  return DefSubclassProc(hwnd, msg, wp, lp);
+}
+} // namespace
 void sui_surface_custom_view(void *handle, void *view_hwnd,
                              uint64_t native_view) {
   auto *s = static_cast<Surface *>(handle);
@@ -2371,7 +2394,10 @@ void sui_surface_custom_view(void *handle, void *view_hwnd,
   if (native_view && !s->native_views.count(hwnd))
     s->native_views.emplace(hwnd, native_handle_retain(native_view));
   ParentControl(s, hwnd);
-  s->custom_views.insert(hwnd);
+  if (s->custom_views.insert(hwnd).second) {
+    SetWindowSubclass(hwnd, CustomViewProc, subclass_id,
+                      reinterpret_cast<DWORD_PTR>(s));
+  }
 }
 void sui_surface_remove_custom_view(void *handle, void *view_hwnd) {
   auto *s = static_cast<Surface *>(handle);
@@ -2380,6 +2406,7 @@ void sui_surface_remove_custom_view(void *handle, void *view_hwnd) {
     return;
   if (!s->custom_views.erase(hwnd))
     return;
+  RemoveWindowSubclass(hwnd, CustomViewProc, subclass_id);
   ReleaseControl(s, hwnd);
 }
 void sui_custom_view_order(void *handle, void *view_hwnd) {
@@ -3073,5 +3100,144 @@ void sui_button_activate(void *button) {
   HWND hwnd = static_cast<HWND>(button);
   if (IsWindowEnabled(hwnd))
     SendMessageW(hwnd, BM_CLICK, 0, 0);
+}
+
+namespace {
+struct OffscreenCanvas {
+  std::unique_ptr<Bitmap> bitmap;
+  std::unique_ptr<Graphics> graphics;
+};
+} // namespace
+
+void *sui_offscreen_create(int width, int height) {
+  if (width <= 0 || height <= 0) return nullptr;
+  InitializeGraphics();
+  auto *c = new OffscreenCanvas();
+  c->bitmap = std::make_unique<Bitmap>(width, height, PixelFormat32bppARGB);
+  c->graphics = std::make_unique<Graphics>(c->bitmap.get());
+  c->graphics->Clear(Color(0, 0, 0, 0));
+  c->graphics->SetSmoothingMode(SmoothingModeAntiAlias);
+  c->graphics->SetPixelOffsetMode(PixelOffsetModeHalf);
+  c->graphics->SetTextRenderingHint(TextRenderingHintAntiAliasGridFit);
+  return c;
+}
+
+void sui_offscreen_shape(void *canvas, double x, double y, double width,
+                         double height, double radius, uint32_t fill,
+                         uint32_t stroke, double stroke_width) {
+  auto *c = static_cast<OffscreenCanvas *>(canvas);
+  if (!c || !c->graphics || width <= 0 || height <= 0) return;
+  RectF rect{float(x), float(y), float(width), float(height)};
+  float rad = float(std::isfinite(radius) ? radius : min(width, height) * 0.5);
+  GraphicsPath path;
+  RoundedPath(path, rect, rad);
+  if (fill >> 24) {
+    Color fill_col(fill);
+    SolidBrush brush(fill_col);
+    c->graphics->FillPath(&brush, &path);
+  }
+  if (stroke_width > 0 && (stroke >> 24)) {
+    Color stroke_col(stroke);
+    Pen pen(stroke_col, float(stroke_width));
+    pen.SetStartCap(LineCapRound);
+    pen.SetEndCap(LineCapRound);
+    pen.SetLineJoin(LineJoinRound);
+    c->graphics->DrawPath(&pen, &path);
+  }
+}
+
+void sui_offscreen_path(void *canvas, const double *commands, int count,
+                        uint32_t fill, uint32_t stroke, double stroke_width) {
+  auto *c = static_cast<OffscreenCanvas *>(canvas);
+  if (!c || !c->graphics || !commands || count <= 0) return;
+  std::vector<double> vec(commands, commands + count);
+  GraphicsPath path;
+  VectorPath(path, vec);
+  if (fill >> 24) {
+    path.SetFillMode(FillModeWinding);
+    Color fill_col(fill);
+    SolidBrush brush(fill_col);
+    c->graphics->FillPath(&brush, &path);
+  }
+  if (stroke_width > 0 && (stroke >> 24)) {
+    Color stroke_col(stroke);
+    Pen pen(stroke_col, float(stroke_width));
+    pen.SetStartCap(LineCapRound);
+    pen.SetEndCap(LineCapRound);
+    pen.SetLineJoin(LineJoinRound);
+    c->graphics->DrawPath(&pen, &path);
+  }
+}
+
+void sui_offscreen_text(void *canvas, double x, double y, double width,
+                        double height, const char *text, double size,
+                        uint32_t color) {
+  auto *c = static_cast<OffscreenCanvas *>(canvas);
+  if (!c || !c->graphics || !text || !(color >> 24)) return;
+  auto wtext = Wide(text);
+  if (wtext.empty()) return;
+  FontFamily fam(L"Segoe UI");
+  Font font(fam.GetLastStatus() == Ok ? &fam : FontFamily::GenericSansSerif(),
+            float(max(1.0, size)), FontStyleRegular, UnitPixel);
+  Color text_col(color);
+  SolidBrush brush(text_col);
+  StringFormat fmt(StringFormat::GenericTypographic());
+  fmt.SetFormatFlags(StringFormatFlagsNoWrap);
+  RectF box{float(x), float(y), float(width), float(height)};
+  c->graphics->DrawString(wtext.c_str(), -1, &font, box, &fmt, &brush);
+}
+
+uint8_t *sui_offscreen_finish_png(void *canvas, int *out_len) {
+  if (out_len) *out_len = 0;
+  auto *c = static_cast<OffscreenCanvas *>(canvas);
+  if (!c) return nullptr;
+  uint8_t *result = nullptr;
+  if (c->graphics) c->graphics->Flush(FlushIntentionSync);
+  c->graphics.reset();
+  if (c->bitmap) {
+    UINT num = 0, sz = 0;
+    GetImageEncodersSize(&num, &sz);
+    CLSID png_clsid{};
+    bool found = false;
+    if (sz > 0) {
+      std::vector<uint8_t> buf(sz);
+      auto *info = reinterpret_cast<ImageCodecInfo *>(buf.data());
+      GetImageEncoders(num, sz, info);
+      for (UINT i = 0; i < num; ++i) {
+        if (wcscmp(info[i].MimeType, L"image/png") == 0) {
+          png_clsid = info[i].Clsid;
+          found = true;
+          break;
+        }
+      }
+    }
+    if (found) {
+      IStream *stream = nullptr;
+      if (SUCCEEDED(CreateStreamOnHGlobal(nullptr, TRUE, &stream)) && stream) {
+        if (c->bitmap->Save(stream, &png_clsid, nullptr) == Ok) {
+          HGLOBAL hg = nullptr;
+          if (SUCCEEDED(GetHGlobalFromStream(stream, &hg)) && hg) {
+            SIZE_T bytes = GlobalSize(hg);
+            void *ptr = GlobalLock(hg);
+            if (ptr && bytes > 0) {
+              result = static_cast<uint8_t *>(std::malloc(bytes));
+              if (result) {
+                std::memcpy(result, ptr, bytes);
+                if (out_len) *out_len = int(bytes);
+              }
+              GlobalUnlock(hg);
+            }
+          }
+        }
+        stream->Release();
+      }
+    }
+  }
+  delete c;
+  return result;
+}
+
+void sui_free_bytes(void *ptr) {
+  std::free(ptr);
 }
 }

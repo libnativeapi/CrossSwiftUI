@@ -196,32 +196,125 @@ open class NSGraphicsContext: NSObject, @unchecked Sendable {
   public static func restoreGraphicsState() {}
 }
 
+public enum _OffscreenDrawOp: Sendable {
+  case shape(rect: NSRect, radius: CGFloat, fillARGB: UInt32, strokeARGB: UInt32, strokeWidth: CGFloat)
+  case path(commands: [Double], fillARGB: UInt32, strokeARGB: UInt32, strokeWidth: CGFloat)
+  case symbol(name: String, rect: NSRect, colorARGB: UInt32, pointSize: CGFloat, weight: Double)
+  case image(pngData: Data, rect: NSRect)
+  case text(string: String, rect: NSRect, fontSize: CGFloat, colorARGB: UInt32)
+}
+
+internal final class _OffscreenDrawingContext {
+  private static let lock = NSLock()
+  nonisolated(unsafe) private static var stacks: [UInt64: [_OffscreenDrawingContext]] = [:]
+
+  var fillARGB: UInt32 = 0xFF000000
+  var strokeARGB: UInt32 = 0xFF000000
+  var ops: [_OffscreenDrawOp] = []
+
+  static var current: _OffscreenDrawingContext? {
+    let tid = _crossAppKitThreadKey()
+    lock.lock()
+    defer { lock.unlock() }
+    return stacks[tid]?.last
+  }
+
+  static func push(_ ctx: _OffscreenDrawingContext) {
+    let tid = _crossAppKitThreadKey()
+    lock.lock()
+    stacks[tid, default: []].append(ctx)
+    lock.unlock()
+  }
+
+  static func pop() {
+    let tid = _crossAppKitThreadKey()
+    lock.lock()
+    if var arr = stacks[tid] {
+      _ = arr.popLast()
+      if arr.isEmpty {
+        stacks.removeValue(forKey: tid)
+      } else {
+        stacks[tid] = arr
+      }
+    }
+    lock.unlock()
+  }
+}
+
 open class NSBezierPath: NSObject {
+  internal enum Kind {
+    case rect(NSRect)
+    case roundedRect(NSRect, CGFloat)
+    case oval(NSRect)
+    case commands([Double])
+    case empty
+  }
+
   public let rect: NSRect
+  internal let kind: Kind
+  public var lineWidth: CGFloat = 1.0
+
   public init(rect: NSRect) {
     self.rect = rect
+    self.kind = .rect(rect)
     super.init()
   }
   public init(roundedRect rect: NSRect, xRadius: CGFloat, yRadius: CGFloat) {
     self.rect = rect
+    self.kind = .roundedRect(rect, min(xRadius, yRadius))
     super.init()
   }
   public init(ovalIn rect: NSRect) {
     self.rect = rect
+    self.kind = .oval(rect)
     super.init()
   }
   #if !os(macOS)
     public init(cgPath: CGPath) {
       self.rect = .zero
+      self.kind = cgPath.commands.isEmpty ? .empty : .commands(cgPath.commands)
       super.init()
     }
   #endif
   public override init() {
     self.rect = .zero
+    self.kind = .empty
     super.init()
   }
-  public func fill() {}
-  public func stroke() {}
+
+  public func fill() {
+    guard let ctx = _OffscreenDrawingContext.current else { return }
+    switch kind {
+    case .rect(let r):
+      ctx.ops.append(.shape(rect: r, radius: 0, fillARGB: ctx.fillARGB, strokeARGB: 0, strokeWidth: 0))
+    case .roundedRect(let r, let rad):
+      ctx.ops.append(.shape(rect: r, radius: rad, fillARGB: ctx.fillARGB, strokeARGB: 0, strokeWidth: 0))
+    case .oval(let r):
+      ctx.ops.append(.shape(rect: r, radius: min(r.width, r.height) / 2, fillARGB: ctx.fillARGB, strokeARGB: 0, strokeWidth: 0))
+    case .commands(let cmds):
+      ctx.ops.append(.path(commands: cmds, fillARGB: ctx.fillARGB, strokeARGB: 0, strokeWidth: 0))
+    case .empty:
+      break
+    }
+  }
+
+  public func stroke() {
+    guard let ctx = _OffscreenDrawingContext.current else { return }
+    let w = max(lineWidth, 0.5)
+    switch kind {
+    case .rect(let r):
+      ctx.ops.append(.shape(rect: r, radius: 0, fillARGB: 0, strokeARGB: ctx.strokeARGB, strokeWidth: w))
+    case .roundedRect(let r, let rad):
+      ctx.ops.append(.shape(rect: r, radius: rad, fillARGB: 0, strokeARGB: ctx.strokeARGB, strokeWidth: w))
+    case .oval(let r):
+      ctx.ops.append(.shape(rect: r, radius: min(r.width, r.height) / 2, fillARGB: 0, strokeARGB: ctx.strokeARGB, strokeWidth: w))
+    case .commands(let cmds):
+      ctx.ops.append(.path(commands: cmds, fillARGB: 0, strokeARGB: ctx.strokeARGB, strokeWidth: w))
+    case .empty:
+      break
+    }
+  }
+
   public func addClip() {}
 }
 
@@ -247,13 +340,13 @@ open class NSImage: NSObject, @unchecked Sendable {
     }
 
     public init(paletteColors: [NSColor]) {
-      self.pointSize = 14
+      self.pointSize = 0
       self.weight = .regular
       self.paletteColors = paletteColors
     }
 
     public init(hierarchicalColor: NSColor) {
-      self.pointSize = 14
+      self.pointSize = 0
       self.weight = .regular
       self.paletteColors = [hierarchicalColor]
     }
@@ -276,12 +369,16 @@ open class NSImage: NSObject, @unchecked Sendable {
   /// returns non-nil for every known symbol and carries its symbol name for rendering.
   nonisolated(unsafe) public static var symbolLookupHandler: (@Sendable (String) -> Bool)?
 
+  /// Registered by CrossSwiftUI to rasterize `NSImage(size:flipped:drawingHandler:)` to PNG.
+  nonisolated(unsafe) public static var offscreenRenderer: (@Sendable (NSSize, Bool, [_OffscreenDrawOp]) -> Data?)?
+
   /// Optional resource directory paths searched by `NSImage(named:)` for `.imageset` / PNG / SVG files.
   nonisolated(unsafe) public static var resourceSearchPaths: [String] = []
 
   public var size: NSSize
   public var isTemplate: Bool = false
   public private(set) var symbolName: String?
+  public private(set) var symbolConfiguration: SymbolConfiguration?
   public private(set) var filePath: String?
   public private(set) var imageData: Data?
   public var representations: [NSImageRep] = []
@@ -297,7 +394,20 @@ open class NSImage: NSObject, @unchecked Sendable {
 
   public convenience init(size: NSSize, flipped drawingHandlerShouldBeCalledWithFlippedContext: Bool, drawingHandler: @escaping (NSRect) -> Bool) {
     self.init(size: size)
+    let ctx = _OffscreenDrawingContext()
+    _OffscreenDrawingContext.push(ctx)
     _ = drawingHandler(NSRect(origin: .zero, size: size))
+    _OffscreenDrawingContext.pop()
+    if !ctx.ops.isEmpty,
+      let png = Self.offscreenRenderer?(size, drawingHandlerShouldBeCalledWithFlippedContext, ctx.ops),
+      !png.isEmpty
+    {
+      self.imageData = png
+      if let rep = NSBitmapImageRep(data: png) {
+        rep.size = size
+        self.representations = [rep]
+      }
+    }
   }
 
   public init?(data: Data) {
@@ -376,11 +486,16 @@ open class NSImage: NSObject, @unchecked Sendable {
   #endif
 
   public func withSymbolConfiguration(_ configuration: SymbolConfiguration) -> NSImage? {
-    let copy = NSImage(size: NSSize(width: configuration.pointSize, height: configuration.pointSize))
+    let base = symbolConfiguration ?? SymbolConfiguration(pointSize: 16, weight: .regular)
+    let merged = base.applying(configuration)
+    let pt = merged.pointSize > 0 ? merged.pointSize : 16
+    let boxSide = (pt * 1.15).rounded()
+    let copy = NSImage(size: NSSize(width: boxSide, height: boxSide))
     copy.symbolName = symbolName
+    copy.symbolConfiguration = merged
     copy.filePath = filePath
     copy.imageData = imageData
-    copy.isTemplate = isTemplate
+    copy.isTemplate = merged.paletteColors.isEmpty ? isTemplate : false
     return copy
   }
 
@@ -395,7 +510,17 @@ open class NSImage: NSObject, @unchecked Sendable {
     }
   }
 
-  public func draw(in rect: NSRect) {}
+  public func draw(in rect: NSRect) {
+    guard let ctx = _OffscreenDrawingContext.current else { return }
+    if let sym = symbolName {
+      let colorARGB = symbolConfiguration?.paletteColors.first?.packedARGB ?? ctx.fillARGB
+      let pt = (symbolConfiguration?.pointSize ?? 0) > 0 ? symbolConfiguration!.pointSize : rect.height
+      let weight = symbolConfiguration?.weight.cssWeight ?? 400
+      ctx.ops.append(.symbol(name: sym, rect: rect, colorARGB: colorARGB, pointSize: pt, weight: weight))
+    } else if let data = imageData {
+      ctx.ops.append(.image(pngData: data, rect: rect))
+    }
+  }
   public func draw(in dstSpacePortionRect: NSRect, from srcSpacePortionRect: NSRect, operation op: UInt, fraction requestedAlpha: CGFloat) {}
   public func lockFocus() {}
   public func unlockFocus() {}
@@ -405,7 +530,19 @@ open class NSImage: NSObject, @unchecked Sendable {
       return filePath
     }
     guard let data = imageData, !data.isEmpty else { return nil }
-    let hash = data.prefix(64).reduce(UInt64(1469598103934665603)) { ($0 ^ UInt64($1)) &* 1099511628211 }
+    var hash = UInt64(1469598103934665603)
+    let step = max(1, data.count / 256)
+    data.withUnsafeBytes { raw in
+      let bytes = raw.bindMemory(to: UInt8.self)
+      var idx = 0
+      while idx < bytes.count {
+        hash = (hash ^ UInt64(bytes[idx])) &* 1099511628211
+        idx += step
+      }
+      if bytes.count > 1 {
+        hash = (hash ^ UInt64(bytes[bytes.count - 1])) &* 1099511628211
+      }
+    }
     let dir = FileManager.default.temporaryDirectory.appendingPathComponent("CrossAppKitImages", isDirectory: true)
     try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
     let file = dir.appendingPathComponent("img_\(data.count)_\(String(hash, radix: 16)).png")

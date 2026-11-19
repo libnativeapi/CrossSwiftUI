@@ -8,7 +8,8 @@ struct VectorImage {
   let bounds: CGRect
   let paths: [Path]
   let strokeWidth: Double
-  static var cache: [String: VectorImage] = [:]
+  private static let lock = NSLock()
+  nonisolated(unsafe) static var cache: [String: VectorImage] = [:]
   nonisolated(unsafe) static var symbolDefinitions: [String: (viewBox: CGRect, strokeWidth: Double, paths: [String])] = [:]
 
   static func registerSymbol(
@@ -28,6 +29,8 @@ struct VectorImage {
   }
 
   static func hasSymbol(_ name: String) -> Bool {
+    lock.lock()
+    defer { lock.unlock() }
     ensureBuiltinSFSymbolsRegistered()
     if symbolDefinitions[name] != nil { return true }
     let stripped = strippedSymbolVariant(name)
@@ -35,6 +38,8 @@ struct VectorImage {
   }
 
   static func loadSymbol(_ rawName: String) -> VectorImage? {
+    lock.lock()
+    defer { lock.unlock() }
     ensureBuiltinSFSymbolsRegistered()
     let key = "sf://" + rawName
     if let cached = cache[key] { return cached }
@@ -52,10 +57,17 @@ struct VectorImage {
     if file.hasPrefix("sf://") {
       return loadSymbol(String(file.dropFirst(5)))
     }
-    if let cached = cache[file] { return cached }
+    lock.lock()
+    if let cached = cache[file] {
+      lock.unlock()
+      return cached
+    }
+    lock.unlock()
     if file.lowercased().hasSuffix(".pdf") {
       guard let image = PDFVectorParser.parse(filePath: file) else { return nil }
+      lock.lock()
       cache[file] = image
+      lock.unlock()
       return image
     }
     guard let source = try? String(contentsOfFile: file, encoding: .utf8) else { return nil }
@@ -76,7 +88,9 @@ struct VectorImage {
       bounds: CGRect(x: box[0], y: box[1], width: box[2], height: box[3]),
       paths: attributes("(?:^|\\s)d").map { parse($0) },
       strokeWidth: 0)
+    lock.lock()
     cache[file] = image
+    lock.unlock()
     return image
   }
 

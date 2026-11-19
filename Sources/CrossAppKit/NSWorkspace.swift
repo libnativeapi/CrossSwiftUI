@@ -182,7 +182,7 @@ open class NSWorkspace: NSObject, @unchecked Sendable {
 
   public var frontmostApplication: NSRunningApplication? {
     #if os(Windows)
-      let pid = Int32(cak_frontmost_pid())
+      let pid = Int32(cak_frontmost_real_pid())
       guard pid > 0 else { return nil }
       return NSRunningApplication(processIdentifier: pid)
     #else
