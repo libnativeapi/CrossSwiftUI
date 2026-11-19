@@ -253,6 +253,12 @@ struct Surface {
   LONG pending_height = 0;
   bool defer_commit = false;
   bool commit_on_pos_change = false;
+  double origin_offset_x = 0.0;
+  double origin_offset_y = 0.0;
+  double pending_offset_x = 0.0;
+  double pending_offset_y = 0.0;
+  bool has_pending_offset = false;
+  bool offset_changed_since_paint = false;
   struct DeferredFrame {
     double x, y, w, h;
   };
@@ -295,6 +301,16 @@ RECT SurfaceClientRect(const Surface *s) {
   RECT client{};
   GetClientRect(s->host, &client);
   return client;
+}
+
+void EffectiveOffset(const Surface *s, double &ox, double &oy) {
+  if (s->defer_commit && s->has_pending_offset) {
+    ox = s->pending_offset_x;
+    oy = s->pending_offset_y;
+  } else {
+    ox = s->origin_offset_x;
+    oy = s->origin_offset_y;
+  }
 }
 
 constexpr UINT_PTR kShadowRootSubclassId = 0x5AD00001u;
@@ -862,7 +878,8 @@ void RenderFrame(Surface *s) {
   const double started = ClockMilliseconds();
   if (!same_size)
     s->buffer = std::make_unique<Framebuffer>(width, height);
-  const bool full = !same_size || s->buffer_dpi != dpi;
+  const bool full = !same_size || s->buffer_dpi != dpi || s->offset_changed_since_paint;
+  s->offset_changed_since_paint = false;
   s->buffer_dpi = dpi;
   s->buffer_dirty = false;
   RECT copied{};
@@ -908,6 +925,11 @@ void RenderFrame(Surface *s) {
                              : TextRenderingHintClearTypeGridFit);
   float scale = dpi / 96.f;
   g.ScaleTransform(scale, scale);
+  double surf_ox = 0.0, surf_oy = 0.0;
+  EffectiveOffset(s, surf_ox, surf_oy);
+  if (surf_ox != 0.0 || surf_oy != 0.0) {
+    g.TranslateTransform(float(surf_ox), float(surf_oy));
+  }
   std::vector<GraphicsState> clips;
   for (size_t i = 0; i < s->commands.size(); ++i) {
     const auto &c = s->commands[i];
@@ -1179,7 +1201,9 @@ int Input(Surface *s, HWND hwnd, int64_t id, UINT msg, WPARAM wp, LPARAM lp) {
   if (event != 6)
     MapWindowPoints(hwnd, s->host, &point, 1);
   double scale = GetDpiForWindow(s->host) / 96.;
-  return s->input(s->context, id, event, point.x / scale, point.y / scale,
+  const double lx = event == 6 ? 0.0 : (point.x / scale - s->origin_offset_x);
+  const double ly = event == 6 ? 0.0 : (point.y / scale - s->origin_offset_y);
+  return s->input(s->context, id, event, lx, ly,
                   msg == WM_MOUSEHWHEEL ? -value : value,
                   Modifiers() | (msg == WM_MOUSEHWHEEL ? 1 : 0));
 }
@@ -1322,6 +1346,8 @@ LRESULT CALLBACK EditProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp, UINT_PTR,
       transparent &&
       (msg == WM_CHAR || msg == EM_REPLACESEL || msg == WM_PASTE ||
        msg == WM_CUT || msg == WM_CLEAR || msg == WM_UNDO ||
+       msg == WM_IME_STARTCOMPOSITION || msg == WM_IME_COMPOSITION ||
+       msg == WM_IME_ENDCOMPOSITION || msg == WM_IME_CHAR ||
        (msg == WM_KEYDOWN && (wp == VK_BACK || wp == VK_DELETE)));
   std::wstring before_text = suppress_direct_paint ? snapshot_text(hwnd) : std::wstring{};
   LONG_PTR saved_style = 0;
@@ -1350,6 +1376,10 @@ LRESULT CALLBACK EditProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp, UINT_PTR,
       }
     }
   }
+  if (msg == WM_IME_STARTCOMPOSITION || msg == WM_IME_COMPOSITION ||
+      msg == WM_IME_ENDCOMPOSITION) {
+    s->callback(s->context, id, 7);
+  }
   if (transparent && !changed && !s->defer_commit &&
       (msg == WM_CHAR || msg == WM_KEYDOWN || msg == WM_KEYUP ||
        msg == WM_SETTEXT || msg == EM_SETSEL || msg == EM_REPLACESEL ||
@@ -1357,7 +1387,8 @@ LRESULT CALLBACK EditProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp, UINT_PTR,
        msg == WM_HSCROLL || msg == WM_VSCROLL || msg == WM_SETFOCUS ||
        msg == WM_KILLFOCUS || msg == WM_LBUTTONDOWN || msg == WM_LBUTTONUP ||
        msg == WM_LBUTTONDBLCLK || (msg == WM_MOUSEMOVE && (wp & MK_LBUTTON)) ||
-       msg == WM_IME_COMPOSITION || msg == WM_IME_ENDCOMPOSITION)) {
+       msg == WM_IME_STARTCOMPOSITION || msg == WM_IME_COMPOSITION ||
+       msg == WM_IME_ENDCOMPOSITION)) {
     RedrawWindow(hwnd, nullptr, nullptr,
                  RDW_INVALIDATE | RDW_NOERASE | RDW_UPDATENOW);
   }
@@ -1505,8 +1536,10 @@ void OrderControl(Surface *s, HWND hwnd) {
     s->focus_order.push_back(hwnd);
 }
 ControlContext CurrentControls(Surface *s) {
-  return s->control_contexts.empty() ? ControlContext{s->host, 0, 0, 0, 0}
-                                     : s->control_contexts.back();
+  if (!s->control_contexts.empty()) return s->control_contexts.back();
+  double ox = 0.0, oy = 0.0;
+  EffectiveOffset(s, ox, oy);
+  return ControlContext{s->host, -ox, -oy, 0, 0};
 }
 int ControlPixel(double value, double scale) {
   return int(std::floor(value * scale + 0.5 + 1e-8));
@@ -1745,6 +1778,10 @@ bool ScrollBackdrop(Surface *s, const ScrollDrawing &scroll, RectF copy_area) {
   return flat;
 }
 ScrollCopy PrepareScrollCopy(Surface *s) {
+  double ox = 0.0, oy = 0.0;
+  EffectiveOffset(s, ox, oy);
+  if (ox != 0.0 || oy != 0.0)
+    return {};
   RECT client = SurfaceClientRect(s);
   const auto dpi = GetDpiForWindow(s->host);
   if (!s->buffer || s->buffer_dpi != dpi ||
@@ -1819,15 +1856,17 @@ RECT ChangedScope(Surface *s, RECT client) {
   };
   std::vector<Scope> scopes{{client, false}};
   const double scale = GetDpiForWindow(s->host) / 96.;
+  double ox = 0.0, oy = 0.0;
+  EffectiveOffset(s, ox, oy);
   for (size_t i = 0; i < prefix; ++i) {
     const auto &c = a[i];
     if (SavesGraphics(c.kind)) {
       auto next = scopes.back();
       if ((c.kind == 2 || c.kind == 5) && !next.transformed) {
         const auto r = InkBounds(c);
-        RECT clip{LONG(std::floor(r.X * scale)), LONG(std::floor(r.Y * scale)),
-                  LONG(std::ceil(r.GetRight() * scale)),
-                  LONG(std::ceil(r.GetBottom() * scale))};
+        RECT clip{LONG(std::floor((r.X + ox) * scale)), LONG(std::floor((r.Y + oy) * scale)),
+                  LONG(std::ceil((r.GetRight() + ox) * scale)),
+                  LONG(std::ceil((r.GetBottom() + oy) * scale))};
         IntersectRect(&next.clip, &next.clip, &clip);
       }
       next.transformed |= c.kind == 6 || c.kind == 9;
@@ -1852,12 +1891,14 @@ RECT ChangedScope(Surface *s, RECT client) {
 }
 RECT Damage(Surface *s) {
   RECT client = SurfaceClientRect(s);
-  if (!s->buffer)
+  if (!s->buffer || s->offset_changed_since_paint)
     return client;
   if (s->commands.size() != s->pending.size())
     return ChangedScope(s, client);
   RECT damage{};
   const double scale = GetDpiForWindow(s->host) / 96.;
+  double ox = 0.0, oy = 0.0;
+  EffectiveOffset(s, ox, oy);
   std::vector<bool> transforms;
   int transformed = 0;
   for (size_t i = 0; i < s->commands.size(); ++i) {
@@ -1872,10 +1913,10 @@ RECT Damage(Surface *s) {
           auto r = InkBounds(*c);
           // Include antialiasing and text overhang at the edge of a node.
           r.Inflate(2 + c->stroke_width, 2 + c->stroke_width);
-          RECT pixels{LONG(std::floor(r.X * scale)),
-                      LONG(std::floor(r.Y * scale)),
-                      LONG(std::ceil(r.GetRight() * scale)),
-                      LONG(std::ceil(r.GetBottom() * scale))};
+          RECT pixels{LONG(std::floor((r.X + ox) * scale)),
+                      LONG(std::floor((r.Y + oy) * scale)),
+                      LONG(std::ceil((r.GetRight() + ox) * scale)),
+                      LONG(std::ceil((r.GetBottom() + oy) * scale))};
           UnionRect(&damage, &damage, &pixels);
         }
       }
@@ -1896,6 +1937,15 @@ void CommitPendingResizeImpl(Surface *s, bool from_pos_changed) {
   if (!s || !s->host || !IsWindow(s->host) || !s->defer_commit) return;
   const LONG target_w = s->pending_width;
   const LONG target_h = s->pending_height;
+  if (s->has_pending_offset) {
+    if (std::abs(s->origin_offset_x - s->pending_offset_x) > 1e-6 ||
+        std::abs(s->origin_offset_y - s->pending_offset_y) > 1e-6) {
+      s->offset_changed_since_paint = true;
+    }
+    s->origin_offset_x = s->pending_offset_x;
+    s->origin_offset_y = s->pending_offset_y;
+    s->has_pending_offset = false;
+  }
   s->defer_commit = false;
   s->commit_on_pos_change = false;
   s->pending_width = 0;
@@ -2153,6 +2203,40 @@ void sui_surface_flush_edits(void *handle) {
     }
   }
 }
+void sui_surface_set_content_offset(void *handle, double ox, double oy) {
+  auto *s = static_cast<Surface *>(handle);
+  if (!s) return;
+  s->has_pending_offset = false;
+  if (std::abs(s->origin_offset_x - ox) < 1e-6 &&
+      std::abs(s->origin_offset_y - oy) < 1e-6) {
+    return;
+  }
+  s->origin_offset_x = ox;
+  s->origin_offset_y = oy;
+  s->offset_changed_since_paint = true;
+  s->buffer_dirty = true;
+  s->scroll_copy = {};
+  RECT client = SurfaceClientRect(s);
+  UnionRect(&s->damage, &s->damage, &client);
+}
+void sui_surface_set_pending_offset(void *handle, double ox, double oy) {
+  auto *s = static_cast<Surface *>(handle);
+  if (!s) return;
+  if (std::abs(s->origin_offset_x - ox) > 1e-6 ||
+      std::abs(s->origin_offset_y - oy) > 1e-6 ||
+      (s->has_pending_offset &&
+       (std::abs(s->pending_offset_x - ox) > 1e-6 ||
+        std::abs(s->pending_offset_y - oy) > 1e-6))) {
+    s->offset_changed_since_paint = true;
+    s->buffer_dirty = true;
+    s->scroll_copy = {};
+    RECT client = SurfaceClientRect(s);
+    UnionRect(&s->damage, &s->damage, &client);
+  }
+  s->pending_offset_x = ox;
+  s->pending_offset_y = oy;
+  s->has_pending_offset = true;
+}
 void sui_surface_custom_view(void *handle, void *view_hwnd,
                              uint64_t native_view) {
   auto *s = static_cast<Surface *>(handle);
@@ -2298,7 +2382,8 @@ void sui_surface_pointer(void *handle, int event, double x, double y,
                          int value) {
   auto *s = static_cast<Surface *>(handle);
   double scale = GetDpiForWindow(s->host) / 96.;
-  POINT point = {LONG(std::round(x * scale)), LONG(std::round(y * scale))};
+  POINT point = {LONG(std::round((x + s->origin_offset_x) * scale)),
+                 LONG(std::round((y + s->origin_offset_y) * scale))};
   UINT msg = event == 2   ? WM_LBUTTONDOWN
              : event == 3 ? WM_LBUTTONUP
              : event == 5 ? WM_MOUSEWHEEL
@@ -2333,8 +2418,8 @@ int sui_surface_cursor(void *handle, double *x, double *y) {
     return 0;
   const UINT dpi = GetDpiForWindow(s->host);
   const double scale = (dpi ? dpi : 96) / 96.;
-  *x = local.x / scale;
-  *y = local.y / scale;
+  *x = local.x / scale - s->origin_offset_x;
+  *y = local.y / scale - s->origin_offset_y;
   return 1;
 }
 void sui_surface_begin(void *handle) {
@@ -2568,15 +2653,16 @@ void sui_surface_end(void *h) {
         break;
       }
     }
+    const RECT frame_damage = s->damage;
     RedrawWindow(
-        s->host, &s->damage, nullptr,
+        s->host, &frame_damage, nullptr,
         RDW_INVALIDATE | RDW_NOCHILDREN | (any_pending_edit ? RDW_UPDATENOW : 0));
     for (auto &entry : s->edits) {
       const bool was_pending = entry.second.pending_text_paint;
       RECT r;
       GetWindowRect(entry.first, &r);
       MapWindowPoints(nullptr, s->host, reinterpret_cast<POINT *>(&r), 2);
-      if (was_pending || IntersectRect(&r, &r, &s->damage)) {
+      if (was_pending || IntersectRect(&r, &r, &frame_damage)) {
         entry.second.pending_text_paint = false;
         if (entry.second.transparent_bg) {
           RedrawWindow(
@@ -2714,10 +2800,12 @@ void sui_controls_push(void *handle, int64_t id, double x, double y,
   auto damage = s->damage;
   sui_control_frame(s, group.window, x, y, width, height);
   if (!EqualRect(&damage, &s->damage)) {
-    RECT viewport{int(std::floor(clip_x * scale)),
-                  int(std::floor(clip_y * scale)),
-                  int(std::ceil((clip_x + clip_width) * scale)),
-                  int(std::ceil((clip_y + clip_height) * scale))};
+    double ox = 0.0, oy = 0.0;
+    EffectiveOffset(s, ox, oy);
+    RECT viewport{int(std::floor((clip_x + ox) * scale)),
+                  int(std::floor((clip_y + oy) * scale)),
+                  int(std::ceil((clip_x + ox + clip_width) * scale)),
+                  int(std::ceil((clip_y + oy + clip_height) * scale))};
     UnionRect(&s->damage, &damage, &viewport);
   }
   const auto content = ChildControls(s, group.window, x, y, scale);

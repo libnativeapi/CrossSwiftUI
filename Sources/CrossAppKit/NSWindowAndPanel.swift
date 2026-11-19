@@ -321,6 +321,11 @@ open class NSWindow: NSResponder {
   private var hasPendingNativeBounds = false
   private var isCommittingNativeBounds = false
   private var pendingContentSize: NSSize = .zero
+  #if os(Windows)
+    private static let transparentEnvelopeBleed: Double = 6.0
+    private var nativeEnvelopeTopLeft: (x: Double, y: Double, width: Double, height: Double)?
+    public private(set) var nativeContentOffset: NSPoint = .zero
+  #endif
   public private(set) var isVisible: Bool = false
   public internal(set) var isKeyWindow: Bool = false
   public internal(set) var isMainWindow: Bool = false
@@ -359,6 +364,11 @@ open class NSWindow: NSResponder {
       if hasPendingNativeBounds {
         return storedFrame
       }
+      #if os(Windows)
+        if nativeEnvelopeTopLeft != nil {
+          return storedFrame
+        }
+      #endif
       #if !os(macOS)
         if let nw = nativeWindow {
           let b = nw.bounds
@@ -380,6 +390,14 @@ open class NSWindow: NSResponder {
     if hasPendingNativeBounds && pendingContentSize.width > 0 && pendingContentSize.height > 0 {
       return NSRect(origin: .zero, size: pendingContentSize)
     }
+    #if os(Windows)
+      if nativeEnvelopeTopLeft != nil {
+        let scale = CGFloat(snappedWindowScale())
+        let w = max(1.0, (storedFrame.size.width * scale).rounded(.toNearestOrAwayFromZero)) / scale
+        let h = max(1.0, (storedFrame.size.height * scale).rounded(.toNearestOrAwayFromZero)) / scale
+        return NSRect(origin: .zero, size: NSSize(width: w, height: h))
+      }
+    #endif
     #if !os(macOS)
       if let nw = nativeWindow {
         let cs = nw.contentSize
@@ -531,19 +549,42 @@ open class NSWindow: NSResponder {
         if isKeyWindow { resignKey() }
       case .moved(_, let newPos):
         let currentSize = storedFrame.size
-        storedFrame = CrossAppKitCoordinates.rectFromNativeTopLeft(
-          x: newPos.x, y: newPos.y, width: Double(currentSize.width), height: Double(currentSize.height)
-        )
+        #if os(Windows)
+          if let env = nativeEnvelopeTopLeft {
+            nativeEnvelopeTopLeft = (newPos.x, newPos.y, env.width, env.height)
+            storedFrame = CrossAppKitCoordinates.rectFromNativeTopLeft(
+              x: newPos.x + Double(nativeContentOffset.x),
+              y: newPos.y + Double(nativeContentOffset.y),
+              width: Double(currentSize.width),
+              height: Double(currentSize.height)
+            )
+          } else {
+            storedFrame = CrossAppKitCoordinates.rectFromNativeTopLeft(
+              x: newPos.x, y: newPos.y, width: Double(currentSize.width), height: Double(currentSize.height)
+            )
+          }
+        #else
+          storedFrame = CrossAppKitCoordinates.rectFromNativeTopLeft(
+            x: newPos.x, y: newPos.y, width: Double(currentSize.width), height: Double(currentSize.height)
+          )
+        #endif
         if !suppressMoveCallbacks {
           let note = Notification(name: Self.didMoveNotification, object: self)
           NotificationCenter.default.post(note)
           delegate?.windowDidMove(note)
         }
       case .resized(_, let newSize):
-        storedFrame.size = NSSize(width: CGFloat(newSize.width), height: CGFloat(newSize.height))
-        if !isCommittingNativeBounds {
-          let cs = contentLayoutRect.size
-          contentView?.frame = NSRect(origin: .zero, size: cs)
+        #if os(Windows)
+          let usesEnv = nativeEnvelopeTopLeft != nil
+        #else
+          let usesEnv = false
+        #endif
+        if !usesEnv {
+          storedFrame.size = NSSize(width: CGFloat(newSize.width), height: CGFloat(newSize.height))
+          if !isCommittingNativeBounds {
+            let cs = contentLayoutRect.size
+            contentView?.frame = NSRect(origin: .zero, size: cs)
+          }
         }
         let note = Notification(name: Self.didResizeNotification, object: self)
         NotificationCenter.default.post(note)
@@ -573,10 +614,171 @@ open class NSWindow: NSResponder {
     }
   #endif
 
+  #if os(Windows)
+    private var usesTransparentNativeEnvelope: Bool {
+      guard !styleMask.contains(.titled) else { return false }
+      let alpha = backgroundColor.resolved(for: effectiveAppearance).a
+      return !isOpaque || alpha < 0.05
+    }
+
+    private func snappedWindowScale() -> Double {
+      let center = NSPoint(x: storedFrame.midX, y: storedFrame.midY)
+      let scr = NSScreen.screens.first { $0.frame.contains(center) } ?? NSScreen.main
+      return Double(max(1.0, scr?.backingScaleFactor ?? 1.0))
+    }
+
+    private func computeTransparentEnvelope(
+      for frameRect: NSRect,
+      pureMove: Bool
+    ) -> (env: NativeAPI.Rectangle, contentSize: NSSize, offset: NSPoint) {
+      let scale = snappedWindowScale()
+      let top = CrossAppKitCoordinates.rectToNativeTopLeft(frameRect)
+      let bleed = Self.transparentEnvelopeBleed
+      let snappedW = max(1.0, (top.width * scale).rounded(.toNearestOrAwayFromZero)) / scale
+      let snappedH = max(1.0, (top.height * scale).rounded(.toNearestOrAwayFromZero)) / scale
+      let contentSize = NSSize(width: snappedW, height: snappedH)
+
+      if pureMove, let cur = nativeEnvelopeTopLeft {
+        let offX = Double(nativeContentOffset.x)
+        let offY = Double(nativeContentOffset.y)
+        let envX = ((top.x - offX) * scale).rounded(.toNearestOrAwayFromZero) / scale
+        let envY = ((top.y - offY) * scale).rounded(.toNearestOrAwayFromZero) / scale
+        let exactOffX = max(0.0, top.x - envX)
+        let exactOffY = max(0.0, top.y - envY)
+        return (
+          NativeAPI.Rectangle(x: envX, y: envY, width: cur.width, height: cur.height),
+          contentSize,
+          NSPoint(x: exactOffX, y: exactOffY)
+        )
+      }
+
+      if isVisible, let cur = nativeEnvelopeTopLeft {
+        let candOffX = top.x - cur.x
+        let candOffY = top.y - cur.y
+        if candOffX >= 0.0 && candOffX <= bleed * 3.5
+          && candOffY >= 0.0 && candOffY <= bleed * 3.5
+        {
+          let neededW = ((candOffX + snappedW + bleed) * scale).rounded(.toNearestOrAwayFromZero) / scale
+          let envW = max(cur.width, neededW)
+          let envH = max(1.0, ((candOffY + snappedH + bleed) * scale).rounded(.toNearestOrAwayFromZero) / scale)
+          return (
+            NativeAPI.Rectangle(x: cur.x, y: cur.y, width: envW, height: envH),
+            contentSize,
+            NSPoint(x: candOffX, y: candOffY)
+          )
+        }
+      }
+
+      let envX = ((top.x - bleed) * scale).rounded(.toNearestOrAwayFromZero) / scale
+      let envY = ((top.y - bleed) * scale).rounded(.toNearestOrAwayFromZero) / scale
+      let offX = max(0.0, top.x - envX)
+      let offY = max(0.0, top.y - envY)
+      let envW = max(1.0, ((offX + snappedW + bleed) * scale).rounded(.toNearestOrAwayFromZero) / scale)
+      let envH = max(1.0, ((offY + snappedH + bleed) * scale).rounded(.toNearestOrAwayFromZero) / scale)
+      return (
+        NativeAPI.Rectangle(x: envX, y: envY, width: envW, height: envH),
+        contentSize,
+        NSPoint(x: offX, y: offY)
+      )
+    }
+
+    private func ensureTransparentEnvelopeBeforeShow() {
+      guard usesTransparentNativeEnvelope, nativeEnvelopeTopLeft == nil, let nw = nativeWindow else {
+        return
+      }
+      let prevSuppress = suppressMoveCallbacks
+      let prevCommitting = isCommittingNativeBounds
+      suppressMoveCallbacks = true
+      isCommittingNativeBounds = true
+      defer {
+        suppressMoveCallbacks = prevSuppress
+        isCommittingNativeBounds = prevCommitting
+      }
+      let calc = computeTransparentEnvelope(for: storedFrame, pureMove: false)
+      nativeEnvelopeTopLeft = (calc.env.x, calc.env.y, calc.env.width, calc.env.height)
+      nativeContentOffset = calc.offset
+      contentView?.applySurfaceContentOffset(x: Double(calc.offset.x), y: Double(calc.offset.y))
+      nw.setBounds(calc.env)
+      contentView?.frame = NSRect(origin: .zero, size: calc.contentSize)
+    }
+  #endif
+
   open func setFrame(_ frameRect: NSRect, display flag: Bool, animate animateFlag: Bool = false) {
     let previousFrame = storedFrame
     storedFrame = frameRect
     #if os(Windows)
+      if usesTransparentNativeEnvelope, let nw = nativeWindow {
+        if hasPendingNativeBounds,
+          abs(frameRect.origin.x - previousFrame.origin.x) < 1e-4,
+          abs(frameRect.origin.y - previousFrame.origin.y) < 1e-4,
+          abs(frameRect.width - previousFrame.width) < 1e-4,
+          abs(frameRect.height - previousFrame.height) < 1e-4
+        {
+          return
+        }
+        let movedOrigin =
+          abs(frameRect.origin.x - previousFrame.origin.x) > 1e-4
+          || abs(frameRect.origin.y - previousFrame.origin.y) > 1e-4
+        let sameSize =
+          abs(frameRect.width - previousFrame.width) < 0.01
+          && abs(frameRect.height - previousFrame.height) < 0.01
+        let pureMove =
+          !hasPendingNativeBounds
+          && nativeEnvelopeTopLeft != nil
+          && (!flag || (sameSize && movedOrigin))
+        let calc = computeTransparentEnvelope(for: frameRect, pureMove: pureMove)
+        if flag && isVisible && !animateFlag, let cv = contentView {
+          hasPendingNativeBounds = true
+          pendingContentSize = calc.contentSize
+          let commitBounds = { [weak self] in
+            guard let self else { return }
+            self.hasPendingNativeBounds = false
+            self.nativeEnvelopeTopLeft = (calc.env.x, calc.env.y, calc.env.width, calc.env.height)
+            self.nativeContentOffset = calc.offset
+            let prevSuppress = self.suppressMoveCallbacks
+            let prevCommitting = self.isCommittingNativeBounds
+            self.suppressMoveCallbacks = true
+            self.isCommittingNativeBounds = true
+            defer {
+              self.suppressMoveCallbacks = prevSuppress
+              self.isCommittingNativeBounds = prevCommitting
+            }
+            nw.setBounds(calc.env)
+            self.contentView?.frame = NSRect(origin: .zero, size: calc.contentSize)
+          }
+          if cv.applyWindowFrameChange(
+            contentSize: calc.contentSize,
+            envelopeSize: NSSize(width: calc.env.width, height: calc.env.height),
+            contentOffset: calc.offset,
+            display: flag,
+            commitNativeBounds: commitBounds
+          ) {
+            return
+          }
+          hasPendingNativeBounds = false
+        }
+        let prevSuppress = suppressMoveCallbacks
+        let prevCommitting = isCommittingNativeBounds
+        suppressMoveCallbacks = true
+        isCommittingNativeBounds = true
+        defer {
+          suppressMoveCallbacks = prevSuppress
+          isCommittingNativeBounds = prevCommitting
+        }
+        nativeEnvelopeTopLeft = (calc.env.x, calc.env.y, calc.env.width, calc.env.height)
+        nativeContentOffset = calc.offset
+        contentView?.applySurfaceContentOffset(x: Double(calc.offset.x), y: Double(calc.offset.y))
+        if !animateFlag || !nw.animateBounds(calc.env) {
+          nw.setBounds(calc.env)
+        }
+        contentView?.frame = NSRect(origin: .zero, size: calc.contentSize)
+        if flag && isVisible {
+          contentView?.layoutSubtreeIfNeeded()
+        }
+        return
+      }
+      nativeEnvelopeTopLeft = nil
+      nativeContentOffset = .zero
       if flag && isVisible && !animateFlag, let nw = nativeWindow, let cv = contentView {
         let top = CrossAppKitCoordinates.rectToNativeTopLeft(frameRect)
         let r = NativeAPI.Rectangle(x: top.x, y: top.y, width: max(1, top.width), height: max(1, top.height))
@@ -645,6 +847,15 @@ open class NSWindow: NSResponder {
   }
 
   open func setContentSize(_ size: NSSize) {
+    #if os(Windows)
+      if usesTransparentNativeEnvelope {
+        var f = storedFrame
+        f.origin.y -= (size.height - f.size.height)
+        f.size = size
+        setFrame(f, display: isVisible)
+        return
+      }
+    #endif
     storedFrame.size = size
     #if !os(macOS)
       nativeWindow?.setContentSize(NativeAPI.Size(width: Double(max(1, size.width)), height: Double(max(1, size.height))))
@@ -667,6 +878,9 @@ open class NSWindow: NSResponder {
   }
 
   open func makeKeyAndOrderFront(_ sender: Any?) {
+    #if os(Windows)
+      ensureTransparentEnvelopeBeforeShow()
+    #endif
     isVisible = true
     #if !os(macOS)
       if canBecomeKey {
@@ -697,6 +911,9 @@ open class NSWindow: NSResponder {
   }
 
   open func orderFront(_ sender: Any?) {
+    #if os(Windows)
+      ensureTransparentEnvelopeBeforeShow()
+    #endif
     isVisible = true
     #if !os(macOS)
       #if os(Windows)
@@ -714,6 +931,9 @@ open class NSWindow: NSResponder {
   }
 
   open func orderFrontRegardless() {
+    #if os(Windows)
+      ensureTransparentEnvelopeBeforeShow()
+    #endif
     isVisible = true
     #if !os(macOS)
       #if os(Windows)
@@ -731,6 +951,10 @@ open class NSWindow: NSResponder {
 
   open func orderOut(_ sender: Any?) {
     isVisible = false
+    #if os(Windows)
+      nativeEnvelopeTopLeft = nil
+      nativeContentOffset = .zero
+    #endif
     if isKeyWindow { resignKey() }
     #if !os(macOS)
       nativeWindow?.hide()

@@ -1237,41 +1237,49 @@ private struct MaskView<Content: View, Mask: View>: View, _PrimitiveView {
     guard node.props.visible, effOpacity > 0.01 else { return }
     let sx = node.props.scaleX
     let sy = node.props.scaleY
-    let w = node.frame.width * sx
-    let h = node.frame.height * sy
-    let x = node.frame.minX + (node.frame.width - w) / 2
-    let y = node.frame.minY + (node.frame.height - h) / 2
-    let r = CGRect(x: x, y: y, width: w, height: h)
+    let ox = node.props.offsetX
+    let oy = node.props.offsetY
+    let hasTransform = sx != 1.0 || sy != 1.0 || ox != 0.0 || oy != 0.0
 
-    if w > 0.01 && h > 0.01 {
+    var local = Path()
+    let r = CGRect(x: node.frame.minX, y: node.frame.minY, width: node.frame.width, height: node.frame.height)
+    if r.width > 0.01 && r.height > 0.01 {
       if node.kind == .gradient {
         if let clip = node.clipPathBuilder {
-          out.addPath(clip(CGRect(origin: .zero, size: r.size)).transformed(x: r.minX, y: r.minY))
+          local.addPath(clip(CGRect(origin: .zero, size: r.size)).transformed(x: r.minX, y: r.minY))
         } else {
-          out.addRect(r)
+          local.addRect(r)
         }
       } else if let pb = node.pathBuilder {
         let bw = node.props.borderWidth
         if bw > 0 && (node.props.background?.opacity ?? 0) <= 0.001 {
-          out.addPath(pb(r.insetBy(dx: -bw / 2, dy: -bw / 2)))
+          local.addPath(pb(r.insetBy(dx: -bw / 2, dy: -bw / 2)))
           let inner = r.insetBy(dx: bw / 2, dy: bw / 2)
           if inner.width > 0.1 && inner.height > 0.1 {
-            out.addPath(pb(inner).reversed())
+            local.addPath(pb(inner).reversed())
           }
         } else {
-          out.addPath(pb(r))
+          local.addPath(pb(r))
         }
       } else if node.kind == .path {
-        out.addPath(node.props.path.transformed(x: r.minX, y: r.minY, sx: sx, sy: sy))
+        local.addPath(node.props.path.transformed(x: r.minX, y: r.minY))
       } else if node.kind == .shape {
-        out.addPath(Path(roundedRect: r, cornerRadius: node.props.cornerRadius))
+        local.addPath(Path(roundedRect: r, cornerRadius: node.props.cornerRadius))
       } else if (node.props.background?.opacity ?? 0) > 0.01 {
-        out.addPath(Path(roundedRect: r, cornerRadius: node.props.cornerRadius))
+        local.addPath(Path(roundedRect: r, cornerRadius: node.props.cornerRadius))
       }
     }
 
     for child in node.children {
-      collectMaskPaths(child, parentOpacity: effOpacity, into: &out)
+      collectMaskPaths(child, parentOpacity: effOpacity, into: &local)
+    }
+
+    if hasTransform {
+      let cx = node.frame.minX + node.frame.width * 0.5
+      let cy = node.frame.minY + node.frame.height * 0.5
+      out.addPath(local.transformed(x: cx - cx * sx + ox, y: cy - cy * sy + oy, sx: sx, sy: sy))
+    } else {
+      out.addPath(local)
     }
   }
 

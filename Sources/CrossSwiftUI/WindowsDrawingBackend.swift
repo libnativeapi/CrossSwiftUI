@@ -99,6 +99,7 @@
     private var motions: [NodeID: Motion] = [:]
     private var previous: [NodeID: AnimatedValues] = [:]
     public var onResize: ((SwiftUIRuntime.Size) -> Void)?
+    public var onTextSelectionOrCompositionChanged: (() -> Void)?
     public private(set) var lastTimings: [String: Double] = [:]
     public private(set) var publicationCount = 0
     public private(set) var fullPublicationCount = 0
@@ -150,6 +151,12 @@
           if event == 1 { backend.nativeHoverEnterCount += 1 }
           if backend.schedulesUpdates && (event == 1 || event == 2) {
             backend.queuePointer()
+            return
+          }
+          if event == 7 {
+            backend.enqueue { [weak backend] in
+              backend?.onTextSelectionOrCompositionChanged?()
+            }
             return
           }
           let interaction: Renderer.Interaction
@@ -294,6 +301,16 @@
     public func flushPendingEdits() {
       guard let surface else { return }
       sui_surface_flush_edits(surface)
+    }
+
+    public func setContentOffset(x: Double, y: Double) {
+      guard let surface else { return }
+      sui_surface_set_content_offset(surface, x, y)
+    }
+
+    public func setPendingContentOffset(x: Double, y: Double) {
+      guard let surface else { return }
+      sui_surface_set_pending_offset(surface, x, y)
     }
 
     private struct TextMeasurementKey: Hashable {

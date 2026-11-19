@@ -811,7 +811,13 @@ static LRESULT CALLBACK FramelessSubclassProc(
   switch (msg) {
     case WM_WINDOWPOSCHANGING: {
       if (lp) {
-        reinterpret_cast<WINDOWPOS *>(lp)->flags |= SWP_NOCOPYBITS;
+        auto *pos = reinterpret_cast<WINDOWPOS *>(lp);
+        if (!(pos->flags & SWP_NOMOVE)) {
+          RECT cur{};
+          if (GetWindowRect(hwnd, &cur) && (pos->x != cur.left || pos->y != cur.top)) {
+            pos->flags |= SWP_NOCOPYBITS;
+          }
+        }
       }
       break;
     }

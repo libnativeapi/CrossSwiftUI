@@ -292,14 +292,23 @@ open class NSView: NSResponder {
     layout()
     for sub in subviews { sub.layoutSubtreeIfNeeded() }
   }
+  open func applySurfaceContentOffset(x: Double, y: Double) {
+    if subviews.count == 1 {
+      subviews[0].applySurfaceContentOffset(x: x, y: y)
+    }
+  }
   open func applyWindowFrameChange(
     contentSize: NSSize,
+    envelopeSize: NSSize? = nil,
+    contentOffset: NSPoint = .zero,
     display: Bool,
     commitNativeBounds: @escaping () -> Void
   ) -> Bool {
     if subviews.count == 1 {
       return subviews[0].applyWindowFrameChange(
         contentSize: contentSize,
+        envelopeSize: envelopeSize,
+        contentOffset: contentOffset,
         display: display,
         commitNativeBounds: commitNativeBounds
       )

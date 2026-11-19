@@ -288,6 +288,8 @@ open class NSHostingView<Content: SwiftUIRuntime.View>: NSView {
     private var isApplyingWindowResize = false
     private var isCommittingPendingWindowBounds = false
     private var pendingWindowBoundsCommit: (() -> Void)?
+    private var surfaceContentOffset: NSPoint = .zero
+    private var usesEnvelopeSizing = false
   #elseif os(Linux)
     private var backend: LinuxDrawingBackend?
   #else
@@ -358,8 +360,20 @@ open class NSHostingView<Content: SwiftUIRuntime.View>: NSView {
     #endif
   }
 
+  open override func applySurfaceContentOffset(x: Double, y: Double) {
+    #if os(Windows)
+      surfaceContentOffset = NSPoint(x: x, y: y)
+      if x != 0 || y != 0 {
+        usesEnvelopeSizing = true
+      }
+      backend?.setContentOffset(x: x, y: y)
+    #endif
+  }
+
   open override func applyWindowFrameChange(
     contentSize: NSSize,
+    envelopeSize: NSSize? = nil,
+    contentOffset: NSPoint = .zero,
     display: Bool,
     commitNativeBounds: @escaping () -> Void
   ) -> Bool {
@@ -367,13 +381,27 @@ open class NSHostingView<Content: SwiftUIRuntime.View>: NSView {
       guard let renderer, let backend, ownedNativeView != nil else { return false }
       let w = Double(max(1, contentSize.width))
       let h = Double(max(1, contentSize.height))
+      let envSize = envelopeSize ?? contentSize
+      let surfW = Double(max(1, envSize.width))
+      let surfH = Double(max(1, envSize.height))
+      let hasEnv = envelopeSize != nil
+      if hasEnv {
+        usesEnvelopeSizing = true
+      }
+      let offsetChanged =
+        abs(Double(surfaceContentOffset.x) - Double(contentOffset.x)) > 1e-4
+        || abs(Double(surfaceContentOffset.y) - Double(contentOffset.y)) > 1e-4
+      surfaceContentOffset = contentOffset
       let sizeChanged =
-        abs(Double(frame.width) - w) > 0.5 || abs(Double(frame.height) - h) > 0.5
+        abs(Double(frame.width) - w) > 0.5 || abs(Double(frame.height) - h) > 0.5 || offsetChanged
 
       if renderer.isRendering || isApplyingWindowResize {
         pendingWindowBoundsCommit = commitNativeBounds
         if sizeChanged || pendingWindowBoundsCommit != nil {
-          backend.beginPendingResize(width: w, height: h)
+          backend.beginPendingResize(width: surfW, height: surfH)
+          if hasEnv || offsetChanged {
+            backend.setPendingContentOffset(x: Double(contentOffset.x), y: Double(contentOffset.y))
+          }
         }
         if superview === window?.contentView, superview !== self {
           superview?.frame = NSRect(origin: .zero, size: contentSize)
@@ -396,7 +424,10 @@ open class NSHostingView<Content: SwiftUIRuntime.View>: NSView {
       defer { isApplyingWindowResize = false }
       pendingWindowBoundsCommit = commitNativeBounds
 
-      backend.beginPendingResize(width: w, height: h)
+      backend.beginPendingResize(width: surfW, height: surfH)
+      if hasEnv || offsetChanged {
+        backend.setPendingContentOffset(x: Double(contentOffset.x), y: Double(contentOffset.y))
+      }
       if superview === window?.contentView, superview !== self {
         superview?.frame = NSRect(origin: .zero, size: contentSize)
       }
@@ -479,7 +510,21 @@ open class NSHostingView<Content: SwiftUIRuntime.View>: NSView {
         return
       }
       self.backend = createdBackend
+      let initOffset = win.nativeContentOffset
+      if initOffset.x != 0 || initOffset.y != 0 {
+        surfaceContentOffset = initOffset
+        usesEnvelopeSizing = true
+        createdBackend.setContentOffset(x: Double(initOffset.x), y: Double(initOffset.y))
+      }
       syncAppearanceAndBackground()
+
+      createdBackend.onTextSelectionOrCompositionChanged = { [weak self] in
+        guard let responder = self?.window?.firstResponder else { return }
+        NotificationCenter.default.post(
+          name: NSTextView.didChangeSelectionNotification,
+          object: responder
+        )
+      }
 
       createdBackend.onPreInput = { [weak self] event, point, value, modifiers in
         guard let self, let nsWin = self.window else { return false }
@@ -513,6 +558,9 @@ open class NSHostingView<Content: SwiftUIRuntime.View>: NSView {
       }
       createdBackend.onResize = { [weak self, weak createdRenderer] newSize in
         guard let self, let createdRenderer else { return }
+        if self.usesEnvelopeSizing {
+          return
+        }
         if self.isCommittingPendingWindowBounds || self.isApplyingWindowResize || self.pendingWindowBoundsCommit != nil {
           if abs(Double(self.frame.width) - newSize.width) < 1.0
             && abs(Double(self.frame.height) - newSize.height) < 1.0
