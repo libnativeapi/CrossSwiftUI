@@ -330,9 +330,11 @@ open class NSTextParagraph: NSTextElement {
 
 open class NSTextLineFragment: NSObject {
   public var typographicBounds: CGRect = CGRect(x: 0, y: 0, width: 100, height: 18)
+  public var glyphOrigin: CGPoint = CGPoint(x: 0, y: 14)
 }
 
 open class NSTextLayoutFragment: NSObject {
+  public weak var textLayoutManager: NSTextLayoutManager?
   public let textElement: NSTextElement?
   public let rangeInElement: NSTextRange
   public var layoutFragmentFrame: CGRect = CGRect(x: 0, y: 0, width: 100, height: 20)

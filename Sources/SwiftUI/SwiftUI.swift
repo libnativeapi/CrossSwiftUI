@@ -12,6 +12,7 @@
   @_exported import CrossSwiftUI
   #if !os(macOS)
     @_exported import CrossAppKit
+    @_exported import CrossFoundation
     @_exported import CoreGraphics
 
     extension SwiftUIRuntime.Path {

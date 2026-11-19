@@ -18,7 +18,7 @@
 /// `SwiftUI` and `CrossSwiftUI` modules are not built.
 
 import Foundation
-#if canImport(Darwin) && canImport(CoreGraphics)
+#if (os(macOS) || os(iOS) || os(tvOS) || os(watchOS) || os(visionOS)) && canImport(CoreGraphics)
   import CoreGraphics
 #endif
 

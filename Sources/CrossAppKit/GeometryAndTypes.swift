@@ -169,7 +169,7 @@ public enum CrossAppKitCoordinates {
     }
   }
 
-  public final class NSKeyValueObservation: NSObject {
+  public final class NSKeyValueObservation: NSObject, @unchecked Sendable {
     private var cancelBlock: (() -> Void)?
     public init(_ cancel: @escaping () -> Void = {}) {
       self.cancelBlock = cancel
@@ -179,6 +179,36 @@ public enum CrossAppKitCoordinates {
       cancelBlock = nil
     }
     deinit { invalidate() }
+  }
+
+  public struct NSKeyValueObservingOptions: OptionSet, Sendable {
+    public let rawValue: UInt
+    public init(rawValue: UInt) { self.rawValue = rawValue }
+    public static let new = NSKeyValueObservingOptions(rawValue: 1 << 0)
+    public static let old = NSKeyValueObservingOptions(rawValue: 1 << 1)
+    public static let initial = NSKeyValueObservingOptions(rawValue: 1 << 2)
+    public static let prior = NSKeyValueObservingOptions(rawValue: 1 << 3)
+  }
+
+  public struct NSKeyValueObservedChange<Value>: @unchecked Sendable {
+    public let newValue: Value?
+    public let oldValue: Value?
+    public init(newValue: Value? = nil, oldValue: Value? = nil) {
+      self.newValue = newValue
+      self.oldValue = oldValue
+    }
+  }
+
+  open class NSItemProvider: NSObject, @unchecked Sendable {
+    public let url: URL?
+    public init?(contentsOf fileURL: URL!) {
+      self.url = fileURL
+      super.init()
+    }
+    public override init() {
+      self.url = nil
+      super.init()
+    }
   }
 
   public enum NSCompositingOperation: UInt, Sendable {

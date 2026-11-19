@@ -1,4 +1,5 @@
 @_exported import Foundation
+import CoreFoundation
 
 #if !os(macOS)
   public typealias CGDirectDisplayID = UInt32
@@ -9,6 +10,22 @@
     public func equalTo(_ rect2: CGRect) -> Bool {
       self == rect2
     }
+  }
+
+  public enum CGColorRenderingIntent: Int32, Sendable {
+    case defaultIntent = 0
+    case absoluteColorimetric = 1
+    case relativeColorimetric = 2
+    case perceptual = 3
+    case saturation = 4
+  }
+
+  public final class CGColorSpace: @unchecked Sendable {
+    public static let sRGB: NSString = "kCGColorSpaceSRGB"
+    public static let extendedSRGB: NSString = "kCGColorSpaceExtendedSRGB"
+    public static let displayP3: NSString = "kCGColorSpaceDisplayP3"
+    public init?(name: NSString) {}
+    public init?(name: String) {}
   }
 
   public final class CGColor: @unchecked Sendable {
@@ -45,6 +62,14 @@
       CGColor(red: red, green: green, blue: blue, alpha: alpha)
     }
 
+    public func converted(
+      to space: CGColorSpace,
+      intent: CGColorRenderingIntent,
+      options: NSDictionary?
+    ) -> CGColor? {
+      self
+    }
+
     public static let clear = CGColor(red: 0, green: 0, blue: 0, alpha: 0)
     public static let black = CGColor(red: 0, green: 0, blue: 0, alpha: 1)
     public static let white = CGColor(red: 1, green: 1, blue: 1, alpha: 1)
@@ -54,6 +79,7 @@
     public let width: Int
     public let height: Int
     public let pngData: Data?
+    public var bytesPerRow: Int { width * 4 }
 
     public init(width: Int, height: Int, pngData: Data? = nil) {
       self.width = width
@@ -79,7 +105,54 @@
       self.ty = ty
     }
 
+    public init(scaleX sx: CGFloat, y sy: CGFloat) {
+      self.init(a: sx, b: 0, c: 0, d: sy, tx: 0, ty: 0)
+    }
+
+    public init(translationX tx: CGFloat, y ty: CGFloat) {
+      self.init(a: 1, b: 0, c: 0, d: 1, tx: tx, ty: ty)
+    }
+
+    public init(rotationAngle angle: CGFloat) {
+      let c = Foundation.cos(Double(angle))
+      let s = Foundation.sin(Double(angle))
+      self.init(a: c, b: s, c: -s, d: c, tx: 0, ty: 0)
+    }
+
     public static let identity = CGAffineTransform(a: 1, b: 0, c: 0, d: 1, tx: 0, ty: 0)
+  }
+
+  public enum CGLineCap: Int32, Sendable {
+    case butt = 0
+    case round = 1
+    case square = 2
+  }
+
+  public enum CGLineJoin: Int32, Sendable {
+    case miter = 0
+    case round = 1
+    case bevel = 2
+  }
+
+  public enum CGBlendMode: Int32, Sendable {
+    case normal = 0
+    case multiply = 1
+    case screen = 2
+    case overlay = 3
+    case darken = 4
+    case lighten = 5
+    case clear = 16
+    case copy = 17
+    case sourceIn = 18
+    case sourceOut = 19
+    case sourceAtop = 20
+    case destinationOver = 21
+    case destinationIn = 22
+    case destinationOut = 23
+    case destinationAtop = 24
+    case xor = 25
+    case plusDarker = 26
+    case plusLighter = 27
   }
 
   open class CGPath: @unchecked Sendable {
@@ -91,28 +164,37 @@
 
   public final class CGMutablePath: CGPath, @unchecked Sendable {
     public override init() { super.init() }
-    public func move(to point: CGPoint) {}
-    public func addLine(to point: CGPoint) {}
-    public func addRect(_ rect: CGRect) {}
-    public func addRoundedRect(in rect: CGRect, cornerWidth: CGFloat, cornerHeight: CGFloat) {}
+    public func move(to point: CGPoint, transform: CGAffineTransform = .identity) {}
+    public func addLine(to point: CGPoint, transform: CGAffineTransform = .identity) {}
+    public func addArc(tangent1End: CGPoint, tangent2End: CGPoint, radius: CGFloat, transform: CGAffineTransform = .identity) {}
+    public func addRect(_ rect: CGRect, transform: CGAffineTransform = .identity) {}
+    public func addRoundedRect(in rect: CGRect, cornerWidth: CGFloat, cornerHeight: CGFloat, transform: CGAffineTransform = .identity) {}
     public func closeSubpath() {}
   }
 
   public final class CGContext: @unchecked Sendable {
     public var textMatrix: CGAffineTransform = .identity
+    public var textPosition: CGPoint = .zero
     public init() {}
     public func saveGState() {}
     public func restoreGState() {}
     public func setFillColor(_ color: CGColor) {}
     public func setStrokeColor(_ color: CGColor) {}
     public func setLineWidth(_ width: CGFloat) {}
+    public func setLineCap(_ cap: CGLineCap) {}
+    public func setLineJoin(_ join: CGLineJoin) {}
+    public func setBlendMode(_ mode: CGBlendMode) {}
     public func translateBy(x: CGFloat, y: CGFloat) {}
     public func scaleBy(x: CGFloat, y: CGFloat) {}
+    public func move(to point: CGPoint) {}
+    public func addLine(to point: CGPoint) {}
     public func addPath(_ path: Any) {}
     public func fillPath() {}
     public func strokePath() {}
     public func fill(_ rect: CGRect) {}
+    public func fillEllipse(in rect: CGRect) {}
     public func stroke(_ rect: CGRect) {}
+    public func strokeEllipse(in rect: CGRect) {}
   }
 
   public struct CGEventFlags: OptionSet, Hashable, Sendable {
@@ -149,5 +231,190 @@
     case tapDisabledByUserInput = 0xFFFFFFFF
   }
 
+  public enum CGEventSourceStateID: Int32, Sendable {
+    case privateState = -1
+    case combinedSessionState = 0
+    case hidSystemState = 1
+  }
+
+  public final class CGEventSource: @unchecked Sendable {
+    public init?(stateID: CGEventSourceStateID) {}
+    public static func secondsSinceLastEventType(
+      _ stateID: CGEventSourceStateID,
+      eventType: CGEventType
+    ) -> TimeInterval { 0 }
+  }
+
+  public typealias CGEventMask = UInt64
+  public typealias CGEventTapProxy = OpaquePointer
+
+  public enum CGEventTapLocation: UInt32, Sendable {
+    case cghidEventTap = 0
+    case cgSessionEventTap = 1
+    case cgAnnotatedSessionEventTap = 2
+  }
+
+  public enum CGEventTapPlacement: UInt32, Sendable {
+    case headInsertEventTap = 0
+    case tailAppendEventTap = 1
+  }
+
+  public enum CGEventTapOptions: UInt32, Sendable {
+    case defaultTap = 0
+    case listenOnly = 1
+  }
+
+  public struct CGEventField: RawRepresentable, Equatable, Hashable, Sendable {
+    public let rawValue: UInt32
+    public init?(rawValue: UInt32) { self.rawValue = rawValue }
+    public static let keyboardEventAutorepeat = CGEventField(rawValue: 8)!
+    public static let keyboardEventKeycode = CGEventField(rawValue: 9)!
+    public static let keyboardEventKeyboardType = CGEventField(rawValue: 10)!
+    public static let eventSourceUserData = CGEventField(rawValue: 42)!
+  }
+
+  public typealias CGEventTapCallBack = (
+    CGEventTapProxy, CGEventType, CGEvent, UnsafeMutableRawPointer?
+  ) -> Unmanaged<CGEvent>?
+
+  public final class CGEvent: @unchecked Sendable {
+    public var flags: CGEventFlags = []
+    public var type: CGEventType = .null
+    public var timestamp: UInt64 = 0
+    public var data: CFData? { nil }
+    public func __data(allocator: CFAllocator?) -> CFData? { nil }
+
+    public init?(source: CGEventSource?) {}
+    public init?(keyboardEventSource source: CGEventSource?, virtualKey: CGKeyCode, keyDown: Bool) {}
+    public init?(withDataAllocator allocator: CFAllocator?, data: CFData) {}
+
+    public func getIntegerValueField(_ field: CGEventField) -> Int64 { 0 }
+    public func setIntegerValueField(_ field: CGEventField, value: Int64) {}
+    public func setDoubleValueField(_ field: CGEventField, value: Double) {}
+    public func keyboardSetUnicodeString(stringLength: Int, unicodeString: UnsafePointer<UniChar>?) {}
+    public func keyboardGetUnicodeString(
+      maxStringLength: Int,
+      actualStringLength: UnsafeMutablePointer<Int>?,
+      unicodeString: UnsafeMutablePointer<UniChar>?
+    ) {
+      actualStringLength?.pointee = 0
+    }
+    public func post(tap: CGEventTapLocation) {}
+    public func postToPid(_ pid: Int32) {}
+
+    public static func tapCreate(
+      tap: CGEventTapLocation,
+      place: CGEventTapPlacement,
+      options: CGEventTapOptions,
+      eventsOfInterest: CGEventMask,
+      callback: CGEventTapCallBack,
+      userInfo: UnsafeMutableRawPointer?
+    ) -> CFMachPort? {
+      nil
+    }
+
+    public static func tapEnable(tap: CFMachPort, enable: Bool) {}
+    public static func tapIsEnabled(tap: CFMachPort) -> Bool { false }
+  }
+
+  public enum CGError: Int32, Sendable {
+    case success = 0
+    case failure = 1000
+  }
+
+  public struct CGEventTapInformation: Sendable {
+    public var eventTapID: UInt32 = 0
+    public var tapPoint: CGEventTapLocation = .cghidEventTap
+    public var options: CGEventTapOptions = .defaultTap
+    public var eventsOfInterest: CGEventMask = 0
+    public var tappingProcess: Int32 = 0
+    public var processBeingTapped: Int32 = 0
+    public var enabled: Bool = false
+    public var minUsecLatency: Float = 0
+    public var avgUsecLatency: Float = 0
+    public var maxUsecLatency: Float = 0
+    public init() {}
+  }
+
+  public func CGGetEventTapList(
+    _ maxNumberOfTaps: UInt32,
+    _ tapList: UnsafeMutablePointer<CGEventTapInformation>?,
+    _ eventTapCount: UnsafeMutablePointer<UInt32>?
+  ) -> CGError {
+    eventTapCount?.pointee = 0
+    return .success
+  }
+
+  public func CGDisplayCreateUUIDFromDisplayID(_ display: CGDirectDisplayID) -> Unmanaged<CFUUID>? {
+    let hex = String(format: "%08X", display)
+    return Unmanaged.passRetained(CFUUID("00000000-0000-0000-0000-0000\(hex)"))
+  }
+
   public func CGMainDisplayID() -> CGDirectDisplayID { 1 }
+
+  public typealias CGWindowID = UInt32
+  public let kCGNullWindowID: CGWindowID = 0
+
+  public struct CGWindowListOption: OptionSet, Hashable, Sendable {
+    public let rawValue: UInt32
+    public init(rawValue: UInt32) { self.rawValue = rawValue }
+    public static let optionAll = CGWindowListOption([])
+    public static let optionOnScreenOnly = CGWindowListOption(rawValue: 1 << 0)
+    public static let optionOnScreenAboveWindow = CGWindowListOption(rawValue: 1 << 1)
+    public static let optionOnScreenBelowWindow = CGWindowListOption(rawValue: 1 << 2)
+    public static let optionIncludingWindow = CGWindowListOption(rawValue: 1 << 3)
+    public static let excludeDesktopElements = CGWindowListOption(rawValue: 1 << 4)
+  }
+
+  public let kCGWindowNumber: CFString = "kCGWindowNumber" as NSString
+  public let kCGWindowLayer: CFString = "kCGWindowLayer" as NSString
+  public let kCGWindowOwnerPID: CFString = "kCGWindowOwnerPID" as NSString
+  public let kCGWindowOwnerName: CFString = "kCGWindowOwnerName" as NSString
+  public let kCGWindowName: CFString = "kCGWindowName" as NSString
+  public let kCGWindowBounds: CFString = "kCGWindowBounds" as NSString
+  public let kCGWindowIsOnscreen: CFString = "kCGWindowIsOnscreen" as NSString
+  public let kCGWindowAlpha: CFString = "kCGWindowAlpha" as NSString
+
+  public func CGWindowListCopyWindowInfo(
+    _ option: CGWindowListOption,
+    _ relativeToWindow: CGWindowID
+  ) -> CFArray? {
+    nil
+  }
+
+  public enum CGWindowLevelKey: Int32, Sendable {
+    case baseWindow = 0
+    case minimumWindow = 1
+    case desktopWindow = 2
+    case backstopMenu = 3
+    case normalWindow = 4
+    case floatingWindow = 5
+    case tornOffMenuWindow = 6
+    case dockWindow = 7
+    case mainMenuWindow = 8
+    case statusWindow = 9
+    case modalPanelWindow = 10
+    case popUpMenuWindow = 11
+    case draggingWindow = 12
+    case screenSaverWindow = 13
+    case maximumWindow = 14
+    case overlayWindow = 15
+    case helpWindow = 16
+    case utilityWindow = 17
+    case desktopIconWindow = 18
+    case cursorWindow = 19
+    case assistiveTechHighWindow = 20
+  }
+
+  public func CGWindowLevelForKey(_ key: CGWindowLevelKey) -> Int32 {
+    switch key {
+    case .normalWindow: 0
+    case .floatingWindow: 3
+    case .dockWindow: 20
+    case .mainMenuWindow: 24
+    case .statusWindow: 25
+    case .popUpMenuWindow: 101
+    default: key.rawValue
+    }
+  }
 #endif

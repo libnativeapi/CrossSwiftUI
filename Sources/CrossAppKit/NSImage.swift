@@ -181,7 +181,11 @@ open class NSGraphicsContext: NSObject, @unchecked Sendable {
   #endif
 
   public init?(bitmapImageRep: NSBitmapImageRep) {
-    super.init()
+    #if !os(macOS)
+      return nil
+    #else
+      super.init()
+    #endif
   }
 
   public override init() {

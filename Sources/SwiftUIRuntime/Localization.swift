@@ -275,7 +275,7 @@ public enum LocalizationArg: Hashable, Sendable {
 
 // MARK: - Foundation String(localized:) & LocalizedStringResource Shims on Non-Darwin
 
-#if !canImport(Darwin)
+#if !(os(macOS) || os(iOS) || os(tvOS) || os(watchOS) || os(visionOS))
   extension String {
     public struct LocalizationValue: ExpressibleByStringLiteral, ExpressibleByStringInterpolation, Hashable, Sendable {
       public struct StringInterpolation: StringInterpolationProtocol, Sendable {
@@ -584,7 +584,7 @@ public struct LocalizedStringKey: ExpressibleByStringLiteral, ExpressibleByStrin
   }
 }
 
-#if !canImport(Darwin)
+#if !(os(macOS) || os(iOS) || os(tvOS) || os(watchOS) || os(visionOS))
   extension Date {
     public static var currentDate: Date { Date() }
   }

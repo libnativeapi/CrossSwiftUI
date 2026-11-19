@@ -114,6 +114,9 @@ open class NSApplication: NSResponder, @unchecked Sendable {
     #if os(Windows)
       cak_enable_per_monitor_dpi()
     #endif
+    #if !os(macOS)
+      CarbonHotKeyBridge.install()
+    #endif
     super.init()
   }
 
@@ -140,6 +143,18 @@ open class NSApplication: NSResponder, @unchecked Sendable {
       if initial { changeHandler() }
       return NSKeyValueObservation { [weak self] in
         self?.appearanceObservers.removeValue(forKey: id)
+      }
+    }
+
+    public func observe<Value>(
+      _ keyPath: KeyPath<NSApplication, Value>,
+      options: NSKeyValueObservingOptions = [],
+      changeHandler: @escaping @Sendable (NSApplication, NSKeyValueObservedChange<Value>) -> Void
+    ) -> NSKeyValueObservation {
+      let fireInitial = options.contains(.initial)
+      return observeEffectiveAppearance(initial: fireInitial) { [weak self] in
+        guard let self else { return }
+        changeHandler(self, NSKeyValueObservedChange<Value>())
       }
     }
   #endif
@@ -181,6 +196,9 @@ open class NSApplication: NSResponder, @unchecked Sendable {
       _ = NativeAPI.Application.shared.hide()
     #endif
   }
+
+  public func registerForRemoteNotifications() {}
+  public func unregisterForRemoteNotifications() {}
 
   public func finishLaunching() {
     let willNote = Notification(name: Self.willFinishLaunchingNotification, object: self)
@@ -255,7 +273,17 @@ open class NSAppleEventDescriptor: NSObject {
 open class NSAppleEventManager: NSObject, @unchecked Sendable {
   private static let sharedInstance = NSAppleEventManager()
   public static func shared() -> NSAppleEventManager { sharedInstance }
-  public var currentAppleEvent: NSAppleEventDescriptor? { nil }
+  public var currentAppleEvent: NSAppleEventDescriptor? {
+    #if !os(macOS)
+      if CommandLine.arguments.contains("--background") { return nil }
+      let desc = NSAppleEventDescriptor()
+      desc.eventClass = kCoreEventClass
+      desc.eventID = kAEOpenApplication
+      return desc
+    #else
+      return nil
+    #endif
+  }
 }
 
 open class NSAppleScript: NSObject {

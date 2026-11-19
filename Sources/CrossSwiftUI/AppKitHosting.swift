@@ -557,6 +557,9 @@ nonisolated(unsafe) private var didInstallAssetResolvers = false
 internal func installAssetResolversOnce() {
   guard !didInstallAssetResolvers else { return }
   didInstallAssetResolvers = true
+  #if !os(macOS)
+    bootstrapAppResources()
+  #endif
   SwiftUIRuntime.Image.assetPathResolver = { name in
     CrossAppKit.NSImage.resolveAssetPath(named: name)
   }
@@ -564,6 +567,42 @@ internal func installAssetResolversOnce() {
     VectorImage.hasSymbol(symbolName)
   }
 }
+
+#if !os(macOS)
+  private func bootstrapAppResources() {
+    let fm = FileManager.default
+    let exeDir = URL(fileURLWithPath: CommandLine.arguments.first ?? ".").deletingLastPathComponent()
+    let cwd = URL(fileURLWithPath: fm.currentDirectoryPath)
+    var candidates: [URL] = [exeDir, cwd]
+    var cursor = exeDir
+    for _ in 0..<5 {
+      cursor = cursor.deletingLastPathComponent()
+      candidates.append(cursor)
+    }
+    var searchPaths = CrossAppKit.NSImage.resourceSearchPaths
+    for root in candidates {
+      var bases: [URL] = [root]
+      if let children = try? fm.contentsOfDirectory(at: root, includingPropertiesForKeys: [.isDirectoryKey], options: [.skipsHiddenFiles]) {
+        for child in children {
+          if (try? child.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true {
+            bases.append(child)
+          }
+        }
+      }
+      for base in bases {
+        let assets = base.appendingPathComponent("Assets.xcassets")
+        if fm.fileExists(atPath: assets.path), !searchPaths.contains(base.path) {
+          searchPaths.append(base.path)
+        }
+        let xcstrings = base.appendingPathComponent("Resources/Localizable.xcstrings")
+        if fm.fileExists(atPath: xcstrings.path) {
+          XCStringsCatalog.shared.load(from: xcstrings)
+        }
+      }
+    }
+    CrossAppKit.NSImage.resourceSearchPaths = searchPaths
+  }
+#endif
 
 #if !os(macOS)
   private final class _WinCombineCancellableBox {

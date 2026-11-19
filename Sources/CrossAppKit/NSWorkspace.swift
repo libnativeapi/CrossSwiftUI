@@ -373,4 +373,17 @@ open class NSWorkspace: NSObject, @unchecked Sendable {
   #endif
 
   public func unmountAndEjectDevice(at url: URL) throws {}
+
+  #if !os(macOS)
+    public func observe<Value>(
+      _ keyPath: KeyPath<NSWorkspace, Value>,
+      options: NSKeyValueObservingOptions = [],
+      changeHandler: @escaping @Sendable (NSWorkspace, NSKeyValueObservedChange<Value>) -> Void
+    ) -> NSKeyValueObservation {
+      if options.contains(.initial) {
+        changeHandler(self, NSKeyValueObservedChange<Value>())
+      }
+      return NSKeyValueObservation {}
+    }
+  #endif
 }

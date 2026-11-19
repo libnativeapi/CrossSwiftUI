@@ -10,8 +10,6 @@ public enum NSLineBreakMode: UInt, Sendable {
 }
 
 #if !os(macOS)
-  public typealias CTFont = NSFont
-
   public struct NSUnderlineStyle: OptionSet, Sendable, Hashable {
     public let rawValue: Int
     public init(rawValue: Int) { self.rawValue = rawValue }

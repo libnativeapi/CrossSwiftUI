@@ -1,0 +1,12 @@
+module IOKit {
+  header "IOKit.h"
+  export *
+  explicit module hid {
+    header "IOHID.h"
+    export *
+  }
+  explicit module hidsystem {
+    header "IOHID.h"
+    export *
+  }
+}

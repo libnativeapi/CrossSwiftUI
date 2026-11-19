@@ -520,5 +520,5 @@ open class NSSound: NSObject, @unchecked Sendable {
 @MainActor
 open class NSSharingServicePicker: NSObject {
   public init(items: [Any]) { super.init() }
-  public func show(relativeTo rect: NSRect, of view: NSView, preferredEdge: UInt) {}
+  public func show(relativeTo rect: NSRect, of view: NSView, preferredEdge: NSRectEdge) {}
 }

@@ -1,6 +1,6 @@
 import Foundation
 
-#if canImport(Darwin) && canImport(CoreGraphics)
+#if (os(macOS) || os(iOS) || os(tvOS) || os(watchOS) || os(visionOS)) && canImport(CoreGraphics)
   import CoreGraphics
 #endif
 
@@ -784,7 +784,7 @@ extension View {
   }
 }
 
-#if !canImport(Darwin)
+#if !(os(macOS) || os(iOS) || os(tvOS) || os(watchOS) || os(visionOS))
   public struct _SwiftUILineStyle: Equatable, Hashable, Sendable {
     public let rawValue: Int
     public init(rawValue: Int) { self.rawValue = rawValue }

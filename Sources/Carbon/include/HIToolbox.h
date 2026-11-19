@@ -1,4 +1,6 @@
 #pragma once
+#include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
 // Apple HIToolbox virtual key codes (Events.h) — untyped C enums import as `Int` in Swift,
@@ -153,7 +155,95 @@ enum {
   kEventKeyModifierFnMask       = 1 << 17
 };
 
+typedef uint32_t OSType;
 typedef int32_t OSStatus;
 enum {
-  noErr = 0
+  noErr = 0,
+  eventNotHandledErr = -9874
 };
+
+static const uint32_t kEventParamDirectObject = 0x2D2D2D2D; // '----'
+static const uint32_t typeEventHotKeyID       = 0x686B6964; // 'hkid'
+static const uint32_t kEventClassKeyboard     = 0x6B657962; // 'keyb'
+static const uint32_t kEventHotKeyPressed     = 5;
+static const uint32_t kEventHotKeyReleased    = 6;
+
+typedef struct OpaqueEventTargetRef *EventTargetRef;
+typedef struct OpaqueEventHandlerCallRef *EventHandlerCallRef;
+typedef struct OpaqueEventRef *EventRef;
+typedef struct OpaqueEventHotKeyRef *EventHotKeyRef;
+typedef struct OpaqueEventHandlerRef *EventHandlerRef;
+
+typedef struct EventHotKeyID {
+  OSType signature;
+  uint32_t id;
+} EventHotKeyID;
+
+typedef struct EventTypeSpec {
+  OSType eventClass;
+  uint32_t eventKind;
+} EventTypeSpec;
+
+typedef OSStatus (*EventHandlerProcPtr)(
+  EventHandlerCallRef inHandlerCallRef,
+  EventRef inEvent,
+  void *inUserData
+);
+typedef EventHandlerProcPtr EventHandlerUPP;
+
+EventTargetRef GetEventDispatcherTarget(void);
+
+OSStatus InstallEventHandler(
+  EventTargetRef inTarget,
+  EventHandlerUPP inHandler,
+  intptr_t inNumTypes,
+  const EventTypeSpec *inList,
+  void *inUserData,
+  EventHandlerRef *outRef
+);
+
+OSStatus RegisterEventHotKey(
+  uint32_t inHotKeyCode,
+  uint32_t inHotKeyModifiers,
+  EventHotKeyID inHotKeyID,
+  EventTargetRef inTarget,
+  uint32_t inOptions,
+  EventHotKeyRef *outRef
+);
+
+OSStatus UnregisterEventHotKey(EventHotKeyRef inHotKey);
+
+OSStatus GetEventParameter(
+  EventRef inEvent,
+  uint32_t inName,
+  uint32_t inDesiredType,
+  uint32_t *outActualType,
+  intptr_t inBufferSize,
+  intptr_t *outActualSize,
+  void *outData
+);
+
+uint32_t GetEventKind(EventRef inEvent);
+
+typedef OSStatus (*CrossSwiftRegisterHotKeyFn)(
+  uint32_t keyCode,
+  uint32_t modifiers,
+  EventHotKeyID hotKeyID,
+  void **outHandle
+);
+typedef OSStatus (*CrossSwiftUnregisterHotKeyFn)(void *handle);
+
+void _crossswift_carbon_set_hotkey_hooks(
+  CrossSwiftRegisterHotKeyFn registerFn,
+  CrossSwiftUnregisterHotKeyFn unregisterFn
+);
+
+void _crossswift_carbon_dispatch_hotkey(
+  OSType signature,
+  uint32_t id,
+  uint32_t kind
+);
+
+static inline bool IsSecureEventInputEnabled(void) {
+  return false;
+}

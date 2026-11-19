@@ -1,5 +1,5 @@
 import Foundation
-#if canImport(Darwin) && canImport(CoreGraphics)
+#if (os(macOS) || os(iOS) || os(tvOS) || os(watchOS) || os(visionOS)) && canImport(CoreGraphics)
   import CoreGraphics
 #endif
 
@@ -209,7 +209,7 @@ public struct StrokeStyle {
   }
 }
 
-#if !canImport(Darwin)
+#if !(os(macOS) || os(iOS) || os(tvOS) || os(watchOS) || os(visionOS))
   public enum CGLineCap: Int32, Sendable { case butt = 0, round = 1, square = 2 }
   public enum CGLineJoin: Int32, Sendable { case miter = 0, round = 1, bevel = 2 }
 #endif

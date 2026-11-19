@@ -1,9 +1,9 @@
 import Foundation
 
-#if canImport(Darwin) && canImport(CoreGraphics)
+#if (os(macOS) || os(iOS) || os(tvOS) || os(watchOS) || os(visionOS)) && canImport(CoreGraphics)
   import CoreGraphics
 #endif
-#if canImport(Darwin) && canImport(Combine)
+#if (os(macOS) || os(iOS) || os(tvOS) || os(watchOS) || os(visionOS)) && canImport(Combine)
   import Combine
 #endif
 
@@ -1404,7 +1404,7 @@ extension View {
   }
 }
 
-#if !canImport(Darwin)
+#if !(os(macOS) || os(iOS) || os(tvOS) || os(watchOS) || os(visionOS))
   open class NSItemProvider: NSObject, @unchecked Sendable {}
 #endif
 
@@ -1510,7 +1510,7 @@ extension View {
   }
 }
 
-#if canImport(Darwin) && canImport(Combine)
+#if (os(macOS) || os(iOS) || os(tvOS) || os(watchOS) || os(visionOS)) && canImport(Combine)
   extension View {
     public func onReceive<P: Combine.Publisher>(
       _ publisher: P,
