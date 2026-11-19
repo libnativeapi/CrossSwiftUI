@@ -285,6 +285,8 @@ open class NSHostingView<Content: SwiftUIRuntime.View>: NSView {
 
   #if os(Windows)
     private var backend: WindowsDrawingBackend?
+    private var isApplyingWindowResize = false
+    private var pendingWindowBoundsCommit: (() -> Void)?
   #elseif os(Linux)
     private var backend: LinuxDrawingBackend?
   #else
@@ -344,11 +346,71 @@ open class NSHostingView<Content: SwiftUIRuntime.View>: NSView {
   open override func layout() {
     super.layout()
     guard !isFlushingLayout else { return }
+    if renderer?.isRendering == true { return }
     isFlushingLayout = true
     defer { isFlushingLayout = false }
     renderer?.renderIfNeeded()
     #if os(Windows)
-      backend?.flushSyncPaint()
+      if !isApplyingWindowResize && pendingWindowBoundsCommit == nil {
+        backend?.flushSyncPaint()
+      }
+    #endif
+  }
+
+  open override func applyWindowFrameChange(
+    contentSize: NSSize,
+    display: Bool,
+    commitNativeBounds: @escaping () -> Void
+  ) -> Bool {
+    #if os(Windows)
+      guard let renderer, let backend, ownedNativeView != nil else { return false }
+      let w = Double(max(1, contentSize.width))
+      let h = Double(max(1, contentSize.height))
+      let sizeChanged =
+        abs(Double(frame.width) - w) > 0.5 || abs(Double(frame.height) - h) > 0.5
+
+      if renderer.isRendering || isApplyingWindowResize {
+        pendingWindowBoundsCommit = commitNativeBounds
+        if sizeChanged || pendingWindowBoundsCommit != nil {
+          backend.beginPendingResize(width: w, height: h)
+        }
+        if superview === window?.contentView, superview !== self {
+          superview?.frame = NSRect(origin: .zero, size: contentSize)
+        }
+        self.frame = NSRect(origin: .zero, size: contentSize)
+        renderer.resize(to: SwiftUIRuntime.Size(width: w, height: h))
+        return true
+      }
+
+      guard sizeChanged else {
+        commitNativeBounds()
+        if display {
+          renderer.renderIfNeeded()
+          backend.flushSyncPaint()
+        }
+        return true
+      }
+
+      isApplyingWindowResize = true
+      defer { isApplyingWindowResize = false }
+      pendingWindowBoundsCommit = commitNativeBounds
+
+      backend.beginPendingResize(width: w, height: h)
+      if superview === window?.contentView, superview !== self {
+        superview?.frame = NSRect(origin: .zero, size: contentSize)
+      }
+      self.frame = NSRect(origin: .zero, size: contentSize)
+      renderer.resize(to: SwiftUIRuntime.Size(width: w, height: h))
+      renderer.renderIfNeeded()
+
+      let finalCommit = pendingWindowBoundsCommit ?? commitNativeBounds
+      pendingWindowBoundsCommit = nil
+      backend.prerenderPendingResize()
+      finalCommit()
+      backend.commitPendingResize()
+      return true
+    #else
+      return false
     #endif
   }
 
@@ -433,6 +495,15 @@ open class NSHostingView<Content: SwiftUIRuntime.View>: NSView {
       )
       self.renderer = createdRenderer
 
+      createdRenderer.onDidFinishRenderPasses = { [weak self] in
+        guard let self, !self.isApplyingWindowResize, let commit = self.pendingWindowBoundsCommit else {
+          return
+        }
+        self.pendingWindowBoundsCommit = nil
+        self.backend?.prerenderPendingResize()
+        commit()
+        self.backend?.commitPendingResize()
+      }
       createdBackend.onResize = { [weak createdRenderer] newSize in
         createdRenderer?.resize(to: newSize)
       }

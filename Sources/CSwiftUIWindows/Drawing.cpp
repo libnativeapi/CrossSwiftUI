@@ -245,13 +245,58 @@ struct Surface {
   int shadow_width = 0;
   int shadow_height = 0;
   uint64_t shadow_hash = 0;
+  LONG pending_width = 0;
+  LONG pending_height = 0;
+  bool defer_commit = false;
+  struct DeferredFrame {
+    double x, y, w, h;
+  };
+  struct DeferredClip {
+    double x, y, w, h;
+  };
+  std::unordered_map<HWND, DeferredFrame> deferred_frames;
+  std::unordered_map<HWND, DeferredClip> deferred_clips;
+  struct PendingShadow {
+    HDC dc = nullptr;
+    HBITMAP dib = nullptr;
+    HGDIOBJ old_bmp = nullptr;
+    int sw = 0, sh = 0, margin = 0, bw = 0, bh = 0;
+    uint64_t hash = 0;
+    bool hide_only = false;
+    bool clear_all = false;
+    bool valid = false;
+    void Reset() {
+      if (dc) {
+        if (old_bmp) SelectObject(dc, old_bmp);
+        if (dib) DeleteObject(dib);
+        DeleteDC(dc);
+      }
+      dc = nullptr;
+      dib = nullptr;
+      old_bmp = nullptr;
+      hide_only = false;
+      clear_all = false;
+      valid = false;
+    }
+    ~PendingShadow() { Reset(); }
+  } pending_shadow;
   FrameTrace trace;
 };
+
+RECT SurfaceClientRect(const Surface *s) {
+  if (s->pending_width > 0 && s->pending_height > 0) {
+    return RECT{0, 0, s->pending_width, s->pending_height};
+  }
+  RECT client{};
+  GetClientRect(s->host, &client);
+  return client;
+}
 
 constexpr UINT_PTR kShadowRootSubclassId = 0x5AD00001u;
 
 void PositionWindowShadow(Surface *s) {
-  if (!s || !s->shadow_layer || !s->shadow_root || s->positioning_shadow) return;
+  if (!s || !s->shadow_layer || !s->shadow_root || s->positioning_shadow || s->defer_commit)
+    return;
   s->positioning_shadow = true;
   struct Guard {
     bool &flag;
@@ -273,6 +318,10 @@ void PositionWindowShadow(Surface *s) {
   }
   RECT rect{};
   if (!GetWindowRect(s->shadow_root, &rect)) return;
+  if ((rect.right - rect.left) != s->shadow_width ||
+      (rect.bottom - rect.top) != s->shadow_height) {
+    return;
+  }
   const int target_x = rect.left - s->shadow_margin;
   const int target_y = rect.top - s->shadow_margin;
   RECT cur{};
@@ -324,12 +373,12 @@ void ClearWindowShadow(Surface *s) {
 }
 
 void BoxBlur1DHorizontal(
-    const std::vector<uint16_t> &src, std::vector<uint16_t> &dst, int w, int h, int radius
+    const uint16_t *src, uint16_t *dst, int w, int h, int radius
 ) {
   const int diam = radius * 2 + 1;
   for (int y = 0; y < h; ++y) {
-    const uint16_t *in = src.data() + size_t(y) * w;
-    uint16_t *out = dst.data() + size_t(y) * w;
+    const uint16_t *in = src + size_t(y) * w;
+    uint16_t *out = dst + size_t(y) * w;
     uint32_t acc = uint32_t(in[0]) * (radius + 1);
     for (int x = 1; x <= radius; ++x) acc += in[min(w - 1, x)];
     for (int x = 0; x < w; ++x) {
@@ -342,7 +391,7 @@ void BoxBlur1DHorizontal(
 }
 
 void BoxBlur1DVertical(
-    const std::vector<uint16_t> &src, std::vector<uint16_t> &dst, int w, int h, int radius
+    const uint16_t *src, uint16_t *dst, int w, int h, int radius
 ) {
   const int diam = radius * 2 + 1;
   for (int x = 0; x < w; ++x) {
@@ -357,7 +406,7 @@ void BoxBlur1DVertical(
   }
 }
 
-void BoxBlur3Pass(std::vector<uint16_t> &buf, std::vector<uint16_t> &tmp, int w, int h, int radius) {
+void BoxBlur3Pass(uint16_t *buf, uint16_t *tmp, int w, int h, int radius) {
   if (radius <= 0 || w <= 1 || h <= 1) return;
   for (int pass = 0; pass < 3; ++pass) {
     BoxBlur1DHorizontal(buf, tmp, w, h, radius);
@@ -371,19 +420,92 @@ LRESULT CALLBACK ShadowLayerWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
   return DefWindowProcW(hwnd, msg, wp, lp);
 }
 
+bool EnsureShadowLayerWindow(Surface *s, HWND root) {
+  if (!s || !root || !IsWindow(root)) return false;
+  if (s->shadow_root != root) {
+    ClearWindowShadow(s);
+  }
+  if (!s->shadow_layer) {
+    static ATOM cls_atom = [] {
+      WNDCLASSW wc{};
+      wc.lpfnWndProc = ShadowLayerWndProc;
+      wc.hInstance = GetModuleHandleW(nullptr);
+      wc.lpszClassName = L"CrossSwiftUIShadowLayer";
+      return RegisterClassW(&wc);
+    }();
+    (void)cls_atom;
+    s->shadow_layer = CreateWindowExW(
+        WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
+        L"CrossSwiftUIShadowLayer", L"", WS_POPUP,
+        0, 0, 0, 0, nullptr, nullptr, GetModuleHandleW(nullptr), nullptr);
+    if (!s->shadow_layer) return false;
+    s->shadow_root = root;
+    SetWindowSubclass(root, ShadowRootSubclassProc, kShadowRootSubclassId, reinterpret_cast<DWORD_PTR>(s));
+  }
+  return true;
+}
+
+void PublishPendingShadow(Surface *s) {
+  if (!s || !s->pending_shadow.valid) return;
+  HWND root = GetAncestor(s->host, GA_ROOT);
+  if (s->pending_shadow.clear_all || !root || !IsWindow(root)) {
+    s->pending_shadow.Reset();
+    ClearWindowShadow(s);
+    return;
+  }
+  if (s->pending_shadow.hide_only) {
+    if (s->shadow_layer) ShowWindow(s->shadow_layer, SW_HIDE);
+    s->shadow_hash = s->pending_shadow.hash;
+    s->pending_shadow.Reset();
+    return;
+  }
+  if (!EnsureShadowLayerWindow(s, root)) {
+    s->pending_shadow.Reset();
+    return;
+  }
+  RECT root_rect{};
+  GetWindowRect(root, &root_rect);
+  POINT dest_pt{root_rect.left - s->pending_shadow.margin, root_rect.top - s->pending_shadow.margin};
+  POINT src_pt{0, 0};
+  SIZE layer_sz{s->pending_shadow.sw, s->pending_shadow.sh};
+  BLENDFUNCTION blend{AC_SRC_OVER, 0, 255, AC_SRC_ALPHA};
+  UpdateLayeredWindow(
+      s->shadow_layer, nullptr, &dest_pt, &layer_sz, s->pending_shadow.dc, &src_pt, 0, &blend, ULW_ALPHA);
+  s->shadow_margin = s->pending_shadow.margin;
+  s->shadow_width = s->pending_shadow.bw;
+  s->shadow_height = s->pending_shadow.bh;
+  s->shadow_hash = s->pending_shadow.hash;
+  s->pending_shadow.Reset();
+  PositionWindowShadow(s);
+}
+
 void UpdateSurfaceWindowShadow(Surface *s) {
   if (!s) return;
   HWND root = GetAncestor(s->host, GA_ROOT);
   if (!s->window_shadow_enabled || (s->background_argb >> 24) >= 255 ||
       !root || !IsWindow(root) || !s->buffer || !s->buffer->pixels ||
       s->buffer->width == 0 || s->buffer->height == 0) {
-    ClearWindowShadow(s);
+    if (s->defer_commit) {
+      s->pending_shadow.Reset();
+      s->pending_shadow.clear_all = true;
+      s->pending_shadow.valid = true;
+    } else {
+      s->pending_shadow.Reset();
+      ClearWindowShadow(s);
+    }
     return;
   }
   const int bw = int(s->buffer->width);
   const int bh = int(s->buffer->height);
   if (int64_t(bw) * bh > 8000000) {
-    ClearWindowShadow(s);
+    if (s->defer_commit) {
+      s->pending_shadow.Reset();
+      s->pending_shadow.clear_all = true;
+      s->pending_shadow.valid = true;
+    } else {
+      s->pending_shadow.Reset();
+      ClearWindowShadow(s);
+    }
     return;
   }
   uint64_t hash = 14695981039346656037ULL;
@@ -406,35 +528,25 @@ void UpdateSurfaceWindowShadow(Surface *s) {
     hash = (hash ^ bits) * 1099511628211ULL;
   }
   if (!any_opaque) {
-    if (s->shadow_layer) ShowWindow(s->shadow_layer, SW_HIDE);
-    s->shadow_hash = hash;
+    if (s->defer_commit) {
+      s->pending_shadow.Reset();
+      s->pending_shadow.hide_only = true;
+      s->pending_shadow.hash = hash;
+      s->pending_shadow.valid = true;
+    } else {
+      s->pending_shadow.Reset();
+      if (s->shadow_layer) ShowWindow(s->shadow_layer, SW_HIDE);
+      s->shadow_hash = hash;
+    }
     return;
   }
   if (s->shadow_layer && s->shadow_root == root && s->shadow_hash == hash &&
       s->shadow_width == bw && s->shadow_height == bh) {
-    PositionWindowShadow(s);
+    s->pending_shadow.Reset();
+    if (!s->defer_commit) {
+      PositionWindowShadow(s);
+    }
     return;
-  }
-
-  if (s->shadow_root != root) {
-    ClearWindowShadow(s);
-  }
-  if (!s->shadow_layer) {
-    static ATOM cls_atom = [] {
-      WNDCLASSW wc{};
-      wc.lpfnWndProc = ShadowLayerWndProc;
-      wc.hInstance = GetModuleHandleW(nullptr);
-      wc.lpszClassName = L"CrossSwiftUIShadowLayer";
-      return RegisterClassW(&wc);
-    }();
-    (void)cls_atom;
-    s->shadow_layer = CreateWindowExW(
-        WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
-        L"CrossSwiftUIShadowLayer", L"", WS_POPUP,
-        0, 0, 0, 0, nullptr, nullptr, GetModuleHandleW(nullptr), nullptr);
-    if (!s->shadow_layer) return;
-    s->shadow_root = root;
-    SetWindowSubclass(root, ShadowRootSubclassProc, kShadowRootSubclassId, reinterpret_cast<DWORD_PTR>(s));
   }
 
   const double scale = max(1.0, (s->buffer_dpi ? s->buffer_dpi : 96) / 96.0);
@@ -449,6 +561,9 @@ void UpdateSurfaceWindowShadow(Surface *s) {
   std::vector<uint16_t> far_grid(size_t(dw) * dh, 0);
   std::vector<uint16_t> near_grid(size_t(dw) * dh, 0);
   std::vector<uint16_t> tmp_grid(size_t(dw) * dh, 0);
+  uint16_t *far_ptr = far_grid.data();
+  uint16_t *near_ptr = near_grid.data();
+  uint16_t *tmp_ptr = tmp_grid.data();
 
   for (int y = 0; y < bh; y += 2) {
     const uint32_t *row = s->buffer->pixels + size_t(y) * bw;
@@ -459,18 +574,18 @@ void UpdateSurfaceWindowShadow(Surface *s) {
       if (!a) continue;
       const int gx = (x + margin) / 2;
       if (fy >= 0 && fy < dh && gx >= 0 && gx < dw) {
-        far_grid[size_t(fy) * dw + gx] = a;
+        far_ptr[size_t(fy) * dw + gx] = a;
       }
       if (ny >= 0 && ny < dh && gx >= 0 && gx < dw) {
-        near_grid[size_t(ny) * dw + gx] = a;
+        near_ptr[size_t(ny) * dw + gx] = a;
       }
     }
   }
 
   const int r_far = max(2, int(std::lround(8.5 * scale)));
   const int r_near = max(1, int(std::lround(2.0 * scale)));
-  BoxBlur3Pass(far_grid, tmp_grid, dw, dh, r_far);
-  BoxBlur3Pass(near_grid, tmp_grid, dw, dh, r_near);
+  BoxBlur3Pass(far_ptr, tmp_ptr, dw, dh, r_far);
+  BoxBlur3Pass(near_ptr, tmp_ptr, dw, dh, r_near);
 
   HDC dc = CreateCompatibleDC(nullptr);
   if (!dc) return;
@@ -495,15 +610,14 @@ void UpdateSurfaceWindowShadow(Surface *s) {
   const uint32_t far_strength = s->window_shadow_dark ? 112u : 58u;
   const uint32_t near_strength = s->window_shadow_dark ? 68u : 34u;
 
-  auto sample_bilinear = [&](const std::vector<uint16_t> &grid, int px, int py) -> uint32_t {
+  auto sample_bilinear = [dw, dh](const uint16_t *grid, int px, int py) -> uint32_t {
     const int gx0 = min(dw - 1, px >> 1);
     const int gy0 = min(dh - 1, py >> 1);
     const int gx1 = min(dw - 1, gx0 + (px & 1));
     const int gy1 = min(dh - 1, gy0 + (py & 1));
-    return (uint32_t(grid[size_t(gy0) * dw + gx0]) +
-            uint32_t(grid[size_t(gy0) * dw + gx1]) +
-            uint32_t(grid[size_t(gy1) * dw + gx0]) +
-            uint32_t(grid[size_t(gy1) * dw + gx1]) + 2u) >> 2;
+    const uint16_t *r0 = grid + size_t(gy0) * dw;
+    const uint16_t *r1 = grid + size_t(gy1) * dw;
+    return (uint32_t(r0[gx0]) + uint32_t(r0[gx1]) + uint32_t(r1[gx0]) + uint32_t(r1[gx1]) + 2u) >> 2;
   };
 
   for (int py = 0; py < sh; ++py) {
@@ -511,8 +625,8 @@ void UpdateSurfaceWindowShadow(Surface *s) {
     const int by = py - margin;
     const uint32_t *src_row = (by >= 0 && by < bh) ? (s->buffer->pixels + size_t(by) * bw) : nullptr;
     for (int px = 0; px < sw; ++px) {
-      const uint32_t f_a = (sample_bilinear(far_grid, px, py) * far_strength + 127u) / 255u;
-      const uint32_t n_a = (sample_bilinear(near_grid, px, py) * near_strength + 127u) / 255u;
+      const uint32_t f_a = (sample_bilinear(far_ptr, px, py) * far_strength + 127u) / 255u;
+      const uint32_t n_a = (sample_bilinear(near_ptr, px, py) * near_strength + 127u) / 255u;
       uint32_t combined = f_a + ((n_a * (255u - f_a) + 127u) / 255u);
       if (src_row) {
         const int bx = px - margin;
@@ -525,6 +639,28 @@ void UpdateSurfaceWindowShadow(Surface *s) {
       }
       dst_row[px] = (min(255u, combined) << 24);
     }
+  }
+
+  if (s->defer_commit) {
+    s->pending_shadow.Reset();
+    s->pending_shadow.dc = dc;
+    s->pending_shadow.dib = dib;
+    s->pending_shadow.old_bmp = old_bmp;
+    s->pending_shadow.sw = sw;
+    s->pending_shadow.sh = sh;
+    s->pending_shadow.margin = margin;
+    s->pending_shadow.bw = bw;
+    s->pending_shadow.bh = bh;
+    s->pending_shadow.hash = hash;
+    s->pending_shadow.valid = true;
+    return;
+  }
+
+  if (!EnsureShadowLayerWindow(s, root)) {
+    SelectObject(dc, old_bmp);
+    DeleteObject(dib);
+    DeleteDC(dc);
+    return;
   }
 
   RECT root_rect{};
@@ -675,8 +811,7 @@ RectF PathBounds(const std::vector<double> &commands) {
                float(bottom - top));
 }
 void RenderFrame(Surface *s) {
-  RECT client;
-  GetClientRect(s->host, &client);
+  RECT client = SurfaceClientRect(s);
   const auto dpi = GetDpiForWindow(s->host);
   const auto width = UINT(max(1L, client.right));
   const auto height = UINT(max(1L, client.bottom));
@@ -1294,6 +1429,8 @@ native_view_t NativeView(Surface *s, HWND hwnd) {
   return view;
 }
 void ReleaseControl(Surface *s, HWND hwnd) {
+  s->deferred_frames.erase(hwnd);
+  s->deferred_clips.erase(hwnd);
   auto found = s->native_views.find(hwnd);
   if (found == s->native_views.end())
     return;
@@ -1458,8 +1595,7 @@ bool ScrollInkTranslates(Surface *s, const std::vector<Command> &commands,
 // Pixel translation is only safe over a uniform opaque backdrop, with no
 // stationary overlay intersecting the viewport. Anything uncertain repaints.
 bool ScrollBackdrop(Surface *s, const ScrollDrawing &scroll, RectF copy_area) {
-  RECT client;
-  GetClientRect(s->host, &client);
+  RECT client = SurfaceClientRect(s);
   const float scale = GetDpiForWindow(s->host) / 96.f;
   struct Scope {
     RectF clip;
@@ -1509,8 +1645,7 @@ bool ScrollBackdrop(Surface *s, const ScrollDrawing &scroll, RectF copy_area) {
   return flat;
 }
 ScrollCopy PrepareScrollCopy(Surface *s) {
-  RECT client;
-  GetClientRect(s->host, &client);
+  RECT client = SurfaceClientRect(s);
   const auto dpi = GetDpiForWindow(s->host);
   if (!s->buffer || s->buffer_dpi != dpi ||
       s->buffer->width != UINT(client.right) ||
@@ -1616,8 +1751,7 @@ RECT ChangedScope(Surface *s, RECT client) {
   return scopes[enclosing].clip;
 }
 RECT Damage(Surface *s) {
-  RECT client;
-  GetClientRect(s->host, &client);
+  RECT client = SurfaceClientRect(s);
   if (!s->buffer)
     return client;
   if (s->commands.size() != s->pending.size())
@@ -1781,10 +1915,11 @@ void sui_surface_set_background(void *handle, uint32_t argb) {
     return;
   s->background_argb = argb;
   s->buffer_dirty = true;
-  RECT client{};
-  GetClientRect(s->host, &client);
+  RECT client = SurfaceClientRect(s);
   UnionRect(&s->damage, &s->damage, &client);
-  InvalidateRect(s->host, nullptr, FALSE);
+  if (!s->defer_commit) {
+    InvalidateRect(s->host, nullptr, FALSE);
+  }
 }
 void sui_surface_set_window_shadow(void *handle, int enabled, int is_dark) {
   auto *s = static_cast<Surface *>(handle);
@@ -1795,15 +1930,85 @@ void sui_surface_set_window_shadow(void *handle, int enabled, int is_dark) {
   s->window_shadow_enabled = want;
   s->window_shadow_dark = dark;
   if (!want) {
-    ClearWindowShadow(s);
-  } else if (s->buffer && s->buffer->pixels) {
+    if (s->defer_commit) {
+      s->pending_shadow.Reset();
+      s->pending_shadow.clear_all = true;
+      s->pending_shadow.valid = true;
+    } else {
+      ClearWindowShadow(s);
+    }
+  } else if (!s->defer_commit && s->buffer && s->buffer->pixels) {
     UpdateSurfaceWindowShadow(s);
   }
 }
 void sui_surface_flush_paint(void *handle) {
   auto *s = static_cast<Surface *>(handle);
+  if (!s || !s->host || !IsWindow(s->host) || s->defer_commit) return;
+  RenderFrame(s);
+  HWND root = GetAncestor(s->host, GA_ROOT);
+  if (root && IsWindowVisible(root)) {
+    RedrawWindow(
+        s->host, nullptr, nullptr,
+        RDW_INVALIDATE | RDW_NOERASE | RDW_UPDATENOW | RDW_ALLCHILDREN);
+    PositionWindowShadow(s);
+  }
+}
+void sui_surface_begin_pending_resize(void *handle, double logical_width,
+                                      double logical_height) {
+  auto *s = static_cast<Surface *>(handle);
+  if (!s || !s->host || !IsWindow(s->host)) return;
+  const UINT dpi = GetDpiForWindow(s->host);
+  const double scale = (dpi ? dpi : 96) / 96.0;
+  s->pending_width = max(1L, LONG(std::lround(logical_width * scale)));
+  s->pending_height = max(1L, LONG(std::lround(logical_height * scale)));
+  s->defer_commit = true;
+  s->buffer_dirty = true;
+  RECT pending{0, 0, s->pending_width, s->pending_height};
+  UnionRect(&s->damage, &s->damage, &pending);
+}
+void sui_surface_prerender_pending_resize(void *handle) {
+  auto *s = static_cast<Surface *>(handle);
   if (!s || !s->host || !IsWindow(s->host)) return;
   RenderFrame(s);
+}
+void sui_surface_commit_pending_resize(void *handle) {
+  auto *s = static_cast<Surface *>(handle);
+  if (!s || !s->host || !IsWindow(s->host)) return;
+  s->defer_commit = false;
+  s->pending_width = 0;
+  s->pending_height = 0;
+  if (!s->deferred_frames.empty()) {
+    if (!s->updating_views) {
+      native_view_begin_updates();
+      s->updating_views = true;
+    }
+    auto frames = std::move(s->deferred_frames);
+    s->deferred_frames.clear();
+    for (const auto &entry : frames) {
+      if (IsWindow(entry.first)) {
+        native_view_set_frame(
+            NativeView(s, entry.first),
+            {entry.second.x, entry.second.y, entry.second.w, entry.second.h});
+      }
+    }
+  }
+  if (s->updating_views) {
+    native_view_end_updates(false);
+    s->updating_views = false;
+  }
+  if (!s->deferred_clips.empty()) {
+    auto clips = std::move(s->deferred_clips);
+    s->deferred_clips.clear();
+    for (const auto &entry : clips) {
+      if (IsWindow(entry.first)) {
+        sui_control_clip(
+            entry.first, entry.second.x, entry.second.y, entry.second.w, entry.second.h);
+      }
+    }
+  }
+  s->native_state_changed = false;
+  RenderFrame(s);
+  PublishPendingShadow(s);
   HWND root = GetAncestor(s->host, GA_ROOT);
   if (root && IsWindowVisible(root)) {
     RedrawWindow(
@@ -1933,6 +2138,15 @@ void sui_control_clip(void *control, double x, double y, double w, double h) {
                                   int(std::ceil((x + w) * scale)),
                                   int(std::ceil((y + h) * scale))));
 }
+void sui_surface_control_clip(void *handle, void *control, double x, double y,
+                              double w, double h) {
+  auto *s = static_cast<Surface *>(handle);
+  if (s && s->defer_commit) {
+    s->deferred_clips[static_cast<HWND>(control)] = {x, y, w, h};
+    return;
+  }
+  sui_control_clip(control, x, y, w, h);
+}
 void sui_control_opacity(void *control, double opacity) {
   auto hwnd = static_cast<HWND>(control);
   auto style = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
@@ -1993,6 +2207,10 @@ void sui_surface_begin(void *handle) {
   if (!s->updating_views) {
     native_view_begin_updates();
     s->updating_views = true;
+  }
+  if (s->defer_commit) {
+    s->deferred_frames.clear();
+    s->deferred_clips.clear();
   }
   s->pending.clear();
   s->pending_scrolls.clear();
@@ -2138,7 +2356,7 @@ void sui_surface_end(void *h) {
     }
   }
   checkpoint(2);
-  if (s->updating_views) {
+  if (s->updating_views && !s->defer_commit) {
     native_view_end_updates(false);
     s->updating_views = false;
   }
@@ -2153,6 +2371,12 @@ void sui_surface_end(void *h) {
   }
   s->commands.swap(s->pending);
   s->scrolls.swap(s->pending_scrolls);
+  if (s->defer_commit) {
+    if (!IsRectEmpty(&s->damage)) s->buffer_dirty = true;
+    checkpoint(5);
+    s->trace.Add(3, !IsRectEmpty(&damage), s->trace.publication_start, s->host);
+    return;
+  }
   if (!IsRectEmpty(&s->damage)) {
     s->buffer_dirty = true;
     std::vector<RECT> native_damage;
@@ -2275,12 +2499,19 @@ void sui_control_frame(void *handle, void *control, double x, double y,
   const int pw = max(0, ControlPixel(width, scale));
   const int ph = max(0, ControlPixel(height, scale));
   RECT after{px, py, px + pw, py + ph};
-  if (EqualRect(&before, &after))
+  if (EqualRect(&before, &after)) {
+    if (s->defer_commit) {
+      s->deferred_frames.erase(hwnd);
+    }
     return;
-  // NativeAPI owns the control hierarchy, coalesced layout and deferred moves.
-  native_view_set_frame(view, {local_x, local_y, width, height});
-  RECT client, damage;
-  GetClientRect(s->host, &client);
+  }
+  if (s->defer_commit) {
+    s->deferred_frames[hwnd] = {local_x, local_y, width, height};
+  } else {
+    // NativeAPI owns the control hierarchy, coalesced layout and deferred moves.
+    native_view_set_frame(view, {local_x, local_y, width, height});
+  }
+  RECT client = SurfaceClientRect(s), damage;
   UnionRect(&damage, &before, &after);
   OffsetRect(&damage, context.x, context.y);
   IntersectRect(&damage, &damage, &client);

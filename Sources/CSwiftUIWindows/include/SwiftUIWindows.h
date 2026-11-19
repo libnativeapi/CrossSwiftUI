@@ -23,6 +23,10 @@ void sui_edit_set_transparent(void *surface, void *edit, int transparent,
 void sui_surface_set_background(void *surface, uint32_t argb);
 void sui_surface_set_window_shadow(void *surface, int enabled, int is_dark);
 void sui_surface_flush_paint(void *surface);
+void sui_surface_begin_pending_resize(void *surface, double logical_width,
+                                      double logical_height);
+void sui_surface_prerender_pending_resize(void *surface);
+void sui_surface_commit_pending_resize(void *surface);
 void sui_surface_custom_view(void *surface, void *view_hwnd,
                              uint64_t native_view);
 void sui_surface_remove_custom_view(void *surface, void *view_hwnd);
@@ -30,6 +34,8 @@ void sui_custom_view_order(void *surface, void *view_hwnd);
 void sui_edit_line_metrics(void *surface, void *edit, double *center,
                            double *height);
 void sui_control_clip(void *, double, double, double, double);
+void sui_surface_control_clip(void *surface, void *control, double x, double y,
+                              double width, double height);
 void sui_control_opacity(void *control, double opacity);
 void sui_surface_pointer(void *, int event, double x, double y, int value);
 int sui_surface_cursor(void *surface, double *x, double *y);

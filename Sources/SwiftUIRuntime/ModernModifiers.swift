@@ -313,42 +313,44 @@ private struct SafeAreaInsetVerticalView<Content: View, Bar: View>: View, _Primi
   func _makeElement(path: ViewPath) -> Element {
     var base = _render(content, path: path.appending(index: 0))
     let barEl = _render(bar, path: path.appending(index: 1))
-    if barEl.kind == .empty {
-      return base
-    }
-    if containsScrollNode(base) {
+    var padProps = NodeProps()
+    if barEl.kind != .empty {
       let measuredBar = LayoutEngine().measuredSize(of: barEl)
       let insetAmount = measuredBar.height + Double(spacing)
-      func applyScrollInset(_ node: inout Element) -> Bool {
-        if node.kind == .scroll {
-          if edge == .top {
-            let oldTop = node.props.scrollContentInsets.top
-            node.props.scrollContentInsets.top += insetAmount
-            if abs(node.props.scrollOffset.y - (-oldTop)) < 0.5 {
-              node.props.scrollOffset.y = -node.props.scrollContentInsets.top
+      if containsScrollNode(base) {
+        func applyScrollInset(_ node: inout Element) -> Bool {
+          if node.kind == .scroll {
+            if edge == .top {
+              let oldTop = node.props.scrollContentInsets.top
+              node.props.scrollContentInsets.top += insetAmount
+              if abs(node.props.scrollOffset.y - (-oldTop)) < 0.5 {
+                node.props.scrollOffset.y = -node.props.scrollContentInsets.top
+              }
+            } else {
+              node.props.scrollContentInsets.bottom += insetAmount
             }
-          } else {
-            node.props.scrollContentInsets.bottom += insetAmount
+            return true
           }
-          return true
+          for i in node.children.indices {
+            if applyScrollInset(&node.children[i]) { return true }
+          }
+          return false
         }
-        for i in node.children.indices {
-          if applyScrollInset(&node.children[i]) { return true }
-        }
-        return false
+        _ = applyScrollInset(&base)
+      } else if edge == .top {
+        padProps.padding = EdgeInsets(top: insetAmount, leading: 0, bottom: 0, trailing: 0)
+      } else {
+        padProps.padding = EdgeInsets(top: 0, leading: 0, bottom: insetAmount, trailing: 0)
       }
-      _ = applyScrollInset(&base)
-      var layerProps = NodeProps()
-      layerProps.alignment = Alignment(horizontal: alignment, vertical: edge == .top ? .top : .bottom)
-      layerProps.layerBehind = false
-      return Element(kind: .layer, props: layerProps, children: [base, barEl])
-    } else {
-      var stackProps = NodeProps()
-      stackProps.spacing = Double(spacing)
-      stackProps.horizontalAlignment = alignment
-      let children = edge == .top ? [barEl, base] : [base, barEl]
-      return Element(kind: .container(.vertical), props: stackProps, children: flattenChildrenList(children))
     }
+    // Keep a single `.layer -> [.padding(base), bar]` shape across empty/non-empty
+    // bars and scrolling/non-scrolling content so controls inside `bar` or `base`
+    // retain their NodeID and native focus when siblings swap.
+    let paddedBase = Element(kind: .padding, props: padProps, children: [base])
+    var layerProps = NodeProps()
+    layerProps.alignment = Alignment(horizontal: alignment, vertical: edge == .top ? .top : .bottom)
+    layerProps.layerBehind = false
+    return Element(kind: .layer, props: layerProps, children: [paddedBase, barEl])
   }
 }
 
@@ -363,14 +365,39 @@ private struct SafeAreaInsetHorizontalView<Content: View, Bar: View>: View, _Pri
   var body: Never { fatalError("SafeAreaInsetHorizontalView is primitive") }
 
   func _makeElement(path: ViewPath) -> Element {
-    let base = _render(content, path: path.appending(index: 0))
+    var base = _render(content, path: path.appending(index: 0))
     let barEl = _render(bar, path: path.appending(index: 1))
-    if barEl.kind == .empty { return base }
-    var stackProps = NodeProps()
-    stackProps.spacing = Double(spacing)
-    stackProps.verticalAlignment = alignment
-    let children = edge == .leading ? [barEl, base] : [base, barEl]
-    return Element(kind: .container(.horizontal), props: stackProps, children: flattenChildrenList(children))
+    var padProps = NodeProps()
+    if barEl.kind != .empty {
+      let measuredBar = LayoutEngine().measuredSize(of: barEl)
+      let insetAmount = measuredBar.width + Double(spacing)
+      if containsScrollNode(base) {
+        func applyScrollInset(_ node: inout Element) -> Bool {
+          if node.kind == .scroll {
+            if edge == .leading {
+              node.props.scrollContentInsets.leading += insetAmount
+            } else {
+              node.props.scrollContentInsets.trailing += insetAmount
+            }
+            return true
+          }
+          for i in node.children.indices {
+            if applyScrollInset(&node.children[i]) { return true }
+          }
+          return false
+        }
+        _ = applyScrollInset(&base)
+      } else if edge == .leading {
+        padProps.padding = EdgeInsets(top: 0, leading: insetAmount, bottom: 0, trailing: 0)
+      } else {
+        padProps.padding = EdgeInsets(top: 0, leading: 0, bottom: 0, trailing: insetAmount)
+      }
+    }
+    let paddedBase = Element(kind: .padding, props: padProps, children: [base])
+    var layerProps = NodeProps()
+    layerProps.alignment = Alignment(horizontal: edge == .leading ? .leading : .trailing, vertical: alignment)
+    layerProps.layerBehind = false
+    return Element(kind: .layer, props: layerProps, children: [paddedBase, barEl])
   }
 }
 

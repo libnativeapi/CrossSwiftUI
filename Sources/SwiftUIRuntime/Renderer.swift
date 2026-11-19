@@ -28,7 +28,8 @@ import Foundation
   private var mounted: Element?
   private var normalized: Element?
   private var hoverActions: [NodeID: (Bool) -> Void] = [:]
-  private var isRendering = false
+  public private(set) var isRendering = false
+  public var onDidFinishRenderPasses: (() -> Void)?
   private var needsRender = false
   private var pendingAnimation: Animation?
   private var pendingAnimationExplicit = false
@@ -125,6 +126,8 @@ import Foundation
 
     if needsRender {
       renderIfNeeded()
+    } else {
+      onDidFinishRenderPasses?()
     }
   }
 
@@ -149,6 +152,11 @@ import Foundation
     guard size != contentSize || invalidateMeasurements else { return }
     if invalidateMeasurements {
       layoutEngine.invalidateMeasurements()
+      evaluations.invalidateAll()
+    } else if let mounted,
+      abs(size.height - contentSize.height) > 0.5 || abs(size.width - contentSize.width) > 0.5,
+      containsLazyContainer(mounted)
+    {
       evaluations.invalidateAll()
     }
     contentSize = size
@@ -248,6 +256,7 @@ import Foundation
   /// Runs a render pass if one is pending. Coalesces writes made during a pass
   /// into at most eight follow-up passes, then stops to avoid a render loop.
   public func renderIfNeeded() {
+    guard !isRendering else { return }
     guard mounted != nil else {
       mount()
       return
@@ -261,6 +270,7 @@ import Foundation
       unpublishedOffsets.removeAll(keepingCapacity: true)
       passes += 1
     } while needsRender && passes < 8
+    onDidFinishRenderPasses?()
   }
 
   /// Invokes the current action registered for a native button.

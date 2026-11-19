@@ -32,6 +32,14 @@
       let listener: ListenerId
       let multiline: Bool
       let secure: Bool
+      var placeholder: String?
+      var fontFamily: String?
+      var fontSizePt: Double = -1
+      var fontWeight: CInt = -1
+      var textColorARGB: UInt32 = 0
+      var bgColorARGB: UInt32?
+      var accessibilityLabel: String?
+      var enabled: Bool = true
     }
     private var edits: [NodeID: RetainedEdit] = [:]
     private var root: Element?
@@ -266,6 +274,21 @@
     public func flushSyncPaint() {
       guard let surface else { return }
       sui_surface_flush_paint(surface)
+    }
+
+    public func beginPendingResize(width: Double, height: Double) {
+      guard let surface else { return }
+      sui_surface_begin_pending_resize(surface, width, height)
+    }
+
+    public func prerenderPendingResize() {
+      guard let surface else { return }
+      sui_surface_prerender_pending_resize(surface)
+    }
+
+    public func commitPendingResize() {
+      guard let surface else { return }
+      sui_surface_commit_pending_resize(surface)
     }
 
     private struct TextMeasurementKey: Hashable {
@@ -705,26 +728,57 @@
             view: field, listener: listener, multiline: node.props.multiline,
             secure: node.props.secure)
         }
-        if let edit = edits[node.id], let handle = edit.view.nativeObject {
+        if var edit = edits[node.id], let handle = edit.view.nativeObject {
           let p = node.props
           let r = node.frame
           if !geometryOnly || !retained {
             let font = p.font ?? .body
-            edit.view.setText(p.text)
-            edit.view.setPlaceholder(p.placeholder.isEmpty ? nil : p.placeholder)
-            edit.view.setFontFamily(font.family.isEmpty ? nil : font.family)
-            edit.view.setFontSize(Double(font.size) * 72.0 / 96.0)
-            edit.view.setFontWeight(CInt(font.weight.value.rounded()))
+            if edit.view.text != p.text {
+              edit.view.setText(p.text)
+            }
+            let placeholder = p.placeholder.isEmpty ? nil : p.placeholder
+            if !retained || edit.placeholder != placeholder {
+              edit.view.setPlaceholder(placeholder)
+              edit.placeholder = placeholder
+            }
+            let fontFamily = font.family.isEmpty ? nil : font.family
+            let fontSizePt = Double(font.size) * 72.0 / 96.0
+            let fontWeight = CInt(font.weight.value.rounded())
+            if !retained || edit.fontFamily != fontFamily || abs(edit.fontSizePt - fontSizePt) > 0.01
+              || edit.fontWeight != fontWeight
+            {
+              edit.view.setFontFamily(fontFamily)
+              edit.view.setFontSize(fontSizePt)
+              edit.view.setFontWeight(fontWeight)
+              edit.fontFamily = fontFamily
+              edit.fontSizePt = fontSizePt
+              edit.fontWeight = fontWeight
+            }
             let defaultFg: SwiftUIRuntime.Color =
               environment.colorScheme == .dark ? .white : .black
-            edit.view.setTextColor((p.foreground ?? defaultFg).nativeColor)
-            if let explicitBg = p.background, explicitBg.opacity >= 0.999 {
-              edit.view.setBackgroundColor(explicitBg.nativeColor)
+            let resolvedFg = p.foreground ?? defaultFg
+            if !retained || edit.textColorARGB != resolvedFg.argb {
+              edit.view.setTextColor(resolvedFg.nativeColor)
+              edit.textColorARGB = resolvedFg.argb
             }
-            let name = p.accessibilityLabel.isEmpty ? p.placeholder : p.accessibilityLabel
-            edit.view.setAccessibilityLabel(name.isEmpty ? nil : name)
+            if let explicitBg = p.background, explicitBg.opacity >= 0.999 {
+              if !retained || edit.bgColorARGB != explicitBg.argb {
+                edit.view.setBackgroundColor(explicitBg.nativeColor)
+                edit.bgColorARGB = explicitBg.argb
+              }
+            }
+            let rawName = p.accessibilityLabel.isEmpty ? p.placeholder : p.accessibilityLabel
+            let name = rawName.isEmpty ? nil : rawName
+            if !retained || edit.accessibilityLabel != name {
+              edit.view.setAccessibilityLabel(name)
+              edit.accessibilityLabel = name
+            }
             let enabled = p.enabled && controlAllowed
-            edit.view.setEnabled(enabled)
+            if !retained || edit.enabled != enabled {
+              edit.view.setEnabled(enabled)
+              edit.enabled = enabled
+            }
+            edits[node.id] = edit
             if wantsFocus && enabled && !edit.view.isFocused && inViewport {
               edit.view.focus()
             }
@@ -756,8 +810,8 @@
           sui_edit_order(surface, handle)
           sui_control_opacity(handle, p.opacity)
           let visible = shownInViewport ? editRect.intersection(nativeClip ?? clip) : .zero
-          sui_control_clip(
-            handle, visible.minX - editRect.minX, visible.minY - editRect.minY,
+          sui_surface_control_clip(
+            surface, handle, visible.minX - editRect.minX, visible.minY - editRect.minY,
             visible.width, visible.height)
         }
       }
@@ -771,8 +825,8 @@
             }
             sui_custom_view_order(surface, handle)
             let visible = shownInViewport ? r.intersection(nativeClip ?? clip) : .zero
-            sui_control_clip(
-              handle, visible.minX - r.minX, visible.minY - r.minY, visible.width, visible.height)
+            sui_surface_control_clip(
+              surface, handle, visible.minX - r.minX, visible.minY - r.minY, visible.width, visible.height)
           }
         } else {
           let created = adapter.createMount(frame: CGRect(x: r.minX, y: r.minY, width: r.width, height: r.height))
@@ -782,8 +836,8 @@
             sui_control_frame(surface, handle, r.minX, r.minY, r.width, r.height)
             sui_custom_view_order(surface, handle)
             let visible = shownInViewport ? r.intersection(nativeClip ?? clip) : .zero
-            sui_control_clip(
-              handle, visible.minX - r.minX, visible.minY - r.minY, visible.width, visible.height)
+            sui_surface_control_clip(
+              surface, handle, visible.minX - r.minX, visible.minY - r.minY, visible.width, visible.height)
           }
           hostedViews[node.id] = (created.mount, handle)
         }

@@ -292,6 +292,20 @@ open class NSView: NSResponder {
     layout()
     for sub in subviews { sub.layoutSubtreeIfNeeded() }
   }
+  open func applyWindowFrameChange(
+    contentSize: NSSize,
+    display: Bool,
+    commitNativeBounds: @escaping () -> Void
+  ) -> Bool {
+    if subviews.count == 1 {
+      return subviews[0].applyWindowFrameChange(
+        contentSize: contentSize,
+        display: display,
+        commitNativeBounds: commitNativeBounds
+      )
+    }
+    return false
+  }
   open func invalidateIntrinsicContentSize() {}
   open func resetCursorRects() {}
   public func addCursorRect(_ aRect: NSRect, cursor anObj: NSCursor) {}

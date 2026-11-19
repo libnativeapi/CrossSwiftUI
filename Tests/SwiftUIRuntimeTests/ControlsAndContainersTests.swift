@@ -14,6 +14,20 @@ private final class SidebarTestNav {
   var tab: SidebarTestTab = .general
 }
 
+@MainActor
+@Observable
+private final class PaletteModel {
+  var query = ""
+  var isCollapsed: Bool { query.isEmpty }
+}
+
+@MainActor
+@Observable
+private final class ExpandState {
+  var query = ""
+  var isCollapsed: Bool { query.isEmpty }
+}
+
 final class ControlsAndContainersTests: XCTestCase {
   @MainActor
   func testGroupedFormTogglePickerAndSectionRenderAndMutate() {
@@ -252,5 +266,128 @@ final class ControlsAndContainersTests: XCTestCase {
     renderer.renderIfNeeded()
     XCTAssertEqual(nav.tab, .about)
     XCTAssertTrue(findTexts(renderer.tree!).contains("Detail: about"))
+  }
+
+  @MainActor
+  func testSafeAreaInsetPreservesTextFieldIdentityAcrossCollapsedAndScrollSwap() {
+    struct PaletteShell: View {
+      let model: PaletteModel
+      var body: some View {
+        @Bindable var m = model
+        return Group {
+          if model.isCollapsed {
+            Color.clear
+          } else {
+            ScrollView {
+              VStack(spacing: 4) {
+                Text("Result for \(model.query)").frame(height: 36)
+              }
+            }
+          }
+        }
+        .safeAreaInset(edge: .top, spacing: 0) {
+          TextField("Search", text: $m.query).frame(height: 56)
+        }
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+          if !model.isCollapsed {
+            Text("Footer").frame(height: 36)
+          }
+        }
+      }
+    }
+
+    func findTextFieldID(_ el: Element) -> NodeID? {
+      if el.kind == .textField { return el.id }
+      for child in el.children {
+        if let found = findTextFieldID(child) { return found }
+      }
+      return nil
+    }
+
+    let model = PaletteModel()
+    let backend = FakeBackend()
+    let renderer = Renderer(
+      backend: backend,
+      root: AnyView(PaletteShell(model: model)),
+      size: Size(width: 758, height: 64)
+    )
+    renderer.mount()
+    let initialFieldID = findTextFieldID(renderer.tree!)
+    XCTAssertNotNil(initialFieldID)
+
+    _ = renderer.input(id: initialFieldID, event: 7, text: "calc")
+    renderer.resize(to: Size(width: 750, height: 475))
+    renderer.renderIfNeeded()
+    let expandedFieldID = findTextFieldID(renderer.tree!)
+    XCTAssertEqual(expandedFieldID, initialFieldID, "TextField NodeID must survive collapsed->expanded swap")
+
+    _ = renderer.input(id: initialFieldID, event: 7, text: "")
+    renderer.resize(to: Size(width: 758, height: 64))
+    renderer.renderIfNeeded()
+    let collapsedAgainID = findTextFieldID(renderer.tree!)
+    XCTAssertEqual(collapsedAgainID, initialFieldID, "TextField NodeID must survive expanded->collapsed swap")
+  }
+
+  @MainActor
+  func testReentrantRenderIfNeededInsideOnChangeResizePublishesExpandedLayout() {
+    final class DirectPublishBackend: RenderBackend {
+      var tapHandler: ((NodeID) -> Void)?
+      var transactionHandler: ((() -> Void) -> Void)?
+      var animationTickHandler: (() -> Bool)?
+      var environment = EnvironmentValues()
+      var needsRenderCommands: Bool { false }
+      var publishedSizes: [Size] = []
+      func perform(_ commands: [RenderCommand]) {}
+      func didRender(_ root: Element) {
+        publishedSizes.append(root.frame.size)
+      }
+    }
+
+    var rendererRef: Renderer?
+    struct ResizingPalette: View {
+      let state: ExpandState
+      let onSyncWindow: (Bool) -> Void
+      var body: some View {
+        @Bindable var s = state
+        return VStack(spacing: 0) {
+          TextField("Search", text: $s.query).frame(height: 56)
+          if !state.isCollapsed {
+            ScrollView {
+              Text("Calc = 42").frame(maxWidth: .infinity, minHeight: 200)
+            }
+          }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        .onChange(of: state.isCollapsed) { _, collapsed in
+          onSyncWindow(collapsed)
+        }
+      }
+    }
+
+    let state = ExpandState()
+    let backend = DirectPublishBackend()
+    let renderer = Renderer(
+      backend: backend,
+      root: AnyView(ResizingPalette(state: state) { collapsed in
+        let target = collapsed ? Size(width: 758, height: 64) : Size(width: 750, height: 475)
+        rendererRef?.resize(to: target)
+        // Simulate NSWindow.setFrame(..., display: true) -> layoutSubtreeIfNeeded() -> renderIfNeeded()
+        rendererRef?.renderIfNeeded()
+      }),
+      size: Size(width: 758, height: 64)
+    )
+    rendererRef = renderer
+    renderer.mount()
+    backend.publishedSizes.removeAll()
+
+    state.query = "calc"
+    renderer.renderIfNeeded()
+
+    XCTAssertEqual(
+      backend.publishedSizes,
+      [Size(width: 750, height: 475)],
+      "Intermediate pre-resize 758x64 pass must not overwrite expanded 750x475 publication"
+    )
+    XCTAssertEqual(renderer.tree?.frame.size, Size(width: 750, height: 475))
   }
 }

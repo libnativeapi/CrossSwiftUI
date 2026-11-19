@@ -318,6 +318,8 @@ open class NSWindow: NSResponder {
 
   private var storedFrame: NSRect
   private var suppressMoveCallbacks = false
+  private var hasPendingNativeBounds = false
+  private var pendingContentSize: NSSize = .zero
   public private(set) var isVisible: Bool = false
   public internal(set) var isKeyWindow: Bool = false
   public internal(set) var isMainWindow: Bool = false
@@ -353,6 +355,9 @@ open class NSWindow: NSResponder {
 
   public var frame: NSRect {
     get {
+      if hasPendingNativeBounds {
+        return storedFrame
+      }
       #if !os(macOS)
         if let nw = nativeWindow {
           let b = nw.bounds
@@ -371,6 +376,9 @@ open class NSWindow: NSResponder {
   }
 
   public var contentLayoutRect: NSRect {
+    if hasPendingNativeBounds && pendingContentSize.width > 0 && pendingContentSize.height > 0 {
+      return NSRect(origin: .zero, size: pendingContentSize)
+    }
     #if !os(macOS)
       if let nw = nativeWindow {
         let cs = nw.contentSize
@@ -563,7 +571,45 @@ open class NSWindow: NSResponder {
   #endif
 
   open func setFrame(_ frameRect: NSRect, display flag: Bool, animate animateFlag: Bool = false) {
+    let previousFrame = storedFrame
     storedFrame = frameRect
+    #if os(Windows)
+      if flag && isVisible && !animateFlag, let nw = nativeWindow, let cv = contentView {
+        let top = CrossAppKitCoordinates.rectToNativeTopLeft(frameRect)
+        let r = NativeAPI.Rectangle(x: top.x, y: top.y, width: max(1, top.width), height: max(1, top.height))
+        let targetContentSize: NSSize
+        if !styleMask.contains(.titled) {
+          targetContentSize = frameRect.size
+        } else {
+          let currentContent = contentLayoutRect.size
+          let borderW = max(0, previousFrame.width - currentContent.width)
+          let borderH = max(0, previousFrame.height - currentContent.height)
+          targetContentSize = NSSize(
+            width: max(1, frameRect.width - borderW),
+            height: max(1, frameRect.height - borderH)
+          )
+        }
+        hasPendingNativeBounds = true
+        pendingContentSize = targetContentSize
+        let commitBounds = { [weak self] in
+          guard let self else { return }
+          self.hasPendingNativeBounds = false
+          let prevSuppress = self.suppressMoveCallbacks
+          self.suppressMoveCallbacks = true
+          defer { self.suppressMoveCallbacks = prevSuppress }
+          nw.setBounds(r)
+          self.contentView?.frame = NSRect(origin: .zero, size: self.contentLayoutRect.size)
+        }
+        if cv.applyWindowFrameChange(
+          contentSize: targetContentSize,
+          display: flag,
+          commitNativeBounds: commitBounds
+        ) {
+          return
+        }
+        hasPendingNativeBounds = false
+      }
+    #endif
     suppressMoveCallbacks = true
     defer { suppressMoveCallbacks = false }
     #if !os(macOS)
