@@ -175,13 +175,13 @@ same `CounterView` with Compose Material 3 text and buttons. See the
 [Android compatibility plan](docs/ANDROID.md) for the supported subset and
 upcoming milestones.
 
-## Build an `.xcodeproj` for Windows & Linux
+## Build an `.xcodeproj` for Windows, Linux, Wasm & HarmonyOS
 
 CrossSwiftUI provides a cross-platform **`xcodebuild`-compatible CLI**
 (`CrossXcodeBuild` / `CrossXcodeBuildCLI`) that compiles unmodified macOS
 `.xcodeproj` projects (classic groups or Xcode 16 synchronized folders) into
-self-contained, runnable Windows or Linux application directories with zero
-platform-specific configuration in the app project:
+self-contained Windows, Linux, WebAssembly, or HarmonyOS output directories
+with zero platform-specific configuration in the app project:
 
 ```bash
 # List targets, configurations, and schemes (Apple-compatible text or JSON)
@@ -192,14 +192,26 @@ xcodebuild -showBuildSettings -json \
   -project Examples/XcodeDemo/XcodeDemo.xcodeproj \
   -configuration Release -derivedDataPath build
 
-# Compile and stage into build/Build/Products/Release/XcodeDemo/
+# Compile and stage for the current desktop host (Windows or Linux)
 xcodebuild -project Examples/XcodeDemo/XcodeDemo.xcodeproj \
   -scheme XcodeDemo -configuration Release \
   -derivedDataPath build CODE_SIGNING_ALLOWED=NO clean build
+
+# Cross-compile to WebAssembly from macOS or Linux (requires Swift Wasm SDK + npm)
+xcodebuild -project Examples/XcodeDemo/XcodeDemo.xcodeproj \
+  -scheme XcodeDemo -configuration Release \
+  -destination generic/platform=Wasm \
+  -derivedDataPath build clean build
+
+# Cross-compile to HarmonyOS arm64-v8a from macOS or Linux (requires Static Linux ARM64 SDK)
+xcodebuild -project Examples/XcodeDemo/XcodeDemo.xcodeproj \
+  -scheme XcodeDemo -configuration Release \
+  -destination generic/platform=HarmonyOS \
+  -derivedDataPath build clean build
 ```
 
 When run from source via SwiftPM (`swift run xcodebuild ...`), or installed as
-`xcodebuild` on Windows and Linux hosts, `CrossXcodeBuild`:
+`xcodebuild`, `CrossXcodeBuild`:
 
 - Parses `project.pbxproj` (plus `.xcconfig`, `Package.resolved`, and
   `Info.plist` keys) in pure Swift with no Xcode dependency.
@@ -210,15 +222,27 @@ When run from source via SwiftPM (`swift run xcodebuild ...`), or installed as
   `.imageset` / `.xcstrings` runtime assets, multi-size Windows `AppIcon.ico`
   + Win32 manifest/version resource (`AppResources.rc`), and Linux
   `.desktop` + `hicolor` PNG icons.
-- Stages a self-contained runnable app directory at
+- Stages a self-contained output directory at
   `<CONFIGURATION_BUILD_DIR>/<ProductName>/` (defaulting to
-  `<derivedDataPath>/Build/Products/<Configuration>/<ProductName>/`), bundling
-  required Windows `.dll`s (via PE import scanning) or Linux `.so`s (via `ldd`
-  + `$ORIGIN/lib` RPATH).
+  `<derivedDataPath>/Build/Products/<Configuration>/<ProductName>/`):
+  - **Windows / Linux**: native executable, `Resources/`, Windows runtime `.dll`s
+    (via PE import scanning) or Linux runtime `.so`s (via `ldd` + `$ORIGIN/lib`
+    RPATH) + `.desktop` + `hicolor` icons.
+  - **Wasm** (`-destination generic/platform=Wasm` or `-sdk wasm`): static web
+    bundle with `index.html`, `app/<Product>.wasm`, `app/index.js`,
+    `app/node_modules/@bjorn3/browser_wasi_shim`, and `Resources/`.
+  - **HarmonyOS** (`-destination generic/platform=HarmonyOS` or `-sdk ohos`):
+    `runtime/` containing `aarch64-swift-linux-musl` object files
+    (`NativeAPI.o`, `SwiftUIRuntime.o`, `SwiftUI.o`, `<Product>.o`) and static
+    Swift/Foundation musl archives, plus a ready-to-assemble Stage-model
+    HarmonyOS project (`AppScope/`, `entry/src/main/cpp/`, `entry/src/main/ets/`,
+    `rawfile/Resources/`). When DevEco Studio is installed (`DEVECO_STUDIO_HOME`
+    or `/Applications/DevEco-Studio.app/Contents`), `ohpm` + `hvigorw` are
+    invoked automatically to produce the `.hap`.
 
 [`Examples/XcodeDemo`](Examples/XcodeDemo/XcodeDemo.xcodeproj) is an unmodified
-macOS Xcode project that builds both with Apple's `xcodebuild` on macOS and
-with CrossSwiftUI's `xcodebuild` on Windows and Linux.
+macOS Xcode project that builds with Apple's `xcodebuild` on macOS and with
+CrossSwiftUI's `xcodebuild` for Windows, Linux, WebAssembly, and HarmonyOS.
 
 ## Repository layout
 

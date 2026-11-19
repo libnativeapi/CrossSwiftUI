@@ -8,9 +8,12 @@ public struct BuiltTargetArtifacts: Sendable {
   public let scratchDirectory: URL
   public let compiledAssets: CompiledAssets
   public let swiftExecutableURL: URL
+  public let crossSwiftRoot: URL
+  public let wasmPackageDirectory: URL?
+  public let harmonyArtifacts: HarmonyBuildArtifacts?
 }
 
-public enum WorkspaceSynthesizerError: Error, LocalizedError {
+public enum BuildBackendError: Error, LocalizedError {
   case crossSwiftNotFound
   case nativeAPINotFound(String)
   case toolMissing(String)
@@ -30,7 +33,7 @@ public enum WorkspaceSynthesizerError: Error, LocalizedError {
   }
 }
 
-public final class WorkspaceSynthesizer {
+public final class SwiftPMBackend {
   public init() {}
 
   public func build(
@@ -42,12 +45,17 @@ public final class WorkspaceSynthesizer {
   ) throws -> BuiltTargetArtifacts {
     let fm = FileManager.default
     let crossSwiftRoot = try Self.resolveCrossSwiftRoot(explicit: options.crossSwiftPath)
-    let nativeAPISwiftRoot = try Self.resolveNativeAPISwiftRoot(
-      explicit: options.nativeAPISwiftPath,
-      crossSwiftRoot: crossSwiftRoot
-    )
+    let nativeAPISwiftRoot: URL?
+    if platform == .wasm {
+      nativeAPISwiftRoot = nil
+    } else {
+      nativeAPISwiftRoot = try Self.resolveNativeAPISwiftRoot(
+        explicit: options.nativeAPISwiftPath,
+        crossSwiftRoot: crossSwiftRoot
+      )
+    }
 
-    if platform == .windows {
+    if platform == .windows, let nativeAPISwiftRoot {
       try ensureWindowsNativeAPICoreJunction(nativeAPISwiftRoot: nativeAPISwiftRoot)
     }
 
@@ -70,6 +78,33 @@ public final class WorkspaceSynthesizer {
     let assetCompiler = AssetAndIconCompiler()
     let compiledAssets = try assetCompiler.compile(project: project, stagingRoot: assetsStaging)
 
+    if platform == .harmonyos {
+      guard let nativeAPISwiftRoot else {
+        throw BuildBackendError.nativeAPINotFound(crossSwiftRoot.deletingLastPathComponent().path)
+      }
+      let harmony = try HarmonyBuilder.build(
+        project: project,
+        configuration: configuration,
+        buildRoot: buildRoot,
+        compiledAssets: compiledAssets,
+        crossSwiftRoot: crossSwiftRoot,
+        nativeAPISwiftRoot: nativeAPISwiftRoot
+      )
+      let swiftExe = (try? locateSwiftExecutable()) ?? URL(fileURLWithPath: "/usr/bin/swift")
+      return BuiltTargetArtifacts(
+        targetPlatform: .harmonyos,
+        architecture: .arm64,
+        executableURL: harmony.appObjectURL,
+        buildDirectory: buildRoot,
+        scratchDirectory: scratchDir,
+        compiledAssets: compiledAssets,
+        swiftExecutableURL: swiftExe,
+        crossSwiftRoot: crossSwiftRoot,
+        wasmPackageDirectory: nil,
+        harmonyArtifacts: harmony
+      )
+    }
+
     var compiledResURL: URL?
     if platform == .windows, let rcURL = compiledAssets.windowsResourceScriptURL {
       compiledResURL = try compileWindowsResources(rcURL: rcURL)
@@ -77,6 +112,7 @@ public final class WorkspaceSynthesizer {
 
     try stageSources(
       project: project,
+      platform: platform,
       generatedAssetSymbolsURL: compiledAssets.generatedSymbolsSwiftURL,
       buildRoot: buildRoot
     )
@@ -95,10 +131,60 @@ public final class WorkspaceSynthesizer {
     let packageSwiftURL = buildRoot.appendingPathComponent("Package.swift")
     try writeIfChanged(text: manifestText, to: packageSwiftURL)
 
+    if platform == .wasm {
+      let (swiftTool, prefixArgs, wasmSDK) = try resolveWasmToolchainAndSDK(
+        preferredSDK: project.mainTarget.buildSettings["SWIFT_WASM_SDK"]
+          ?? ProcessRunner.environmentValue("SWIFT_WASM_SDK")
+      )
+      let jsArgs = prefixArgs + [
+        "package",
+        "--package-path", buildRoot.path,
+        "--scratch-path", scratchDir.path,
+        "--swift-sdk", wasmSDK,
+        "js",
+        "--product", project.mainTarget.executableName,
+        "-c", configuration.swiftPMFlag,
+      ]
+      let logURL = buildRoot.appendingPathComponent("swift-wasm-build.log")
+      let buildResult = try ProcessRunner.run(
+        executable: swiftTool,
+        arguments: jsArgs,
+        workingDirectory: buildRoot,
+        environmentOverrides: ["CROSS_SWIFTUI_WEB": "1"],
+        logFile: logURL
+      )
+      if buildResult.exitCode != 0 {
+        throw ProcessRunnerError.commandFailed(
+          command: "\(swiftTool.path) \(jsArgs.joined(separator: " "))",
+          exitCode: buildResult.exitCode,
+          output: buildResult.stdout
+        )
+      }
+      let wasmPkgDir = scratchDir.appendingPathComponent("plugins/PackageToJS/outputs/Package")
+      let indexJS = wasmPkgDir.appendingPathComponent("index.js")
+      guard fm.fileExists(atPath: indexJS.path) else {
+        throw BuildBackendError.binaryMissing(indexJS.path)
+      }
+      let wasmBinary = wasmPkgDir.appendingPathComponent("\(project.mainTarget.executableName).wasm")
+      return BuiltTargetArtifacts(
+        targetPlatform: .wasm,
+        architecture: .wasm32,
+        executableURL: fm.fileExists(atPath: wasmBinary.path) ? wasmBinary : indexJS,
+        buildDirectory: buildRoot,
+        scratchDirectory: scratchDir,
+        compiledAssets: compiledAssets,
+        swiftExecutableURL: swiftTool,
+        crossSwiftRoot: crossSwiftRoot,
+        wasmPackageDirectory: wasmPkgDir,
+        harmonyArtifacts: nil
+      )
+    }
+
     let swiftExe = try locateSwiftExecutable()
-    var envOverrides: [String: String] = [
-      "NATIVEAPI_SWIFT_PATH": nativeAPISwiftRoot.path,
-    ]
+    var envOverrides: [String: String] = [:]
+    if let nativeAPISwiftRoot {
+      envOverrides["NATIVEAPI_SWIFT_PATH"] = nativeAPISwiftRoot.path
+    }
     if platform == .windows,
        let devDir = ProcessRunner.environmentValue("DEVELOPER_DIR"),
        !devDir.isEmpty
@@ -160,7 +246,7 @@ public final class WorkspaceSynthesizer {
       : project.mainTarget.executableName
     let executableURL = binDirURL.appendingPathComponent(exeFilename)
     guard fm.fileExists(atPath: executableURL.path) else {
-      throw WorkspaceSynthesizerError.binaryMissing(executableURL.path)
+      throw BuildBackendError.binaryMissing(executableURL.path)
     }
 
     return BuiltTargetArtifacts(
@@ -170,7 +256,10 @@ public final class WorkspaceSynthesizer {
       buildDirectory: buildRoot,
       scratchDirectory: scratchDir,
       compiledAssets: compiledAssets,
-      swiftExecutableURL: swiftExe
+      swiftExecutableURL: swiftExe,
+      crossSwiftRoot: crossSwiftRoot,
+      wasmPackageDirectory: nil,
+      harmonyArtifacts: nil
     )
   }
 
@@ -206,7 +295,7 @@ public final class WorkspaceSynthesizer {
         return candidate
       }
     }
-    throw WorkspaceSynthesizerError.crossSwiftNotFound
+    throw BuildBackendError.crossSwiftNotFound
   }
 
   public static func resolveNativeAPISwiftRoot(
@@ -229,7 +318,7 @@ public final class WorkspaceSynthesizer {
         return candidate
       }
     }
-    throw WorkspaceSynthesizerError.nativeAPINotFound(parentDir.path)
+    throw BuildBackendError.nativeAPINotFound(parentDir.path)
   }
 
   public func resolveBuildDirectory(
@@ -310,7 +399,7 @@ public final class WorkspaceSynthesizer {
     guard let rcTool = ProcessRunner.findExecutable(
       named: ["llvm-rc", "rc"], extraDirectories: extraDirs)
     else {
-      throw WorkspaceSynthesizerError.toolMissing(
+      throw BuildBackendError.toolMissing(
         "Could not find 'llvm-rc' or 'rc.exe' to embed Windows icon and manifest"
       )
     }
@@ -356,13 +445,92 @@ public final class WorkspaceSynthesizer {
       extraDirs.append(home.appendingPathComponent(".local/bin"))
     #endif
     guard let swift = ProcessRunner.findExecutable(named: ["swift"], extraDirectories: extraDirs) else {
-      throw WorkspaceSynthesizerError.toolMissing("Could not locate 'swift' compiler executable")
+      throw BuildBackendError.toolMissing("Could not locate 'swift' compiler executable")
+    }
+    // Avoid `Circular swiftly proxy invocation` when `xcodebuild` itself is launched via `swift run`
+    // under swiftly: resolve the proxy symlink directly to the active toolchain's `usr/bin/swift`.
+    let resolved = swift.resolvingSymlinksInPath()
+    if resolved.lastPathComponent == "swiftly" {
+      if let locResult = try? ProcessRunner.run(executable: resolved, arguments: ["use", "--print-location"]),
+         locResult.exitCode == 0
+      {
+        let toolchainRoot = locResult.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !toolchainRoot.isEmpty {
+          let realSwift = URL(fileURLWithPath: toolchainRoot).appendingPathComponent("usr/bin/swift")
+          if fm.isExecutableFile(atPath: realSwift.path) {
+            return realSwift
+          }
+        }
+      }
     }
     return swift
   }
 
+  private func resolveWasmToolchainAndSDK(
+    preferredSDK: String?
+  ) throws -> (executable: URL, prefixArgs: [String], sdkID: String) {
+    let fm = FileManager.default
+    let home = fm.homeDirectoryForCurrentUser
+    var candidates: [(URL, [String])] = []
+
+    if let toolchainBin = ProcessRunner.environmentValue("SWIFT_TOOLCHAIN_BIN"), !toolchainBin.isEmpty {
+      let swiftBin = URL(fileURLWithPath: toolchainBin).appendingPathComponent("swift")
+      if fm.isExecutableFile(atPath: swiftBin.path) {
+        candidates.append((swiftBin, []))
+      }
+    }
+
+    let swiftlyDirs = [
+      home.appendingPathComponent(".swiftly/bin"),
+      home.appendingPathComponent(".local/share/swiftly/bin"),
+      home.appendingPathComponent(".local/bin"),
+    ]
+    if let swiftly = ProcessRunner.findExecutable(named: ["swiftly"], extraDirectories: swiftlyDirs) {
+      let toolchain = ProcessRunner.environmentValue("SWIFT_WASM_TOOLCHAIN") ?? "6.4.2"
+      candidates.append((swiftly, ["run", "+\(toolchain)", "swift"]))
+      candidates.append((swiftly, ["run", "swift"]))
+    }
+
+    if let defaultSwift = try? locateSwiftExecutable() {
+      candidates.append((defaultSwift, []))
+    }
+
+    for (exe, prefix) in candidates {
+      guard let res = try? ProcessRunner.run(executable: exe, arguments: prefix + ["sdk", "list"]),
+            res.exitCode == 0
+      else {
+        continue
+      }
+      let sdks = res.stdout
+        .components(separatedBy: .newlines)
+        .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+        .filter { !$0.isEmpty }
+
+      if let preferred = preferredSDK, !preferred.isEmpty {
+        if sdks.contains(preferred) {
+          return (exe, prefix, preferred)
+        }
+      }
+      if sdks.contains("swift-6.4.2-RELEASE_wasm") {
+        return (exe, prefix, "swift-6.4.2-RELEASE_wasm")
+      }
+      if let matched = sdks.first(where: { $0.hasSuffix("_wasm") && !$0.contains("embedded") }) {
+        return (exe, prefix, matched)
+      }
+    }
+
+    if let preferred = preferredSDK, !preferred.isEmpty, let first = candidates.first {
+      return (first.0, first.1, preferred)
+    }
+
+    throw BuildBackendError.toolMissing(
+      "Could not find an installed Swift Wasm SDK (e.g. swift-6.4.2-RELEASE_wasm). Install one with 'swift sdk install' or set SWIFT_WASM_SDK."
+    )
+  }
+
   private func stageSources(
     project: ResolvedXcodeProject,
+    platform: TargetPlatform,
     generatedAssetSymbolsURL: URL?,
     buildRoot: URL
   ) throws {
@@ -373,13 +541,15 @@ public final class WorkspaceSynthesizer {
     }
     try fm.createDirectory(at: sourcesRoot, withIntermediateDirectories: true)
 
+    let shouldPreprocessSwift = (platform == .linux || platform == .windows)
+
     for target in project.allTargets {
       let isMain = target.name == project.mainTarget.name
       let targetDir = sourcesRoot.appendingPathComponent(target.name)
       try fm.createDirectory(at: targetDir, withIntermediateDirectories: true)
 
       let rootPrefix = project.projectRootURL.standardizedFileURL.path + "/"
-      func copySourceList(_ files: [URL], into destRoot: URL) throws {
+      func copySourceList(_ files: [URL], into destRoot: URL, preprocessSwift: Bool) throws {
         var usedRelativePaths = Set<String>()
         for (idx, fileURL) in files.enumerated() {
           let stdPath = fileURL.standardizedFileURL.path
@@ -394,17 +564,24 @@ public final class WorkspaceSynthesizer {
           }
           let destURL = destRoot.appendingPathComponent(relPath)
           try fm.createDirectory(at: destURL.deletingLastPathComponent(), withIntermediateDirectories: true)
-          try fm.copyItem(at: fileURL, to: destURL)
+          if preprocessSwift, let content = try? String(contentsOf: fileURL, encoding: .utf8) {
+            let rewritten = Self.preprocessSwiftSourceForCrossPlatform(content)
+            if rewritten != content {
+              try rewritten.write(to: destURL, atomically: true, encoding: .utf8)
+              continue
+            }
+          }
+          try linkOrCopyFile(from: fileURL, to: destURL)
         }
       }
 
-      try copySourceList(target.swiftSources, into: targetDir)
+      try copySourceList(target.swiftSources, into: targetDir, preprocessSwift: shouldPreprocessSwift)
       if !target.cSources.isEmpty {
         let cTargetDir = target.swiftSources.isEmpty
           ? targetDir
           : sourcesRoot.appendingPathComponent("\(target.name)C")
         try fm.createDirectory(at: cTargetDir, withIntermediateDirectories: true)
-        try copySourceList(target.cSources, into: cTargetDir)
+        try copySourceList(target.cSources, into: cTargetDir, preprocessSwift: false)
         let includeDir = cTargetDir.appendingPathComponent("include")
         try fm.createDirectory(at: includeDir, withIntermediateDirectories: true)
       }
@@ -416,26 +593,152 @@ public final class WorkspaceSynthesizer {
     }
   }
 
+  /// Adapts unmodified macOS Swift source files for non-Darwin desktop toolchains:
+  /// - Routes `import Foundation` through `CrossFoundation` so FoundationNetworking,
+  ///   FoundationXML, Dispatch, Observation, and LocalizedStringResource are available.
+  /// - Strips `@objc` attributes where Objective-C interop is unavailable.
+  /// - Rewrites `#selector(...)` expressions to `Selector("...")`.
+  public static func preprocessSwiftSourceForCrossPlatform(_ source: String) -> String {
+    var result = source
+
+    // 1. Replace standalone `import Foundation` lines with `import CrossFoundation`,
+    //    and ensure `import CrossFoundation` is present so files that only import
+    //    Apple frameworks (e.g. AVFoundation, Carbon, ApplicationServices) also see
+    //    Foundation/CoreFoundation/Darwin/Dispatch/Observation like on Darwin.
+    if let importRegex = try? NSRegularExpression(
+      pattern: #"(?m)^([ \t]*)import[ \t]+Foundation([ \t]*(?://.*)?)$"#
+    ) {
+      let ns = result as NSString
+      result = importRegex.stringByReplacingMatches(
+        in: result,
+        range: NSRange(location: 0, length: ns.length),
+        withTemplate: "$1import CrossFoundation$2"
+      )
+    }
+    if !result.contains("import CrossFoundation") {
+      result = "import CrossFoundation\n" + result
+    }
+
+    // 2. Strip `@objc` / `@objc(...)` attributes.
+    if let objcRegex = try? NSRegularExpression(
+      pattern: #"(?<![A-Za-z0-9_])@objc(?:\([^)]*\))?[ \t]*"#
+    ) {
+      let ns = result as NSString
+      result = objcRegex.stringByReplacingMatches(
+        in: result,
+        range: NSRange(location: 0, length: ns.length),
+        withTemplate: ""
+      )
+    }
+
+    // 3. Rewrite `#selector(...)` to `Selector("...")`.
+    if let selRegex = try? NSRegularExpression(
+      pattern: #"#selector\(([^()\n]*(?:\([^()\n]*\))?[^()\n]*)\)"#
+    ) {
+      let ns = result as NSString
+      let matches = selRegex.matches(in: result, range: NSRange(location: 0, length: ns.length))
+      if !matches.isEmpty {
+        var mutable = result
+        for match in matches.reversed() {
+          guard match.numberOfRanges >= 2 else { continue }
+          let inner = ns.substring(with: match.range(at: 1))
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+          let selectorName = Self.selectorString(from: inner)
+          let replacement = "Selector(\"\(selectorName)\")"
+          if let range = Range(match.range, in: mutable) {
+            mutable.replaceSubrange(range, with: replacement)
+          }
+        }
+        result = mutable
+      }
+    }
+
+    // 4. Strip `@convention(block)` (Objective-C block interop is unavailable on Linux/Windows).
+    if result.contains("@convention(block)") {
+      result = result.replacingOccurrences(of: "@convention(block) ", with: "")
+      result = result.replacingOccurrences(of: "@convention(block)", with: "")
+    }
+
+    // 5. Strip `@convention(c)` on signatures that reference bridged CF/ObjC reference types
+    //    (e.g. `Unmanaged<CFArray>`, `CFString`, `AXUIElement`, `AnyObject`), which Swift
+    //    rejects without Objective-C interop.
+    if let convCRegex = try? NSRegularExpression(
+      pattern: #"@convention\(c\)[ \t]*(\([^)]*(?:CFArray|CFString|CFURL|CFTypeRef|DCSDictionary|AXUIElement|AnyObject)[^)]*\)|[^;\n]*Unmanaged<)"#
+    ) {
+      let ns = result as NSString
+      result = convCRegex.stringByReplacingMatches(
+        in: result,
+        range: NSRange(location: 0, length: ns.length),
+        withTemplate: "$1"
+      )
+    }
+
+    return result
+  }
+
+  private static func selectorString(from expr: String) -> String {
+    var trimmed = expr
+    if trimmed.hasPrefix("getter:") {
+      trimmed = String(trimmed.dropFirst("getter:".count)).trimmingCharacters(in: .whitespaces)
+    } else if trimmed.hasPrefix("setter:") {
+      trimmed = String(trimmed.dropFirst("setter:".count)).trimmingCharacters(in: .whitespaces)
+    }
+    // Split off parameter list if present: e.g. `NSResponder.insertTab(_:)` -> `NSResponder.insertTab` + `(_:)`
+    let basePart: String
+    let paramPart: String
+    if let openParen = trimmed.firstIndex(of: "("), let closeParen = trimmed.lastIndex(of: ")") {
+      basePart = String(trimmed[..<openParen])
+      paramPart = String(trimmed[trimmed.index(after: openParen)..<closeParen])
+    } else {
+      basePart = trimmed
+      paramPart = ""
+    }
+    let methodName = basePart.split(separator: ".").last.map(String.init) ?? basePart
+    if paramPart.isEmpty {
+      return methodName
+    }
+    let labels = paramPart.split(separator: ":").map { $0.trimmingCharacters(in: .whitespaces) }
+    var out = methodName
+    for (idx, label) in labels.enumerated() {
+      if idx == 0 {
+        out += ":"
+      } else if label == "_" {
+        out += ":"
+      } else {
+        out += "\(label):"
+      }
+    }
+    return out
+  }
+
   public func generatePackageManifest(
     project: ResolvedXcodeProject,
     platform: TargetPlatform,
     configuration: BuildConfiguration,
     consoleSubsystem: Bool,
     crossSwiftRoot: URL,
-    nativeAPISwiftRoot: URL,
+    nativeAPISwiftRoot: URL?,
     compiledResourceURL: URL?
   ) -> String {
     let crossSwiftIdentity = crossSwiftRoot.lastPathComponent.lowercased()
-    let nativeAPIIdentity = nativeAPISwiftRoot.lastPathComponent.lowercased()
+    let nativeAPIIdentity = nativeAPISwiftRoot?.lastPathComponent.lowercased() ?? "swift"
 
     var packageDecls: [String] = [
       "    .package(path: \(swiftStringLiteral(crossSwiftRoot.path)))"
     ]
 
-    let needsDirectNativeAPI = project.allTargets.contains {
-      $0.importedModules.contains("NativeAPI") || $0.importedModules.contains("CNativeAPI")
+    if platform == .wasm {
+      packageDecls.append(
+        "    .package(url: \"https://github.com/swiftwasm/JavaScriptKit.git\", exact: \"0.63.0\")"
+      )
     }
-    if needsDirectNativeAPI {
+
+    let needsDirectNativeAPI = platform != .wasm
+      && nativeAPISwiftRoot != nil
+      && project.allTargets.contains {
+        $0.importedModules.contains("NativeAPI") || $0.importedModules.contains("CNativeAPI")
+      }
+    if needsDirectNativeAPI, let nativeAPISwiftRoot {
       packageDecls.append("    .package(path: \(swiftStringLiteral(nativeAPISwiftRoot.path)))")
     }
 
@@ -505,18 +808,26 @@ public final class WorkspaceSynthesizer {
       }
 
       for mod in project.inferredCrossSwiftModules {
-        if mod == "SQLite3" && platform != .windows { continue }
+        if platform == .wasm && mod != "SwiftUI" && mod != "SwiftUIRuntime" { continue }
+        if mod == "SQLite3" && platform != .windows && platform != .linux { continue }
         if target.importedModules.contains(mod)
           || (isMain && mod == "SwiftUI" && project.inferredCrossSwiftModules.contains("SwiftUI"))
         {
           addDep(".product(name: \(swiftStringLiteral(mod)), package: \(swiftStringLiteral(crossSwiftIdentity)))")
         }
       }
-      if target.importedModules.contains("NativeAPI") {
-        addDep(".product(name: \"NativeAPI\", package: \(swiftStringLiteral(nativeAPIIdentity)))")
+      if (platform == .linux || platform == .windows)
+        && (target.importedModules.contains("Foundation") || target.importedModules.contains("CrossFoundation"))
+      {
+        addDep(".product(name: \"CrossFoundation\", package: \(swiftStringLiteral(crossSwiftIdentity)))")
       }
-      if target.importedModules.contains("CNativeAPI") {
-        addDep(".product(name: \"CNativeAPI\", package: \(swiftStringLiteral(nativeAPIIdentity)))")
+      if platform != .wasm && nativeAPISwiftRoot != nil {
+        if target.importedModules.contains("NativeAPI") {
+          addDep(".product(name: \"NativeAPI\", package: \(swiftStringLiteral(nativeAPIIdentity)))")
+        }
+        if target.importedModules.contains("CNativeAPI") {
+          addDep(".product(name: \"CNativeAPI\", package: \(swiftStringLiteral(nativeAPIIdentity)))")
+        }
       }
 
       for prod in project.productDependencies where prod.targetName == target.name {
@@ -530,6 +841,9 @@ public final class WorkspaceSynthesizer {
       }
 
       var swiftSettingsLines: [String] = []
+      swiftSettingsLines.append("        .enableUpcomingFeature(\"BareSlashRegexLiterals\")")
+      swiftSettingsLines.append("        .enableUpcomingFeature(\"IsolatedDefaultValues\")")
+      swiftSettingsLines.append("        .enableUpcomingFeature(\"GlobalActorIsolatedTypesUsability\")")
       for cond in target.activeCompilationConditions {
         if cond == "DEBUG" && configuration != .debug { continue }
         swiftSettingsLines.append("        .define(\(swiftStringLiteral(cond)))")
@@ -538,33 +852,40 @@ public final class WorkspaceSynthesizer {
         swiftSettingsLines.append("        .unsafeFlags([\"-Xfrontend\", \"-default-isolation\", \"-Xfrontend\", \"MainActor\"])")
       }
 
-      var linkerFlags: [String] = []
+      var linkerSettingLines: [String] = []
       if isMain {
         if platform == .windows {
-          linkerFlags += ["-Xlinker", "/STACK:16777216"]
+          var flags = ["-Xlinker", "/STACK:16777216"]
           if !consoleSubsystem {
-            linkerFlags += ["-Xlinker", "/SUBSYSTEM:WINDOWS", "-Xlinker", "/ENTRY:mainCRTStartup"]
+            flags += ["-Xlinker", "/SUBSYSTEM:WINDOWS", "-Xlinker", "/ENTRY:mainCRTStartup"]
           }
           if let compiledResourceURL {
-            linkerFlags += ["-Xlinker", compiledResourceURL.path]
+            flags += ["-Xlinker", compiledResourceURL.path]
           }
+          linkerSettingLines.append("        .unsafeFlags([\(flags.map(swiftStringLiteral).joined(separator: ", "))])")
         } else if platform == .linux {
-          linkerFlags += ["-Xlinker", "-rpath", "-Xlinker", "$ORIGIN/lib"]
+          let flags = ["-Xlinker", "-rpath", "-Xlinker", "$ORIGIN/lib"]
+          linkerSettingLines.append("        .unsafeFlags([\(flags.map(swiftStringLiteral).joined(separator: ", "))])")
+        } else if platform == .wasm {
+          let flags = ["-Xlinker", "-z", "-Xlinker", "stack-size=16777216"]
+          linkerSettingLines.append(
+            "        .unsafeFlags([\(flags.map(swiftStringLiteral).joined(separator: ", "))], .when(platforms: [.wasi]))"
+          )
         }
       }
 
       let declType = isMain ? ".executableTarget" : ".target"
       let targetEntryName = isMain ? target.executableName : target.name
       let pathLine = isMain && target.executableName != target.name
-        ? "\n      path: \(swiftStringLiteral("Sources/\(target.name)")),"
+        ? ",\n      path: \(swiftStringLiteral("Sources/\(target.name)"))"
         : ""
       let depsSection = deps.isEmpty ? "[]" : "[\n\(deps.joined(separator: ",\n"))\n      ]"
       let swiftSettingsSection = swiftSettingsLines.isEmpty
         ? ""
         : ",\n      swiftSettings: [\n\(swiftSettingsLines.joined(separator: ",\n"))\n      ]"
-      let linkerSection = linkerFlags.isEmpty
+      let linkerSection = linkerSettingLines.isEmpty
         ? ""
-        : ",\n      linkerSettings: [\n        .unsafeFlags([\(linkerFlags.map(swiftStringLiteral).joined(separator: ", "))])\n      ]"
+        : ",\n      linkerSettings: [\n\(linkerSettingLines.joined(separator: ",\n"))\n      ]"
 
       targetDecls.append("""
           \(declType)(
@@ -594,6 +915,16 @@ public final class WorkspaceSynthesizer {
       cxxLanguageStandard: .cxx17
     )
     """
+  }
+
+  private func linkOrCopyFile(from source: URL, to destination: URL) throws {
+    let fm = FileManager.default
+    #if !os(Windows)
+      if (try? fm.createSymbolicLink(at: destination, withDestinationURL: source.standardizedFileURL)) != nil {
+        return
+      }
+    #endif
+    try fm.copyItem(at: source, to: destination)
   }
 
   private func writeIfChanged(text: String, to url: URL) throws {

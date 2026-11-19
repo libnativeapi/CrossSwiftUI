@@ -190,27 +190,26 @@ public final class ApplicationStager {
     }
     try fm.createDirectory(at: appDir, withIntermediateDirectories: true)
 
-    let exeDestURL = appDir.appendingPathComponent(built.executableURL.lastPathComponent)
-    try fm.copyItem(at: built.executableURL, to: exeDestURL)
-
-    #if !os(Windows)
-      try fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: exeDestURL.path)
-    #endif
-
-    let resourcesDestURL = appDir.appendingPathComponent("Resources")
-    try fm.copyItem(at: built.compiledAssets.resourcesDirectory, to: resourcesDestURL)
-
+    var exeDestURL = appDir.appendingPathComponent(built.executableURL.lastPathComponent)
+    var resourcesDestURL = appDir.appendingPathComponent("Resources")
     var desktopURL: URL?
     var linuxIconsDir: URL?
 
     switch built.targetPlatform {
     case .windows:
+      try fm.copyItem(at: built.executableURL, to: exeDestURL)
+      try fm.copyItem(at: built.compiledAssets.resourcesDirectory, to: resourcesDestURL)
       try collectWindowsRuntimeDLLs(
         executableURL: built.executableURL,
         swiftExecutableURL: built.swiftExecutableURL,
         destinationDir: appDir
       )
     case .linux:
+      try fm.copyItem(at: built.executableURL, to: exeDestURL)
+      #if !os(Windows)
+        try fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: exeDestURL.path)
+      #endif
+      try fm.copyItem(at: built.compiledAssets.resourcesDirectory, to: resourcesDestURL)
       let libDir = appDir.appendingPathComponent("lib")
       try fm.createDirectory(at: libDir, withIntermediateDirectories: true)
       try collectLinuxRuntimeSharedLibraries(
@@ -233,6 +232,90 @@ public final class ApplicationStager {
         }
         linuxIconsDir = iconsBase
       }
+    case .wasm:
+      guard let wasmPkgDir = built.wasmPackageDirectory else {
+        throw BuildBackendError.binaryMissing(built.executableURL.path)
+      }
+      let webAppDir = appDir.appendingPathComponent("app")
+      try fm.copyItem(at: wasmPkgDir, to: webAppDir)
+      try fm.copyItem(at: built.compiledAssets.resourcesDirectory, to: resourcesDestURL)
+
+      let home = fm.homeDirectoryForCurrentUser
+      if let npmURL = ProcessRunner.findExecutable(
+        named: ["npm"],
+        extraDirectories: [
+          home.appendingPathComponent(".vite-plus/bin"),
+          URL(fileURLWithPath: "/opt/homebrew/bin"),
+          URL(fileURLWithPath: "/usr/local/bin"),
+        ]
+      ) {
+        let npmResult = try ProcessRunner.run(
+          executable: npmURL,
+          arguments: [
+            "install",
+            "--prefix", webAppDir.path,
+            "--ignore-scripts",
+            "--omit=dev",
+            "--no-audit",
+            "--no-fund",
+          ],
+          workingDirectory: appDir
+        )
+        if npmResult.exitCode != 0 {
+          throw ProcessRunnerError.commandFailed(
+            command: "\(npmURL.path) install --prefix \(webAppDir.path)",
+            exitCode: npmResult.exitCode,
+            output: npmResult.stdout + "\n" + npmResult.stderr
+          )
+        }
+      }
+
+      let displayName = target.infoPlistKeys["CFBundleDisplayName"] ?? target.productName
+      let templateIndexHTML = built.crossSwiftRoot.appendingPathComponent("Web/index.html")
+      let indexHTMLURL = appDir.appendingPathComponent("index.html")
+      if let template = try? String(contentsOf: templateIndexHTML, encoding: .utf8) {
+        let rendered = template.replacingOccurrences(
+          of: "<title>CrossSwiftUI</title>",
+          with: "<title>\(htmlEscape(displayName))</title>"
+        )
+        try rendered.write(to: indexHTMLURL, atomically: true, encoding: .utf8)
+      } else {
+        let fallback = """
+        <!doctype html>
+        <html lang="en">
+        <head>
+          <meta charset="utf-8">
+          <meta name="viewport" content="width=device-width, initial-scale=1">
+          <title>\(htmlEscape(displayName))</title>
+          <script type="importmap">
+            { "imports": { "@bjorn3/browser_wasi_shim": "./app/node_modules/@bjorn3/browser_wasi_shim/dist/index.js" } }
+          </script>
+        </head>
+        <body>
+          <main id="swiftui-root"></main>
+          <script type="module">
+            const { init } = await import("./app/index.js");
+            await init();
+          </script>
+        </body>
+        </html>
+        """
+        try fallback.write(to: indexHTMLURL, atomically: true, encoding: .utf8)
+      }
+      exeDestURL = indexHTMLURL
+    case .harmonyos:
+      guard let harmony = built.harmonyArtifacts else {
+        throw BuildBackendError.binaryMissing(built.executableURL.path)
+      }
+      let hapURL = try HarmonyBuilder.stageProject(
+        project: project,
+        harmonyArtifacts: harmony,
+        compiledAssets: built.compiledAssets,
+        crossSwiftRoot: built.crossSwiftRoot,
+        destinationDir: appDir
+      )
+      exeDestURL = hapURL ?? appDir.appendingPathComponent("runtime/\(target.executableName).o")
+      resourcesDestURL = appDir.appendingPathComponent("entry/src/main/resources/rawfile/Resources")
     }
 
     return StagedApplication(
@@ -503,5 +586,13 @@ public final class ApplicationStager {
       return "Office;"
     }
     return "Utility;"
+  }
+
+  private func htmlEscape(_ text: String) -> String {
+    text
+      .replacingOccurrences(of: "&", with: "&amp;")
+      .replacingOccurrences(of: "<", with: "&lt;")
+      .replacingOccurrences(of: ">", with: "&gt;")
+      .replacingOccurrences(of: "\"", with: "&quot;")
   }
 }

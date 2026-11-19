@@ -1,5 +1,9 @@
+#if canImport(AppKit)
 import AppKit
+#endif
+#if canImport(CryptoKit)
 import CryptoKit
+#endif
 import Foundation
 import SwiftUI
 
@@ -10,12 +14,12 @@ struct ChecklistItem: Identifiable, Hashable {
 }
 
 struct ContentView: View {
-  @State private var noteText = "Zero-config xcodebuild for Windows & Linux"
+  @State private var noteText = "Zero-config xcodebuild for Windows, Linux, Wasm & HarmonyOS"
   @State private var copiedDigest = false
   @State private var items: [ChecklistItem] = [
     ChecklistItem(id: "pbx", title: "Parse .xcodeproj without extra platform files", isDone: true),
     ChecklistItem(id: "assets", title: "Compile AppIcon, colorset & xcstrings", isDone: true),
-    ChecklistItem(id: "ship", title: "Stage self-contained Windows & Linux app bundles", isDone: false),
+    ChecklistItem(id: "ship", title: "Stage self-contained cross-platform bundles", isDone: false),
   ]
 
   private var remainingCount: Int {
@@ -23,8 +27,23 @@ struct ContentView: View {
   }
 
   private var digestHex: String {
+    #if canImport(CryptoKit)
     let digest = SHA256.hash(data: Data(noteText.utf8))
     return digest.map { String(format: "%02x", $0) }.joined()
+    #else
+    var h1: UInt64 = 0xcbf2_9ce4_8422_2325
+    var h2: UInt64 = 0x8422_2325_cbf2_9ce4
+    for byte in noteText.utf8 {
+      h1 ^= UInt64(byte)
+      h1 &*= 0x0000_0100_0000_01b3
+      h2 ^= UInt64(byte) &+ 0x9e37_79b9_7f4a_7c15
+      h2 &*= 0x0000_0100_0000_01b3
+    }
+    let hex1 = String(h1, radix: 16, uppercase: false)
+    let hex2 = String(h2, radix: 16, uppercase: false)
+    return String(repeating: "0", count: max(0, 16 - hex1.count)) + hex1
+      + String(repeating: "0", count: max(0, 16 - hex2.count)) + hex2
+    #endif
   }
 
   var body: some View {
@@ -86,8 +105,10 @@ struct ContentView: View {
             .foregroundColor(.secondary)
           Spacer()
           Button(copiedDigest ? "Copied!" : "Copy SHA-256") {
+            #if canImport(AppKit)
             NSPasteboard.general.clearContents()
             _ = NSPasteboard.general.setString(digestHex, forType: .string)
+            #endif
             copiedDigest = true
           }
         }

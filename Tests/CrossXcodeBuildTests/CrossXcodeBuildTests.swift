@@ -173,7 +173,7 @@ final class CrossXcodeBuildTests: XCTestCase {
     XCTAssertEqual(resolved.productDependencies.map(\.productName), ["Logging"])
     XCTAssertEqual(resolved.remotePackages.first?.pinnedVersion, "1.6.1")
 
-    let synthesizer = WorkspaceSynthesizer()
+    let synthesizer = SwiftPMBackend()
     let nativeAPIRoot = repositoryRoot
       .deletingLastPathComponent()
       .appendingPathComponent("nativeapi/bindings/swift")
@@ -196,7 +196,7 @@ final class CrossXcodeBuildTests: XCTestCase {
       nativeAPISwiftRoot: nativeAPIRoot,
       compiledResourceURL: nil
     )
-    XCTAssertFalse(linuxManifest.contains(".product(name: \"SQLite3\""))
+    XCTAssertTrue(linuxManifest.contains(".product(name: \"SQLite3\""))
   }
 
   func testICOEncoderProducesValidMultiSizeHeaderAndPayloads() throws {
@@ -363,6 +363,94 @@ final class CrossXcodeBuildTests: XCTestCase {
     XCTAssertEqual(buildSettings["FULL_PRODUCT_NAME"], "XcodeDemo")
     XCTAssertEqual(buildSettings["EXECUTABLE_PATH"], "XcodeDemo/XcodeDemo.exe")
     XCTAssertEqual(buildSettings["PLATFORM_NAME"], "windows")
+  }
+
+  func testXcodeBuildDriverShowBuildSettingsForWasmAndHarmonyOS() throws {
+    let demoProject = repositoryRoot.appendingPathComponent("Examples/XcodeDemo/XcodeDemo.xcodeproj")
+    let driver = XcodeBuildDriver()
+
+    let wasmOutcome = try XcodeBuildCLIParser.parse(
+      arguments: [
+        "-showBuildSettings", "-json",
+        "-project", demoProject.path,
+        "-scheme", "XcodeDemo",
+        "-configuration", "Release",
+        "-destination", "generic/platform=Wasm",
+      ],
+      currentDirectory: repositoryRoot
+    )
+    guard case .run(let wasmOpts) = wasmOutcome else {
+      XCTFail("Expected .run outcome for Wasm")
+      return
+    }
+    let wasmJSON = try driver.showBuildSettings(options: wasmOpts, currentDirectory: repositoryRoot)
+    let wasmArray = try XCTUnwrap(
+      try JSONSerialization.jsonObject(with: Data(wasmJSON.utf8)) as? [[String: Any]]
+    )
+    let wasmSettings = try XCTUnwrap(wasmArray.first?["buildSettings"] as? [String: String])
+    XCTAssertEqual(wasmSettings["PLATFORM_NAME"], "wasm")
+    XCTAssertEqual(wasmSettings["ARCHS"], "wasm32")
+    XCTAssertEqual(wasmSettings["EXECUTABLE_PATH"], "XcodeDemo/app/XcodeDemo.wasm")
+
+    let harmonyOutcome = try XcodeBuildCLIParser.parse(
+      arguments: [
+        "-showBuildSettings", "-json",
+        "-project", demoProject.path,
+        "-scheme", "XcodeDemo",
+        "-configuration", "Release",
+        "-sdk", "ohos",
+      ],
+      currentDirectory: repositoryRoot
+    )
+    guard case .run(let harmonyOpts) = harmonyOutcome else {
+      XCTFail("Expected .run outcome for HarmonyOS")
+      return
+    }
+    let harmonyJSON = try driver.showBuildSettings(options: harmonyOpts, currentDirectory: repositoryRoot)
+    let harmonyArray = try XCTUnwrap(
+      try JSONSerialization.jsonObject(with: Data(harmonyJSON.utf8)) as? [[String: Any]]
+    )
+    let harmonySettings = try XCTUnwrap(harmonyArray.first?["buildSettings"] as? [String: String])
+    XCTAssertEqual(harmonySettings["PLATFORM_NAME"], "harmonyos")
+    XCTAssertEqual(harmonySettings["ARCHS"], "arm64-v8a")
+    XCTAssertEqual(harmonySettings["EXECUTABLE_PATH"], "XcodeDemo/runtime/XcodeDemo.o")
+  }
+
+  func testSwiftPMBackendGeneratesWasmManifestWithJavaScriptKitAndWasiStack() throws {
+    let demoProject = repositoryRoot.appendingPathComponent("Examples/XcodeDemo/XcodeDemo.xcodeproj")
+    let loader = XcodeProjectLoader()
+    let resolved = try loader.load(from: demoProject, configuration: .release)
+
+    let synthesizer = SwiftPMBackend()
+    let manifest = synthesizer.generatePackageManifest(
+      project: resolved,
+      platform: .wasm,
+      configuration: .release,
+      consoleSubsystem: false,
+      crossSwiftRoot: repositoryRoot,
+      nativeAPISwiftRoot: nil,
+      compiledResourceURL: nil
+    )
+
+    XCTAssertTrue(manifest.contains("JavaScriptKit.git"))
+    XCTAssertTrue(manifest.contains(".product(name: \"SwiftUI\", package: \"crossswift\")"))
+    XCTAssertTrue(manifest.contains("stack-size=16777216"))
+    XCTAssertTrue(manifest.contains(".when(platforms: [.wasi])"))
+    XCTAssertFalse(manifest.contains(".product(name: \"AppKit\""))
+    XCTAssertFalse(manifest.contains(".product(name: \"CryptoKit\""))
+    XCTAssertFalse(manifest.contains(".product(name: \"NativeAPI\""))
+  }
+
+  func testHarmonyBuilderDetectsMainAppTypeAndRendersHostExports() throws {
+    let appSwift = repositoryRoot.appendingPathComponent("Examples/XcodeDemo/XcodeDemo/XcodeDemoApp.swift")
+    let detected = HarmonyBuilder.detectMainAppTypeName(in: [appSwift])
+    XCTAssertEqual(detected, "XcodeDemoApp")
+
+    let hostCode = HarmonyBuilder.renderHarmonyAppHostSwift(appTypeName: "XcodeDemoApp")
+    XCTAssertTrue(hostCode.contains("extension App {"))
+    XCTAssertTrue(hostCode.contains("public static func main() {}"))
+    XCTAssertTrue(hostCode.contains("@_cdecl(\"swift_mount_app\")"))
+    XCTAssertTrue(hostCode.contains("let app = XcodeDemoApp()"))
   }
 
   private func makeMinimalPNG(width: Int, height: Int) -> Data {

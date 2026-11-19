@@ -21,7 +21,7 @@ public enum XcodeBuildDriverError: Error, LocalizedError {
       if let requested {
         return "Cannot build target platform '\(requested.rawValue)' on this host; run on a \(requested.rawValue) host."
       }
-      return "CrossSwiftUI xcodebuild builds Windows and Linux targets on Windows/Linux hosts (on macOS use /usr/bin/xcodebuild or a remote build host)."
+      return "CrossSwiftUI xcodebuild builds Windows/Linux targets natively and cross-compiles Wasm/HarmonyOS targets from macOS or Linux (pass -destination generic/platform=Wasm or generic/platform=HarmonyOS)."
     case .unsupportedConfiguration(let raw):
       return "Unsupported build configuration '\(raw)' (expected Debug or Release)."
     }
@@ -30,7 +30,7 @@ public enum XcodeBuildDriverError: Error, LocalizedError {
 
 public enum XcodeBuildCLIParser {
   public static let usageText = """
-  CrossSwiftUI xcodebuild — compile unmodified macOS .xcodeproj apps for Windows & Linux
+  CrossSwiftUI xcodebuild — compile unmodified macOS .xcodeproj apps for Windows, Linux, Wasm & HarmonyOS
 
   Usage:
     xcodebuild [-project <name.xcodeproj>] [-scheme <name>] [-target <name>]
@@ -50,8 +50,8 @@ public enum XcodeBuildCLIParser {
     -alltargets               Build all targets
     -configuration <cfg>      Use the specified build configuration (Debug or Release)
     -derivedDataPath <dir>    Directory for build products and intermediates (default: ./build)
-    -destination <spec>       Optional platform specifier (e.g. generic/platform=Windows|Linux)
-    -sdk <sdk>                Optional target SDK hint
+    -destination <spec>       Target platform specifier (e.g. generic/platform=Windows|Linux|Wasm|HarmonyOS)
+    -sdk <sdk>                Target SDK hint (windows, linux, wasm/web/wasi, harmonyos/ohos)
     -arch <arch>              Optional architecture hint
     -xcconfig <file>          Load build settings overrides from .xcconfig file
     -list                     List targets, build configurations, and schemes
@@ -228,7 +228,7 @@ public enum XcodeBuildCLIParser {
 
 public final class XcodeBuildDriver {
   private let loader = XcodeProjectLoader()
-  private let synthesizer = WorkspaceSynthesizer()
+  private let buildBackend = SwiftPMBackend()
   private let stager = ApplicationStager()
 
   public init() {}
@@ -240,6 +240,8 @@ public final class XcodeBuildDriver {
   public func resolveTargetPlatform(options: XcodeBuildOptions) -> TargetPlatform? {
     let hints = [options.destination, options.sdk].compactMap { $0?.lowercased() }.joined(separator: " ")
     if hints.contains("windows") { return .windows }
+    if hints.contains("wasm") || hints.contains("wasi") || hints.contains("web") { return .wasm }
+    if hints.contains("harmony") || hints.contains("ohos") { return .harmonyos }
     if hints.contains("linux") { return .linux }
     return TargetPlatform.currentHost
   }
@@ -256,15 +258,34 @@ public final class XcodeBuildDriver {
 
   public static func computeEffectiveBuildSettings(
     project: ResolvedXcodeProject,
-    platformName: String,
-    isWindows: Bool,
+    platform: TargetPlatform?,
     derivedDataURL: URL
   ) -> [String: String] {
     var settings = project.mainTarget.buildSettings
     let configName = project.configuration.rawValue
     let productName = project.mainTarget.productName
     let executableName = project.mainTarget.executableName
-    let exeFile = isWindows ? "\(executableName).exe" : executableName
+    let platformName = platform?.rawValue ?? "macos"
+
+    let executablePath: String
+    let archName: String
+    switch platform {
+    case .windows:
+      executablePath = "\(productName)/\(executableName).exe"
+      archName = TargetArchitecture.currentHost == .arm64 ? "arm64" : "x86_64"
+    case .linux:
+      executablePath = "\(productName)/\(executableName)"
+      archName = TargetArchitecture.currentHost == .arm64 ? "arm64" : "x86_64"
+    case .wasm:
+      executablePath = "\(productName)/app/\(executableName).wasm"
+      archName = "wasm32"
+    case .harmonyos:
+      executablePath = "\(productName)/runtime/\(executableName).o"
+      archName = "arm64-v8a"
+    case nil:
+      executablePath = "\(productName)/\(executableName)"
+      archName = TargetArchitecture.currentHost == .arm64 ? "arm64" : "x86_64"
+    }
 
     let symroot: String
     if let rawSym = settings["SYMROOT"], !rawSym.isEmpty {
@@ -284,6 +305,7 @@ public final class XcodeBuildDriver {
     }
 
     settings["ACTION"] = "build"
+    settings["ARCHS"] = archName
     settings["CONFIGURATION"] = configName
     settings["DERIVED_DATA_DIR"] = derivedDataURL.standardizedFileURL.path
     settings["SYMROOT"] = symroot
@@ -295,7 +317,7 @@ public final class XcodeBuildDriver {
     settings["FULL_PRODUCT_NAME"] = productName
     settings["WRAPPER_NAME"] = productName
     settings["EXECUTABLE_NAME"] = executableName
-    settings["EXECUTABLE_PATH"] = "\(productName)/\(exeFile)"
+    settings["EXECUTABLE_PATH"] = executablePath
     settings["UNLOCALIZED_RESOURCES_FOLDER_PATH"] = "\(productName)/Resources"
     settings["PRODUCT_BUNDLE_IDENTIFIER"] = project.mainTarget.bundleIdentifier
     settings["MARKETING_VERSION"] = project.mainTarget.marketingVersion
@@ -368,15 +390,13 @@ public final class XcodeBuildDriver {
       buildSettingOverrides: options.buildSettingOverrides
     )
     let platform = resolveTargetPlatform(options: options)
-    let platformName = platform?.rawValue ?? "macos"
     let derivedDataURL = Self.resolveDerivedDataURL(
       options: options,
       projectRootURL: project.projectRootURL
     )
     let settings = Self.computeEffectiveBuildSettings(
       project: project,
-      platformName: platformName,
-      isWindows: platform == .windows,
+      platform: platform,
       derivedDataURL: derivedDataURL
     )
 
@@ -405,7 +425,7 @@ public final class XcodeBuildDriver {
     currentDirectory: URL = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
   ) throws -> StagedApplication? {
     guard let platform = resolveTargetPlatform(options: options),
-          platform == TargetPlatform.currentHost
+          platform.canBuildOnCurrentHost
     else {
       throw XcodeBuildDriverError.unsupportedBuildHost(
         requested: resolveTargetPlatform(options: options),
@@ -432,8 +452,7 @@ public final class XcodeBuildDriver {
     )
     let effectiveSettings = Self.computeEffectiveBuildSettings(
       project: project,
-      platformName: platform.rawValue,
-      isWindows: platform == .windows,
+      platform: platform,
       derivedDataURL: derivedDataURL
     )
     let builtProductsDir = URL(
@@ -451,8 +470,8 @@ public final class XcodeBuildDriver {
         if fm.fileExists(atPath: appDir.path) {
           try fm.removeItem(at: appDir)
         }
-        if let crossSwiftRoot = try? WorkspaceSynthesizer.resolveCrossSwiftRoot(explicit: options.crossSwiftPath) {
-          let buildRoot = synthesizer.resolveBuildDirectory(
+        if let crossSwiftRoot = try? SwiftPMBackend.resolveCrossSwiftRoot(explicit: options.crossSwiftPath) {
+          let buildRoot = buildBackend.resolveBuildDirectory(
             project: project,
             platform: platform,
             configuration: configuration,
@@ -474,7 +493,7 @@ public final class XcodeBuildDriver {
             "Build target \(project.mainTarget.name) of project \(project.projectName) with configuration \(configuration.rawValue) (\(platform.rawValue))"
           )
         }
-        let built = try synthesizer.build(
+        let built = try buildBackend.build(
           project: project,
           platform: platform,
           configuration: configuration,

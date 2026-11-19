@@ -3,6 +3,8 @@ import Foundation
 public enum TargetPlatform: String, CaseIterable, Codable, Hashable, Sendable {
   case windows
   case linux
+  case wasm
+  case harmonyos
 
   public static var currentHost: TargetPlatform? {
     #if os(Windows)
@@ -13,11 +15,27 @@ public enum TargetPlatform: String, CaseIterable, Codable, Hashable, Sendable {
       return nil
     #endif
   }
+
+  public var canBuildOnCurrentHost: Bool {
+    switch self {
+    case .windows:
+      return Self.currentHost == .windows
+    case .linux:
+      return Self.currentHost == .linux
+    case .wasm, .harmonyos:
+      #if os(macOS) || os(Linux)
+        return true
+      #else
+        return false
+      #endif
+    }
+  }
 }
 
 public enum TargetArchitecture: String, CaseIterable, Codable, Hashable, Sendable {
   case x64
   case arm64
+  case wasm32
 
   public static var currentHost: TargetArchitecture {
     #if arch(arm64)
