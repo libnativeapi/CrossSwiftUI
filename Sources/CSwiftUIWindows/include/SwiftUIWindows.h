@@ -18,6 +18,8 @@ void sui_surface_edit(void *surface, void *edit, int64_t id,
                       uint64_t native_view);
 void sui_surface_remove_edit(void *surface, void *edit);
 void sui_edit_order(void *surface, void *edit);
+void sui_edit_set_transparent(void *surface, void *edit, int transparent,
+                              double sample_x, double sample_y);
 void sui_surface_set_background(void *surface, uint32_t argb);
 void sui_surface_custom_view(void *surface, void *view_hwnd,
                              uint64_t native_view);

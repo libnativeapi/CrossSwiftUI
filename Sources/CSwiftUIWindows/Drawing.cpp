@@ -72,6 +72,9 @@ struct EditHook {
   double line_height = 0;
   HBRUSH bg_brush = nullptr;
   COLORREF bg_color = CLR_INVALID;
+  bool transparent_bg = true;
+  double sample_x = 0;
+  double sample_y = 0;
 };
 struct Framebuffer {
   UINT width, height;
@@ -1371,6 +1374,22 @@ void sui_edit_order(void *handle, void *edit) {
   ParentControl(s, hwnd);
   OrderControl(s, hwnd);
 }
+void sui_edit_set_transparent(void *handle, void *edit, int transparent,
+                              double sample_x, double sample_y) {
+  auto *s = static_cast<Surface *>(handle);
+  if (!s)
+    return;
+  HWND hwnd = static_cast<HWND>(edit);
+  auto found = s->edits.find(hwnd);
+  if (found == s->edits.end())
+    return;
+  auto &hook = found->second;
+  hook.transparent_bg = transparent != 0;
+  hook.sample_x = sample_x;
+  hook.sample_y = sample_y;
+  if (!hook.transparent_bg)
+    hook.bg_color = CLR_INVALID;
+}
 void sui_surface_set_background(void *handle, uint32_t argb) {
   auto *s = static_cast<Surface *>(handle);
   if (!s || s->background_argb == argb)
@@ -1723,8 +1742,38 @@ void sui_surface_end(void *h) {
   }
   s->commands.swap(s->pending);
   s->scrolls.swap(s->pending_scrolls);
-  if (!IsRectEmpty(&s->damage)) {
+  if (!IsRectEmpty(&s->damage))
     s->buffer_dirty = true;
+  if (!s->edits.empty()) {
+    RenderFrame(s);
+    if (s->buffer && s->buffer->pixels && s->buffer->width > 0 &&
+        s->buffer->height > 0) {
+      const double scale = (s->buffer_dpi ? s->buffer_dpi : 96) / 96.;
+      for (auto &entry : s->edits) {
+        auto &hook = entry.second;
+        if (!hook.transparent_bg)
+          continue;
+        LONG sx = LONG(std::round(hook.sample_x * scale));
+        LONG sy = LONG(std::round(hook.sample_y * scale));
+        if (sx < 0) sx = 0;
+        if (sy < 0) sy = 0;
+        if (sx >= LONG(s->buffer->width)) sx = LONG(s->buffer->width) - 1;
+        if (sy >= LONG(s->buffer->height)) sy = LONG(s->buffer->height) - 1;
+        const uint32_t bgra =
+            s->buffer->pixels[size_t(sy) * s->buffer->width + size_t(sx)];
+        const uint8_t cr = (bgra >> 16) & 0xFF;
+        const uint8_t cg = (bgra >> 8) & 0xFF;
+        const uint8_t cb = bgra & 0xFF;
+        const COLORREF sampled = RGB(cr, cg, cb);
+        if (hook.bg_color != sampled) {
+          hook.bg_color = sampled;
+          native_view_set_background_color(NativeView(s, entry.first),
+                                           {cr, cg, cb, 255});
+        }
+      }
+    }
+  }
+  if (!IsRectEmpty(&s->damage)) {
     std::vector<RECT> native_damage;
     auto native_area = [&](HWND hwnd) {
       if (!IsWindowVisible(hwnd) ||

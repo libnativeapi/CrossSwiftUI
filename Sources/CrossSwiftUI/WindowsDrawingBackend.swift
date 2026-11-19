@@ -696,7 +696,9 @@
             edit.view.setFontSize(Double(font.size) * 72.0 / 96.0)
             edit.view.setFontWeight(CInt(font.weight.value.rounded()))
             edit.view.setTextColor((p.foreground ?? .black).nativeColor)
-            edit.view.setBackgroundColor(background.nativeColor)
+            if let explicitBg = p.background, explicitBg.opacity >= 0.999 {
+              edit.view.setBackgroundColor(explicitBg.nativeColor)
+            }
             let name = p.accessibilityLabel.isEmpty ? p.placeholder : p.accessibilityLabel
             edit.view.setAccessibilityLabel(name.isEmpty ? nil : name)
             let enabled = p.enabled && controlAllowed
@@ -724,6 +726,11 @@
             sui_control_frame(
               surface, handle, editRect.minX, editRect.minY, editRect.width, editRect.height)
           }
+          let isTransparentBg = (p.background == nil) || (p.background!.opacity < 0.999)
+          sui_edit_set_transparent(
+            surface, handle, isTransparentBg ? 1 : 0,
+            editRect.minX + editRect.width * 0.5,
+            editRect.minY + editRect.height * 0.5)
           sui_edit_order(surface, handle)
           sui_control_opacity(handle, p.opacity)
           let visible = shownInViewport ? editRect.intersection(nativeClip ?? clip) : .zero
