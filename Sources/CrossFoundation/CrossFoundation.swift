@@ -205,45 +205,47 @@ import Carbon
     }
   }
 
-  public final class _CrossDispatchSourceTimer: @unchecked Sendable {
-    private let raw: any Dispatch.DispatchSourceTimer
-    public init(_ raw: any Dispatch.DispatchSourceTimer) { self.raw = raw }
+  #if os(Windows)
+    public final class _CrossDispatchSourceTimer: @unchecked Sendable {
+      private let raw: any Dispatch.DispatchSourceTimer
+      public init(_ raw: any Dispatch.DispatchSourceTimer) { self.raw = raw }
 
-    public func schedule(
-      deadline: DispatchTime,
-      repeating interval: DispatchTimeInterval = .never,
-      leeway: DispatchTimeInterval = .nanoseconds(0)
-    ) {
-      raw.schedule(deadline: deadline, repeating: interval, leeway: leeway)
+      public func schedule(
+        deadline: DispatchTime,
+        repeating interval: DispatchTimeInterval = .never,
+        leeway: DispatchTimeInterval = .nanoseconds(0)
+      ) {
+        raw.schedule(deadline: deadline, repeating: interval, leeway: leeway)
+      }
+
+      public func schedule(
+        deadline: DispatchTime,
+        repeating interval: Double,
+        leeway: DispatchTimeInterval = .nanoseconds(0)
+      ) {
+        raw.schedule(deadline: deadline, repeating: interval, leeway: leeway)
+      }
+
+      public func setEventHandler(
+        qos: DispatchQoS = .unspecified,
+        flags: DispatchWorkItemFlags = [],
+        handler: (@Sendable () -> Void)?
+      ) {
+        raw.setEventHandler(qos: qos, flags: flags, handler: handler)
+      }
+
+      public func resume() { raw.resume() }
+      public func cancel() { raw.cancel() }
     }
 
-    public func schedule(
-      deadline: DispatchTime,
-      repeating interval: Double,
-      leeway: DispatchTimeInterval = .nanoseconds(0)
-    ) {
-      raw.schedule(deadline: deadline, repeating: interval, leeway: leeway)
+    extension DispatchSource {
+      public static func makeTimerSource(queue: DispatchQueue?) -> _CrossDispatchSourceTimer {
+        let raw: any Dispatch.DispatchSourceTimer = Dispatch.DispatchSource.makeTimerSource(
+          flags: [], queue: queue)
+        return _CrossDispatchSourceTimer(raw)
+      }
     }
-
-    public func setEventHandler(
-      qos: DispatchQoS = .unspecified,
-      flags: DispatchWorkItemFlags = [],
-      handler: (@Sendable () -> Void)?
-    ) {
-      raw.setEventHandler(qos: qos, flags: flags, handler: handler)
-    }
-
-    public func resume() { raw.resume() }
-    public func cancel() { raw.cancel() }
-  }
-
-  extension DispatchSource {
-    public static func makeTimerSource(queue: DispatchQueue?) -> _CrossDispatchSourceTimer {
-      let raw: any Dispatch.DispatchSourceTimer = Dispatch.DispatchSource.makeTimerSource(
-        flags: [], queue: queue)
-      return _CrossDispatchSourceTimer(raw)
-    }
-  }
+  #endif
 
   // MARK: - InlinePresentationIntent & AttributedString Markdown parsing
 
@@ -386,49 +388,83 @@ import Carbon
     public func setValue(_ value: Any?, forKey key: String) {}
   }
 
-  open class NSCache<KeyType: AnyObject, ObjectType: AnyObject>: NSObject {
-    private let backing = Foundation.NSCache<KeyType, ObjectType>()
+  #if os(Windows)
+    public func NSLog(_ format: String, _ args: CVarArg...) {
+      let message = args.isEmpty ? format : String(format: format, arguments: args)
+      fputs("[NSLog] \(message)\n", stderr)
+    }
+  #endif
 
-    public override init() { super.init() }
-
-    open var name: String {
-      get { backing.name }
-      set { backing.name = newValue }
+  #if os(Linux)
+    // swift-corelibs-foundation's Bundle.urls(forResourcesWithExtension:subdirectory:)
+    // returns `[NSURL]?` instead of `[URL]?` like Darwin Foundation.
+    extension NSURL {
+      public func deletingPathExtension() -> URL {
+        (self as URL).deletingPathExtension()
+      }
     }
 
-    open var totalCostLimit: Int {
-      get { backing.totalCostLimit }
-      set { backing.totalCostLimit = newValue }
+    extension String {
+      public init(contentsOf url: NSURL, encoding enc: String.Encoding) throws {
+        try self.init(contentsOf: url as URL, encoding: enc)
+      }
     }
+  #endif
 
-    open var countLimit: Int {
-      get { backing.countLimit }
-      set { backing.countLimit = newValue }
-    }
-
-    open var evictsObjectsWithDiscardedContent: Bool {
-      get { backing.evictsObjectsWithDiscardedContent }
-      set { backing.evictsObjectsWithDiscardedContent = newValue }
-    }
-
-    open func object(forKey key: KeyType) -> ObjectType? {
-      backing.object(forKey: key)
-    }
-
-    open func setObject(_ obj: ObjectType, forKey key: KeyType) {
-      backing.setObject(obj, forKey: key)
-    }
-
-    open func setObject(_ obj: ObjectType, forKey key: KeyType, cost g: Int) {
-      backing.setObject(obj, forKey: key, cost: g)
-    }
-
-    open func removeObject(forKey key: KeyType) {
-      backing.removeObject(forKey: key)
-    }
-
-    open func removeAllObjects() {
-      backing.removeAllObjects()
-    }
+  extension NotificationCenter {
+    public func addObserver(
+      _ observer: Any,
+      selector aSelector: Selector,
+      name aName: NSNotification.Name?,
+      object anObject: Any?
+    ) {}
   }
+
+  #if os(Windows)
+    open class NSCache<KeyType: AnyObject, ObjectType: AnyObject>: NSObject {
+      private let backing = Foundation.NSCache<KeyType, ObjectType>()
+
+      public override init() { super.init() }
+
+      open var name: String {
+        get { backing.name }
+        set { backing.name = newValue }
+      }
+
+      open var totalCostLimit: Int {
+        get { backing.totalCostLimit }
+        set { backing.totalCostLimit = newValue }
+      }
+
+      open var countLimit: Int {
+        get { backing.countLimit }
+        set { backing.countLimit = newValue }
+      }
+
+      open var evictsObjectsWithDiscardedContent: Bool {
+        get { backing.evictsObjectsWithDiscardedContent }
+        set { backing.evictsObjectsWithDiscardedContent = newValue }
+      }
+
+      open func object(forKey key: KeyType) -> ObjectType? {
+        backing.object(forKey: key)
+      }
+
+      open func setObject(_ obj: ObjectType, forKey key: KeyType) {
+        backing.setObject(obj, forKey: key)
+      }
+
+      open func setObject(_ obj: ObjectType, forKey key: KeyType, cost g: Int) {
+        backing.setObject(obj, forKey: key, cost: g)
+      }
+
+      open func removeObject(forKey key: KeyType) {
+        backing.removeObject(forKey: key)
+      }
+
+      open func removeAllObjects() {
+        backing.removeAllObjects()
+      }
+    }
+  #endif
 #endif

@@ -119,11 +119,17 @@ open class NSMenuItem: NSObject {
         }
         listenerId = item.addListener { [weak self] event in
           if case .itemClicked = event {
-            DispatchQueue.main.async {
+            #if os(Linux)
               MainActor.assumeIsolated {
                 self?.invoke()
               }
-            }
+            #else
+              DispatchQueue.main.async {
+                MainActor.assumeIsolated {
+                  self?.invoke()
+                }
+              }
+            #endif
           }
         }
       }
@@ -284,7 +290,13 @@ open class NSStatusItem: NSObject {
   public let button: NSStatusBarButton? = NSStatusBarButton(frame: NSRect(x: 0, y: 0, width: 24, height: 24))
   public var length: CGFloat
   public var autosaveName: String?
-  public var onLeftClick: (() -> Void)?
+  public var onLeftClick: (() -> Void)? {
+    didSet {
+      #if !os(macOS)
+        syncContextMenuTrigger()
+      #endif
+    }
+  }
   public var isVisible: Bool = true {
     didSet {
       #if !os(macOS)
@@ -296,7 +308,7 @@ open class NSStatusItem: NSObject {
     didSet {
       #if !os(macOS)
         nativeTrayIcon?.setContextMenu(menu?.nativeMenu)
-        nativeTrayIcon?.setContextMenuTrigger(.none)
+        syncContextMenuTrigger()
       #endif
     }
   }
@@ -304,6 +316,20 @@ open class NSStatusItem: NSObject {
   #if !os(macOS)
     public private(set) var nativeTrayIcon: NativeAPI.TrayIcon?
     private var listenerId: ListenerId?
+
+    private func syncContextMenuTrigger() {
+      #if os(Linux)
+        if menu == nil {
+          nativeTrayIcon?.setContextMenuTrigger(.none)
+        } else if onLeftClick != nil {
+          nativeTrayIcon?.setContextMenuTrigger(.rightClicked)
+        } else {
+          nativeTrayIcon?.setContextMenuTrigger(.clicked)
+        }
+      #else
+        nativeTrayIcon?.setContextMenuTrigger(.none)
+      #endif
+    }
   #endif
 
   public init(length: CGFloat) {
@@ -323,14 +349,18 @@ open class NSStatusItem: NSObject {
                 onLeftClick()
               } else if let menu = self.menu {
                 menu.delegate?.menuNeedsUpdate(menu)
-                _ = self.nativeTrayIcon?.openContextMenu()
+                #if !os(Linux)
+                  _ = self.nativeTrayIcon?.openContextMenu()
+                #endif
               } else {
                 _ = self.button?.sendAction(self.button?.action, to: self.button?.target)
               }
             case .rightClicked:
               if let menu = self.menu {
                 menu.delegate?.menuNeedsUpdate(menu)
-                _ = self.nativeTrayIcon?.openContextMenu()
+                #if !os(Linux)
+                  _ = self.nativeTrayIcon?.openContextMenu()
+                #endif
               }
             default:
               break

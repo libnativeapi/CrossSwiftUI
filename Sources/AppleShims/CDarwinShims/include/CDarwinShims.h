@@ -5,7 +5,7 @@
 extern "C" {
 #endif
 
-#ifndef _WIN32
+#if !defined(_WIN32) && !defined(__linux__)
 struct __attribute__((swift_name("timespec"))) _crossswift_timespec_s {
   intptr_t tv_sec;
   intptr_t tv_nsec;

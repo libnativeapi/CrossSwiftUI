@@ -5,10 +5,318 @@ import CoreFoundation
   import ucrt
   import CAppKitWindows
 #elseif canImport(Glibc)
-  import Glibc
+  @_exported import Glibc
 #endif
 
-#if !os(macOS)
+#if os(Linux)
+  public typealias boolean_t = Int32
+  public typealias attrgroup_t = UInt32
+  public typealias u_short = UInt16
+
+  public let F_SETNOSIGPIPE: Int32 = 73
+  public let O_EVTONLY: Int32 = 0x8000
+
+  public let UF_IMMUTABLE: Int32 = 0x00000002
+  public let SF_IMMUTABLE: Int32 = 0x00020000
+  public let SF_NOUNLINK: Int32 = 0x00100000
+  public let SF_RESTRICTED: Int32 = 0x00080000
+  public let SF_FIRMLINK: Int32 = 0x00800000
+  public let XATTR_NOFOLLOW: Int32 = 0x0001
+  public let POSIX_SPAWN_SETSID: Int32 = 0x0400
+  public let FNM_CASEFOLD: Int32 = 0x10
+
+  // Linux Glibc exposes SOCK_STREAM as `__socket_type` and IFF_* as `Int`,
+  // whereas Darwin exposes them as `Int32`.
+  public let SOCK_STREAM: Int32 = Int32(Glibc.SOCK_STREAM.rawValue)
+  public let IFF_UP: Int32 = 0x1
+  public let IFF_LOOPBACK: Int32 = 0x8
+  public let IFF_RUNNING: Int32 = 0x40
+
+  extension Glibc.sockaddr {
+    public var sa_len: UInt8 {
+      sa_family == UInt16(AF_INET6)
+        ? UInt8(MemoryLayout<sockaddr_in6>.size)
+        : UInt8(MemoryLayout<sockaddr_in>.size)
+    }
+  }
+
+  extension Glibc.timeval {
+    public init(tv_sec: Int, tv_usec: Int32) {
+      self.init(tv_sec: tv_sec, tv_usec: Int(tv_usec))
+    }
+  }
+
+  public func getloadavg(_ loadavg: UnsafeMutablePointer<Double>?, _ nelem: Int32) -> Int32 {
+    guard let loadavg else { return -1 }
+    return Glibc.getloadavg(loadavg, nelem)
+  }
+
+  extension Glibc.stat {
+    public var st_flags: UInt32 { 0 }
+    public var st_mtimespec: Glibc.timespec { st_mtim }
+    public var st_atimespec: Glibc.timespec { st_atim }
+    public var st_ctimespec: Glibc.timespec { st_ctim }
+    public var st_birthtimespec: Glibc.timespec { st_ctim }
+  }
+
+  public func mach_absolute_time() -> UInt64 {
+    var ts = Glibc.timespec()
+    Glibc.clock_gettime(CLOCK_MONOTONIC, &ts)
+    return UInt64(ts.tv_sec) &* 1_000_000_000 &+ UInt64(ts.tv_nsec)
+  }
+
+  public func sysctlbyname(
+    _ name: UnsafePointer<CChar>,
+    _ oldp: UnsafeMutableRawPointer?,
+    _ oldlenp: UnsafeMutablePointer<Int>?,
+    _ newp: UnsafeMutableRawPointer?,
+    _ newlen: Int
+  ) -> Int32 { -1 }
+
+  @discardableResult
+  public func getxattr(
+    _ path: UnsafePointer<CChar>?,
+    _ name: UnsafePointer<CChar>?,
+    _ value: UnsafeMutableRawPointer?,
+    _ size: Int,
+    _ position: UInt32,
+    _ options: Int32
+  ) -> Int { -1 }
+
+  @discardableResult
+  public func removexattr(
+    _ path: UnsafePointer<CChar>?,
+    _ name: UnsafePointer<CChar>?,
+    _ options: Int32
+  ) -> Int32 { -1 }
+
+  // Darwin declares posix_spawnattr_t / posix_spawn_file_actions_t as opaque pointers
+  // (so Swift code holds `posix_spawnattr_t?`), while Linux Glibc declares them as C structs.
+  @discardableResult
+  public func posix_spawnattr_init(_ attr: UnsafeMutablePointer<posix_spawnattr_t?>) -> Int32 {
+    var raw = posix_spawnattr_t()
+    let rc = Glibc.posix_spawnattr_init(&raw)
+    attr.pointee = raw
+    return rc
+  }
+
+  @discardableResult
+  public func posix_spawnattr_destroy(_ attr: UnsafeMutablePointer<posix_spawnattr_t?>) -> Int32 {
+    guard var raw = attr.pointee else { return 0 }
+    let rc = Glibc.posix_spawnattr_destroy(&raw)
+    attr.pointee = nil
+    return rc
+  }
+
+  @discardableResult
+  public func posix_spawnattr_setflags(_ attr: UnsafeMutablePointer<posix_spawnattr_t?>, _ flags: Int16) -> Int32 {
+    guard var raw = attr.pointee else { return -1 }
+    let rc = Glibc.posix_spawnattr_setflags(&raw, flags)
+    attr.pointee = raw
+    return rc
+  }
+
+  @discardableResult
+  public func posix_spawn_file_actions_init(_ actions: UnsafeMutablePointer<posix_spawn_file_actions_t?>) -> Int32 {
+    var raw = posix_spawn_file_actions_t()
+    let rc = Glibc.posix_spawn_file_actions_init(&raw)
+    actions.pointee = raw
+    return rc
+  }
+
+  @discardableResult
+  public func posix_spawn_file_actions_destroy(_ actions: UnsafeMutablePointer<posix_spawn_file_actions_t?>) -> Int32 {
+    guard var raw = actions.pointee else { return 0 }
+    let rc = Glibc.posix_spawn_file_actions_destroy(&raw)
+    actions.pointee = nil
+    return rc
+  }
+
+  @discardableResult
+  public func posix_spawn_file_actions_addchdir(
+    _ actions: UnsafeMutablePointer<posix_spawn_file_actions_t?>,
+    _ path: UnsafePointer<CChar>?
+  ) -> Int32 {
+    guard var raw = actions.pointee, let path else { return 0 }
+    let rc = Glibc.posix_spawn_file_actions_addchdir_np(&raw, path)
+    actions.pointee = raw
+    return rc
+  }
+
+  @discardableResult
+  public func posix_spawn_file_actions_adddup2(
+    _ actions: UnsafeMutablePointer<posix_spawn_file_actions_t?>,
+    _ fildes: Int32,
+    _ newfildes: Int32
+  ) -> Int32 {
+    guard var raw = actions.pointee else { return -1 }
+    let rc = Glibc.posix_spawn_file_actions_adddup2(&raw, fildes, newfildes)
+    actions.pointee = raw
+    return rc
+  }
+
+  @discardableResult
+  public func posix_spawn_file_actions_addclose(
+    _ actions: UnsafeMutablePointer<posix_spawn_file_actions_t?>,
+    _ fildes: Int32
+  ) -> Int32 {
+    guard var raw = actions.pointee else { return -1 }
+    let rc = Glibc.posix_spawn_file_actions_addclose(&raw, fildes)
+    actions.pointee = raw
+    return rc
+  }
+
+  public func posix_spawn(
+    _ pid: UnsafeMutablePointer<pid_t>?,
+    _ path: UnsafePointer<CChar>?,
+    _ file_actions: UnsafePointer<posix_spawn_file_actions_t?>?,
+    _ attrp: UnsafePointer<posix_spawnattr_t?>?,
+    _ argv: UnsafePointer<UnsafeMutablePointer<CChar>?>?,
+    _ envp: UnsafePointer<UnsafeMutablePointer<CChar>?>?
+  ) -> Int32 {
+    guard let path, let argv else { return -1 }
+    var fa = file_actions?.pointee
+    var at = attrp?.pointee
+    if fa != nil && at != nil {
+      return withUnsafePointer(to: &fa!) { faPtr in
+        withUnsafePointer(to: &at!) { atPtr in
+          Glibc.posix_spawn(pid, path, faPtr, atPtr, argv, envp)
+        }
+      }
+    } else if fa != nil {
+      return withUnsafePointer(to: &fa!) { faPtr in
+        Glibc.posix_spawn(pid, path, faPtr, nil, argv, envp)
+      }
+    } else if at != nil {
+      return withUnsafePointer(to: &at!) { atPtr in
+        Glibc.posix_spawn(pid, path, nil, atPtr, argv, envp)
+      }
+    } else {
+      return Glibc.posix_spawn(pid, path, nil, nil, argv, envp)
+    }
+  }
+
+  public let IOPOL_TYPE_VFS_MATERIALIZE_DATALESS_FILES: Int32 = 3
+  public let IOPOL_SCOPE_THREAD: Int32 = 1
+  public let IOPOL_MATERIALIZE_DATALESS_FILES_OFF: Int32 = 1
+  public func getiopolicy_np(_ iotype: Int32, _ scope: Int32) -> Int32 { 0 }
+  @discardableResult
+  public func setiopolicy_np(_ iotype: Int32, _ scope: Int32, _ policy: Int32) -> Int32 { 0 }
+
+  public let ATTR_BIT_MAP_COUNT: Int32 = 5
+  public let ATTR_CMN_NAME: UInt32 = 0x00000001
+  public let ATTR_CMN_OBJTYPE: UInt32 = 0x00000008
+  public let ATTR_CMN_MODTIME: UInt32 = 0x00000400
+  public let ATTR_CMN_ERROR: UInt32 = 0x10000000
+  public let ATTR_CMN_RETURNED_ATTRS: UInt32 = 0x80000000
+  public let ATTR_DIR_MOUNTSTATUS: UInt32 = 0x00000001
+  public let DIR_MNTSTATUS_MNTPOINT: Int32 = 0x00000001
+  public let DIR_MNTSTATUS_TRIGGER: Int32 = 0x00000002
+
+  public struct vtype: Sendable {
+    public let rawValue: UInt32
+    public init(rawValue: UInt32) { self.rawValue = rawValue }
+  }
+  public let VREG = vtype(rawValue: 1)
+  public let VDIR = vtype(rawValue: 2)
+
+  public struct attribute_set_t: Sendable {
+    public var commonattr: attrgroup_t = 0
+    public var volattr: attrgroup_t = 0
+    public var dirattr: attrgroup_t = 0
+    public var fileattr: attrgroup_t = 0
+    public var forkattr: attrgroup_t = 0
+    public init() {}
+  }
+
+  public struct attrlist: Sendable {
+    public var bitmapcount: u_short = 0
+    public var reserved: UInt16 = 0
+    public var commonattr: attrgroup_t = 0
+    public var volattr: attrgroup_t = 0
+    public var dirattr: attrgroup_t = 0
+    public var fileattr: attrgroup_t = 0
+    public var forkattr: attrgroup_t = 0
+    public init() {}
+  }
+
+  public struct attrreference_t: Sendable {
+    public var attr_dataoffset: Int32 = 0
+    public var attr_length: UInt32 = 0
+    public init() {}
+  }
+
+  public func getattrlistbulk(
+    _ dirfd: Int32,
+    _ attrList: UnsafeMutableRawPointer?,
+    _ attrBuf: UnsafeMutableRawPointer,
+    _ attrBufSize: Int,
+    _ options: UInt64
+  ) -> Int32 { 0 }
+
+  public typealias integer_t = Int32
+  public typealias natural_t = UInt32
+  public typealias mach_port_t = UInt32
+  public typealias mach_msg_type_number_t = UInt32
+  public typealias processor_info_array_t = UnsafeMutablePointer<integer_t>
+  public typealias vm_address_t = UInt
+  public typealias vm_size_t = UInt
+
+  public let KERN_SUCCESS: Int32 = 0
+  public let HOST_VM_INFO64: Int32 = 4
+  public let PROCESSOR_CPU_LOAD_INFO: Int32 = 2
+  public let CLK_TCK: Int32 = 100
+  public let CPU_STATE_USER: Int32 = 0
+  public let CPU_STATE_SYSTEM: Int32 = 1
+  public let CPU_STATE_IDLE: Int32 = 2
+  public let CPU_STATE_NICE: Int32 = 3
+  public let CPU_STATE_MAX: Int32 = 4
+
+  public var mach_task_self_: mach_port_t { 0 }
+  public func mach_host_self() -> mach_port_t { 0 }
+
+  public struct vm_statistics64_data_t: Sendable {
+    public var free_count: UInt32 = 262_144
+    public var active_count: UInt32 = 0
+    public var inactive_count: UInt32 = 0
+    public var wire_count: UInt32 = 0
+    public init() {}
+  }
+
+  public func host_statistics64(
+    _ host_priv: mach_port_t,
+    _ flavor: Int32,
+    _ host_info64_out: UnsafeMutablePointer<integer_t>?,
+    _ host_info64_outCnt: UnsafeMutablePointer<mach_msg_type_number_t>?
+  ) -> Int32 {
+    KERN_SUCCESS
+  }
+
+  public func host_processor_info(
+    _ host: mach_port_t,
+    _ flavor: Int32,
+    _ out_processor_count: UnsafeMutablePointer<natural_t>?,
+    _ out_processor_info: UnsafeMutablePointer<processor_info_array_t?>?,
+    _ out_processor_infoCnt: UnsafeMutablePointer<mach_msg_type_number_t>?
+  ) -> Int32 {
+    let cpus = max(1, ProcessInfo.processInfo.processorCount)
+    let total = cpus * Int(CPU_STATE_MAX)
+    guard let buf = calloc(total, MemoryLayout<integer_t>.size)?.assumingMemoryBound(to: integer_t.self) else {
+      return -1
+    }
+    out_processor_count?.pointee = natural_t(cpus)
+    out_processor_info?.pointee = buf
+    out_processor_infoCnt?.pointee = mach_msg_type_number_t(total)
+    return KERN_SUCCESS
+  }
+
+  public func vm_deallocate(_ target_task: mach_port_t, _ address: vm_address_t, _ size: vm_size_t) -> Int32 {
+    if let ptr = UnsafeMutableRawPointer(bitPattern: address) {
+      free(ptr)
+    }
+    return KERN_SUCCESS
+  }
+#elseif !os(macOS)
   public typealias uid_t = UInt32
   public typealias gid_t = UInt32
   public typealias pid_t = Int32

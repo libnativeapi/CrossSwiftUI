@@ -124,6 +124,14 @@ let drawingDependencies: [Target.Dependency] = ["CSwiftUIWindows"]
 let drawingDependencies: [Target.Dependency] = []
 #if os(Linux)
 if buildForDesktop {
+  targets.append(
+    .target(
+      name: "SQLite3",
+      publicHeadersPath: "include",
+      linkerSettings: [.linkedLibrary("sqlite3")]
+    )
+  )
+  products.append(.library(name: "SQLite3", targets: ["SQLite3"]))
   targets.append(.testTarget(name: "LinuxDrawingTests", dependencies: ["CrossSwiftUI"]))
 }
 #endif
