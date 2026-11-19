@@ -735,6 +735,9 @@ extension Animation {
 
 public func withTransaction<Result>(_ transaction: Transaction, _ body: () throws -> Result) rethrows -> Result {
   if transaction.disablesAnimations {
+    let oldDisabled = AnimationContext.disablesAnimations
+    AnimationContext.disablesAnimations = true
+    defer { AnimationContext.disablesAnimations = oldDisabled }
     return try withAnimation(nil) { try body() }
   }
   return try withAnimation(transaction.animation) { try body() }

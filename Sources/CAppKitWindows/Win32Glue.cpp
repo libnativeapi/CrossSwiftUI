@@ -15,10 +15,12 @@
 #include <shobjidl.h>
 #include <shlwapi.h>
 #include <dwmapi.h>
+#include <commctrl.h>
 #include <imm.h>
 #include <bcrypt.h>
 #include <objidl.h>
 #include <gdiplus.h>
+#pragma comment(lib, "comctl32.lib")
 
 #include "CAppKitWindows.h"
 
@@ -793,6 +795,78 @@ void cak_window_set_tool_style(void *hwnd_ptr, int hide_from_taskbar, int non_ac
   if (non_activating) ex |= WS_EX_NOACTIVATE;
   else ex &= ~WS_EX_NOACTIVATE;
   SetWindowLongPtrW(hwnd, GWL_EXSTYLE, ex);
+}
+
+static LRESULT CALLBACK FramelessSubclassProc(
+    HWND hwnd, UINT msg, WPARAM wp, LPARAM lp, UINT_PTR subclass_id, DWORD_PTR
+) {
+  switch (msg) {
+    case WM_WINDOWPOSCHANGING: {
+      if (lp) {
+        reinterpret_cast<WINDOWPOS *>(lp)->flags |= SWP_NOCOPYBITS;
+      }
+      break;
+    }
+    case WM_NCCALCSIZE:
+      return 0;
+    case WM_NCPAINT:
+    case 0x00AE: // WM_NCUAHDRAWCAPTION
+    case 0x00AF: // WM_NCUAHDRAWFRAME
+      return 0;
+    case WM_NCACTIVATE:
+      return TRUE;
+    case WM_NCDESTROY:
+      RemovePropW(hwnd, L"CAKFramelessApplied");
+      RemoveWindowSubclass(hwnd, FramelessSubclassProc, subclass_id);
+      break;
+    default:
+      break;
+  }
+  return DefSubclassProc(hwnd, msg, wp, lp);
+}
+
+void cak_window_apply_frameless(void *hwnd_ptr, int is_frameless) {
+  HWND hwnd = static_cast<HWND>(hwnd_ptr);
+  if (!hwnd || !IsWindow(hwnd)) return;
+  constexpr UINT_PTR kFramelessSubclassId = 0xCA41F001u;
+  if (!is_frameless) {
+    RemovePropW(hwnd, L"CAKFramelessApplied");
+    RemoveWindowSubclass(hwnd, FramelessSubclassProc, kFramelessSubclassId);
+    return;
+  }
+  SetWindowSubclass(hwnd, FramelessSubclassProc, kFramelessSubclassId, 0);
+  LONG_PTR style = GetWindowLongPtrW(hwnd, GWL_STYLE);
+  const LONG_PTR stripped_style =
+      (style & ~(WS_CAPTION | WS_THICKFRAME | WS_SYSMENU | WS_MINIMIZEBOX |
+                 WS_MAXIMIZEBOX | WS_BORDER | WS_DLGFRAME)) |
+      WS_POPUP;
+  bool changed = false;
+  if (stripped_style != style) {
+    SetWindowLongPtrW(hwnd, GWL_STYLE, stripped_style);
+    changed = true;
+  }
+  LONG_PTR ex = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
+  const LONG_PTR stripped_ex =
+      ex & ~(WS_EX_DLGMODALFRAME | WS_EX_WINDOWEDGE | WS_EX_CLIENTEDGE | WS_EX_STATICEDGE);
+  if (stripped_ex != ex) {
+    SetWindowLongPtrW(hwnd, GWL_EXSTYLE, stripped_ex);
+    changed = true;
+  }
+  if (!GetPropW(hwnd, L"CAKFramelessApplied")) {
+    SetPropW(hwnd, L"CAKFramelessApplied", reinterpret_cast<HANDLE>(1));
+    changed = true;
+  }
+  if (!changed) return;
+  DWMNCRENDERINGPOLICY policy = DWMNCRP_ENABLED;
+  DwmSetWindowAttribute(hwnd, DWMWA_NCRENDERING_POLICY, &policy, sizeof(policy));
+  COLORREF none_border = 0xFFFFFFFEu;
+  DwmSetWindowAttribute(hwnd, 34 /* DWMWA_BORDER_COLOR */, &none_border, sizeof(none_border));
+  int dont_round = 1; // DWMWCP_DONOTROUND
+  DwmSetWindowAttribute(hwnd, 33 /* DWMWA_WINDOW_CORNER_PREFERENCE */, &dont_round, sizeof(dont_round));
+  SetWindowPos(
+      hwnd, nullptr, 0, 0, 0, 0,
+      SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOOWNERZORDER |
+          SWP_NOACTIVATE | SWP_FRAMECHANGED | SWP_NOCOPYBITS);
 }
 
 void cak_cursor_pos(double *out_x, double *out_y) {

@@ -60,6 +60,7 @@ int cak_is_system_dark_mode(void);
 // Window & FieldEditor & Cursor & Synthetic Input
 void cak_window_set_backdrop(void *hwnd, int backdrop_kind, int is_dark);
 void cak_window_set_tool_style(void *hwnd, int hide_from_taskbar, int non_activating);
+void cak_window_apply_frameless(void *hwnd, int is_frameless);
 void cak_cursor_pos(double *out_x, double *out_y);
 uint32_t cak_modifier_flags(void);
 void cak_set_cursor(int cursor_kind);

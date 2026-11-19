@@ -32,6 +32,7 @@ import Foundation
   private var needsRender = false
   private var pendingAnimation: Animation?
   private var pendingAnimationExplicit = false
+  private var pendingDisablesAnimations = false
   private var renderPass = 0
   private let layoutAnimations = LayoutAnimator()
   private var transactionDepth = 0
@@ -169,7 +170,11 @@ import Foundation
   /// after the write see it) while deferring automatic rendering until after `willSet` completes.
   private func scheduleObservableRender() {
     pendingScroll = nil
-    if AnimationContext.isExplicit {
+    if AnimationContext.disablesAnimations {
+      pendingDisablesAnimations = true
+      pendingAnimation = nil
+      pendingAnimationExplicit = true
+    } else if AnimationContext.isExplicit {
       pendingAnimation = AnimationContext.current
       pendingAnimationExplicit = true
     } else if let animation = AnimationContext.current {
@@ -187,7 +192,11 @@ import Foundation
   }
 
   private func scheduleRender() {
-    if AnimationContext.isExplicit {
+    if AnimationContext.disablesAnimations {
+      pendingDisablesAnimations = true
+      pendingAnimation = nil
+      pendingAnimationExplicit = true
+    } else if AnimationContext.isExplicit {
       pendingAnimation = AnimationContext.current
       pendingAnimationExplicit = true
     } else if let animation = AnimationContext.current {
@@ -247,7 +256,7 @@ import Foundation
     var passes = 0
     repeat {
       needsRender = false
-      update()
+      update(allowSkipIntermediatePublish: passes < 7)
       backend.didMeasureRender(lastTimings)
       unpublishedOffsets.removeAll(keepingCapacity: true)
       passes += 1
@@ -714,10 +723,12 @@ import Foundation
     lastTimings["normalize"] = (Date.timeIntervalSinceReferenceDate - start) * 1000
     normalized = element
     start = Date.timeIntervalSinceReferenceDate
-    let explicitTransaction = pendingAnimationExplicit || AnimationContext.isExplicit
-    let transactionAnimation = pendingAnimation ?? AnimationContext.current
+    let disablesAnimations = pendingDisablesAnimations || AnimationContext.disablesAnimations
+    let explicitTransaction = pendingAnimationExplicit || AnimationContext.isExplicit || disablesAnimations
+    let transactionAnimation = disablesAnimations ? nil : (pendingAnimation ?? AnimationContext.current)
     pendingAnimation = nil
     pendingAnimationExplicit = false
+    pendingDisablesAnimations = false
     if let animation = transactionAnimation {
       element.props.animation = animation
       element.props.animationDisabled = false
@@ -737,7 +748,8 @@ import Foundation
       previous: previousBase,
       inheritedAnimation: nil,
       renderPass: currentPass,
-      now: now)
+      now: now,
+      transactionDisabled: disablesAnimations)
     lastTimings["environment"] = (Date.timeIntervalSinceReferenceDate - start) * 1000
     start = Date.timeIntervalSinceReferenceDate
     layoutEngine.layout(
@@ -757,7 +769,7 @@ import Foundation
     return element
   }
 
-  private func update() {
+  private func update(allowSkipIntermediatePublish: Bool = false) {
     if updateScroll() { return }
     guard let old = mounted else {
       mount()
@@ -782,6 +794,16 @@ import Foundation
     refreshHoverActions()
     lastCommands = commands ?? []
     lastTimings["diff"] = (Date.timeIntervalSinceReferenceDate - start) * 1000
+    if !backend.needsRenderCommands {
+      LifecycleRegistry.shared.commit(root: rootPath)
+      if !(allowSkipIntermediatePublish && needsRender) {
+        start = Date.timeIntervalSinceReferenceDate
+        backend.didRender(mountedTree)
+        lastTimings["backend"] = (Date.timeIntervalSinceReferenceDate - start) * 1000
+      }
+      isRendering = false
+      return
+    }
     start = Date.timeIntervalSinceReferenceDate
     if let commands { backend.perform(commands) }
     backend.didRender(mountedTree)

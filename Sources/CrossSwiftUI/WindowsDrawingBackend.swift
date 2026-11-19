@@ -258,6 +258,16 @@
       sui_surface_set_background(surface, color.argb)
     }
 
+    public func setWindowShadow(enabled: Bool, isDark: Bool) {
+      guard let surface else { return }
+      sui_surface_set_window_shadow(surface, enabled ? 1 : 0, isDark ? 1 : 0)
+    }
+
+    public func flushSyncPaint() {
+      guard let surface else { return }
+      sui_surface_flush_paint(surface)
+    }
+
     private struct TextMeasurementKey: Hashable {
       let text: String, family: String
       let size: Double, weight: Double
@@ -300,7 +310,11 @@
       var liveHosted = Set<NodeID>()
       var hasModal = false
       var hasFocusRequest = false
-      func animate(_ node: Element, inherited: Animation?) {
+      let rootSizeChanged = self.root.map {
+        abs($0.frame.width - root.frame.width) > 0.5 || abs($0.frame.height - root.frame.height) > 0.5
+      } ?? false
+      let suppressAllAnimations = root.props.animationDisabled || rootSizeChanged
+      func animate(_ node: Element, inherited: Animation?, disabled: Bool) {
         if node.kind == .textField { liveEdits.insert(node.id) }
         if node.kind == .hostedView { liveHosted.insert(node.id) }
         if node.kind == .styledButton || node.kind == .button { live.insert(node.id) }
@@ -309,7 +323,8 @@
         hasFocusRequest = hasFocusRequest || node.props.focusRequested
         let values = AnimatedValues(node.props)
         current[node.id] = values
-        let animation = node.props.animationDisabled ? nil : (node.props.animation ?? inherited)
+        let nodeDisabled = disabled || node.props.animationDisabled
+        let animation = nodeDisabled ? nil : (node.props.animation ?? inherited)
         if let old = previous[node.id], old != values {
           if let animation, animation.duration > 0 {
             let origin: AnimatedValues
@@ -323,10 +338,15 @@
           } else {
             motions.removeValue(forKey: node.id)
           }
+        } else if nodeDisabled {
+          motions.removeValue(forKey: node.id)
         }
-        node.children.forEach { animate($0, inherited: animation) }
+        node.children.forEach { animate($0, inherited: animation, disabled: nodeDisabled) }
       }
-      animate(root, inherited: nil)
+      animate(root, inherited: nil, disabled: suppressAllAnimations)
+      if suppressAllAnimations {
+        motions.removeAll()
+      }
       previous = current
       motions = motions.filter { current[$0.key] != nil }
       self.root = root

@@ -177,6 +177,7 @@ public func withAnimation<Result>(_ animation: Animation? = .default, _ body: ()
 enum AnimationContext {
   static var current: Animation?
   static var isExplicit = false
+  static var disablesAnimations = false
   static var renderPass = 0
 }
 public enum TextAlignment: Equatable { case leading, center, trailing }

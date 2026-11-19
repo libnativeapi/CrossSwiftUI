@@ -292,4 +292,37 @@ final class LayoutAnimationTests: XCTestCase {
     XCTAssertFalse(renderer.stepAnimations())
     XCTAssertEqual(try widths().scoped, 0, accuracy: 0.001)
   }
+
+  func testWithTransactionDisablesAnimationsSuppressesScopedValueAnimation() throws {
+    struct ScopedBox: View {
+      @State private var expanded = false
+      var body: some View {
+        VStack {
+          Button("Jump") {
+            withTransaction(\.disablesAnimations, true) {
+              expanded.toggle()
+            }
+          }
+          Rectangle()
+            .frame(width: expanded ? 300 : 120, height: 40)
+            .animation(.easeOut(duration: 0.3), value: expanded)
+        }
+      }
+    }
+
+    StateRegistry.shared.reset()
+    let now = 500.0
+    let renderer = Renderer(
+      backend: FakeBackend(),
+      root: AnyView(ScopedBox()),
+      size: Size(width: 400, height: 200))
+    renderer.clock = { now }
+    renderer.mount()
+
+    let jumpBtn = try XCTUnwrap(findNode(in: try XCTUnwrap(renderer.tree), text: "Jump"))
+    renderer.performTap(jumpBtn.id)
+    XCTAssertFalse(renderer.hasActiveAnimations)
+    let root = try XCTUnwrap(renderer.tree)
+    XCTAssertEqual(root.children[1].frame.width, 300, accuracy: 0.01)
+  }
 }

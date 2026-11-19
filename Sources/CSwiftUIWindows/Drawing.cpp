@@ -236,8 +236,315 @@ struct Surface {
   sui_paint_stats total_paint_stats{};
   double publish_times[6]{};
   bool host_clipped_children = false;
+  bool window_shadow_enabled = false;
+  bool window_shadow_dark = false;
+  bool positioning_shadow = false;
+  HWND shadow_layer = nullptr;
+  HWND shadow_root = nullptr;
+  int shadow_margin = 0;
+  int shadow_width = 0;
+  int shadow_height = 0;
+  uint64_t shadow_hash = 0;
   FrameTrace trace;
 };
+
+constexpr UINT_PTR kShadowRootSubclassId = 0x5AD00001u;
+
+void PositionWindowShadow(Surface *s) {
+  if (!s || !s->shadow_layer || !s->shadow_root || s->positioning_shadow) return;
+  s->positioning_shadow = true;
+  struct Guard {
+    bool &flag;
+    ~Guard() { flag = false; }
+  } guard{s->positioning_shadow};
+
+  if (!IsWindow(s->shadow_root) || !IsWindowVisible(s->shadow_root) || IsIconic(s->shadow_root)) {
+    if (IsWindowVisible(s->shadow_layer)) {
+      ShowWindow(s->shadow_layer, SW_HIDE);
+    }
+    return;
+  }
+  const bool root_topmost = (GetWindowLongPtrW(s->shadow_root, GWL_EXSTYLE) & WS_EX_TOPMOST) != 0;
+  const bool layer_topmost = (GetWindowLongPtrW(s->shadow_layer, GWL_EXSTYLE) & WS_EX_TOPMOST) != 0;
+  if (root_topmost != layer_topmost) {
+    SetWindowPos(
+        s->shadow_layer, root_topmost ? HWND_TOPMOST : HWND_NOTOPMOST, 0, 0, 0, 0,
+        SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER);
+  }
+  RECT rect{};
+  if (!GetWindowRect(s->shadow_root, &rect)) return;
+  const int target_x = rect.left - s->shadow_margin;
+  const int target_y = rect.top - s->shadow_margin;
+  RECT cur{};
+  if (IsWindowVisible(s->shadow_layer) && GetWindowRect(s->shadow_layer, &cur) &&
+      cur.left == target_x && cur.top == target_y &&
+      GetWindow(s->shadow_root, GW_HWNDNEXT) == s->shadow_layer) {
+    return;
+  }
+  SetWindowPos(
+      s->shadow_layer, s->shadow_root, target_x, target_y, 0, 0,
+      SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER | SWP_SHOWWINDOW);
+}
+
+LRESULT CALLBACK ShadowRootSubclassProc(
+    HWND hwnd, UINT msg, WPARAM wp, LPARAM lp, UINT_PTR subclass_id, DWORD_PTR data
+) {
+  auto *s = reinterpret_cast<Surface *>(data);
+  if (msg == WM_NCDESTROY) {
+    RemoveWindowSubclass(hwnd, ShadowRootSubclassProc, subclass_id);
+    if (s && s->shadow_root == hwnd) {
+      s->shadow_root = nullptr;
+      if (s->shadow_layer) {
+        DestroyWindow(s->shadow_layer);
+        s->shadow_layer = nullptr;
+      }
+    }
+    return DefSubclassProc(hwnd, msg, wp, lp);
+  }
+  const LRESULT res = DefSubclassProc(hwnd, msg, wp, lp);
+  if (s && s->shadow_layer && (msg == WM_WINDOWPOSCHANGED || msg == WM_SHOWWINDOW)) {
+    PositionWindowShadow(s);
+  }
+  return res;
+}
+
+void ClearWindowShadow(Surface *s) {
+  if (!s) return;
+  if (s->shadow_root && IsWindow(s->shadow_root)) {
+    RemoveWindowSubclass(s->shadow_root, ShadowRootSubclassProc, kShadowRootSubclassId);
+  }
+  s->shadow_root = nullptr;
+  if (s->shadow_layer) {
+    if (IsWindow(s->shadow_layer)) DestroyWindow(s->shadow_layer);
+    s->shadow_layer = nullptr;
+  }
+  s->shadow_hash = 0;
+  s->shadow_width = 0;
+  s->shadow_height = 0;
+}
+
+void BoxBlur1DHorizontal(
+    const std::vector<uint16_t> &src, std::vector<uint16_t> &dst, int w, int h, int radius
+) {
+  const int diam = radius * 2 + 1;
+  for (int y = 0; y < h; ++y) {
+    const uint16_t *in = src.data() + size_t(y) * w;
+    uint16_t *out = dst.data() + size_t(y) * w;
+    uint32_t acc = uint32_t(in[0]) * (radius + 1);
+    for (int x = 1; x <= radius; ++x) acc += in[min(w - 1, x)];
+    for (int x = 0; x < w; ++x) {
+      out[x] = uint16_t((acc + diam / 2) / diam);
+      const int left = max(0, x - radius);
+      const int right = min(w - 1, x + radius + 1);
+      acc += in[right] - in[left];
+    }
+  }
+}
+
+void BoxBlur1DVertical(
+    const std::vector<uint16_t> &src, std::vector<uint16_t> &dst, int w, int h, int radius
+) {
+  const int diam = radius * 2 + 1;
+  for (int x = 0; x < w; ++x) {
+    uint32_t acc = uint32_t(src[x]) * (radius + 1);
+    for (int y = 1; y <= radius; ++y) acc += src[size_t(min(h - 1, y)) * w + x];
+    for (int y = 0; y < h; ++y) {
+      dst[size_t(y) * w + x] = uint16_t((acc + diam / 2) / diam);
+      const int top = max(0, y - radius);
+      const int bot = min(h - 1, y + radius + 1);
+      acc += src[size_t(bot) * w + x] - src[size_t(top) * w + x];
+    }
+  }
+}
+
+void BoxBlur3Pass(std::vector<uint16_t> &buf, std::vector<uint16_t> &tmp, int w, int h, int radius) {
+  if (radius <= 0 || w <= 1 || h <= 1) return;
+  for (int pass = 0; pass < 3; ++pass) {
+    BoxBlur1DHorizontal(buf, tmp, w, h, radius);
+    BoxBlur1DVertical(tmp, buf, w, h, radius);
+  }
+}
+
+LRESULT CALLBACK ShadowLayerWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
+  if (msg == WM_NCHITTEST) return HTTRANSPARENT;
+  if (msg == WM_MOUSEACTIVATE) return MA_NOACTIVATE;
+  return DefWindowProcW(hwnd, msg, wp, lp);
+}
+
+void UpdateSurfaceWindowShadow(Surface *s) {
+  if (!s) return;
+  HWND root = GetAncestor(s->host, GA_ROOT);
+  if (!s->window_shadow_enabled || (s->background_argb >> 24) >= 255 ||
+      !root || !IsWindow(root) || !s->buffer || !s->buffer->pixels ||
+      s->buffer->width == 0 || s->buffer->height == 0) {
+    ClearWindowShadow(s);
+    return;
+  }
+  const int bw = int(s->buffer->width);
+  const int bh = int(s->buffer->height);
+  if (int64_t(bw) * bh > 8000000) {
+    ClearWindowShadow(s);
+    return;
+  }
+  uint64_t hash = 14695981039346656037ULL;
+  hash = (hash ^ uint64_t(bw)) * 1099511628211ULL;
+  hash = (hash ^ uint64_t(bh)) * 1099511628211ULL;
+  hash = (hash ^ uint64_t(s->window_shadow_dark ? 1 : 0)) * 1099511628211ULL;
+  bool any_opaque = false;
+  for (int y = 0; y < bh; y += 2) {
+    const uint32_t *row = s->buffer->pixels + size_t(y) * bw;
+    uint64_t bits = 0;
+    for (int x = 0; x < bw; x += 4) {
+      const uint32_t a = row[x] >> 24;
+      if (a >= 16) any_opaque = true;
+      bits = (bits << 2) | ((a >> 6) & 3u);
+      if ((x & 60) == 60) {
+        hash = (hash ^ bits) * 1099511628211ULL;
+        bits = 0;
+      }
+    }
+    hash = (hash ^ bits) * 1099511628211ULL;
+  }
+  if (!any_opaque) {
+    if (s->shadow_layer) ShowWindow(s->shadow_layer, SW_HIDE);
+    s->shadow_hash = hash;
+    return;
+  }
+  if (s->shadow_layer && s->shadow_root == root && s->shadow_hash == hash &&
+      s->shadow_width == bw && s->shadow_height == bh) {
+    PositionWindowShadow(s);
+    return;
+  }
+
+  if (s->shadow_root != root) {
+    ClearWindowShadow(s);
+  }
+  if (!s->shadow_layer) {
+    static ATOM cls_atom = [] {
+      WNDCLASSW wc{};
+      wc.lpfnWndProc = ShadowLayerWndProc;
+      wc.hInstance = GetModuleHandleW(nullptr);
+      wc.lpszClassName = L"CrossSwiftUIShadowLayer";
+      return RegisterClassW(&wc);
+    }();
+    (void)cls_atom;
+    s->shadow_layer = CreateWindowExW(
+        WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
+        L"CrossSwiftUIShadowLayer", L"", WS_POPUP,
+        0, 0, 0, 0, nullptr, nullptr, GetModuleHandleW(nullptr), nullptr);
+    if (!s->shadow_layer) return;
+    s->shadow_root = root;
+    SetWindowSubclass(root, ShadowRootSubclassProc, kShadowRootSubclassId, reinterpret_cast<DWORD_PTR>(s));
+  }
+
+  const double scale = max(1.0, (s->buffer_dpi ? s->buffer_dpi : 96) / 96.0);
+  const int margin = int(std::ceil(38.0 * scale));
+  const int dy_far = int(std::lround(8.0 * scale));
+  const int dy_near = int(std::lround(1.5 * scale));
+  const int sw = bw + margin * 2;
+  const int sh = bh + margin * 2;
+  const int dw = (sw + 1) / 2;
+  const int dh = (sh + 1) / 2;
+
+  std::vector<uint16_t> far_grid(size_t(dw) * dh, 0);
+  std::vector<uint16_t> near_grid(size_t(dw) * dh, 0);
+  std::vector<uint16_t> tmp_grid(size_t(dw) * dh, 0);
+
+  for (int y = 0; y < bh; y += 2) {
+    const uint32_t *row = s->buffer->pixels + size_t(y) * bw;
+    const int fy = (y + margin + dy_far) / 2;
+    const int ny = (y + margin + dy_near) / 2;
+    for (int x = 0; x < bw; x += 2) {
+      const uint16_t a = uint16_t(row[x] >> 24);
+      if (!a) continue;
+      const int gx = (x + margin) / 2;
+      if (fy >= 0 && fy < dh && gx >= 0 && gx < dw) {
+        far_grid[size_t(fy) * dw + gx] = a;
+      }
+      if (ny >= 0 && ny < dh && gx >= 0 && gx < dw) {
+        near_grid[size_t(ny) * dw + gx] = a;
+      }
+    }
+  }
+
+  const int r_far = max(2, int(std::lround(8.5 * scale)));
+  const int r_near = max(1, int(std::lround(2.0 * scale)));
+  BoxBlur3Pass(far_grid, tmp_grid, dw, dh, r_far);
+  BoxBlur3Pass(near_grid, tmp_grid, dw, dh, r_near);
+
+  HDC dc = CreateCompatibleDC(nullptr);
+  if (!dc) return;
+  BITMAPINFO info{};
+  info.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+  info.bmiHeader.biWidth = sw;
+  info.bmiHeader.biHeight = -sh;
+  info.bmiHeader.biPlanes = 1;
+  info.bmiHeader.biBitCount = 32;
+  info.bmiHeader.biCompression = BI_RGB;
+  void *bits = nullptr;
+  HBITMAP dib = CreateDIBSection(dc, &info, DIB_RGB_COLORS, &bits, nullptr, 0);
+  if (!dib || !bits) {
+    if (dib) DeleteObject(dib);
+    DeleteDC(dc);
+    return;
+  }
+  HGDIOBJ old_bmp = SelectObject(dc, dib);
+  auto *out = static_cast<uint32_t *>(bits);
+
+  // Dual-layer shadow strength (ambient/elevation + crisp contact shadow)
+  const uint32_t far_strength = s->window_shadow_dark ? 112u : 58u;
+  const uint32_t near_strength = s->window_shadow_dark ? 68u : 34u;
+
+  auto sample_bilinear = [&](const std::vector<uint16_t> &grid, int px, int py) -> uint32_t {
+    const int gx0 = min(dw - 1, px >> 1);
+    const int gy0 = min(dh - 1, py >> 1);
+    const int gx1 = min(dw - 1, gx0 + (px & 1));
+    const int gy1 = min(dh - 1, gy0 + (py & 1));
+    return (uint32_t(grid[size_t(gy0) * dw + gx0]) +
+            uint32_t(grid[size_t(gy0) * dw + gx1]) +
+            uint32_t(grid[size_t(gy1) * dw + gx0]) +
+            uint32_t(grid[size_t(gy1) * dw + gx1]) + 2u) >> 2;
+  };
+
+  for (int py = 0; py < sh; ++py) {
+    uint32_t *dst_row = out + size_t(py) * sw;
+    const int by = py - margin;
+    const uint32_t *src_row = (by >= 0 && by < bh) ? (s->buffer->pixels + size_t(by) * bw) : nullptr;
+    for (int px = 0; px < sw; ++px) {
+      const uint32_t f_a = (sample_bilinear(far_grid, px, py) * far_strength + 127u) / 255u;
+      const uint32_t n_a = (sample_bilinear(near_grid, px, py) * near_strength + 127u) / 255u;
+      uint32_t combined = f_a + ((n_a * (255u - f_a) + 127u) / 255u);
+      if (src_row) {
+        const int bx = px - margin;
+        if (bx >= 0 && bx < bw) {
+          const uint32_t body_a = src_row[bx] >> 24;
+          // Mask out interior of opaque/glass silhouettes so shadow never muddies translucent glass
+          const uint32_t mask_out = body_a >= 200 ? 255u : min(255u, (body_a * 280u) >> 8);
+          combined = (combined * (255u - mask_out) + 127u) / 255u;
+        }
+      }
+      dst_row[px] = (min(255u, combined) << 24);
+    }
+  }
+
+  RECT root_rect{};
+  GetWindowRect(root, &root_rect);
+  POINT dest_pt{root_rect.left - margin, root_rect.top - margin};
+  POINT src_pt{0, 0};
+  SIZE layer_sz{sw, sh};
+  BLENDFUNCTION blend{AC_SRC_OVER, 0, 255, AC_SRC_ALPHA};
+  UpdateLayeredWindow(s->shadow_layer, nullptr, &dest_pt, &layer_sz, dc, &src_pt, 0, &blend, ULW_ALPHA);
+
+  SelectObject(dc, old_bmp);
+  DeleteObject(dib);
+  DeleteDC(dc);
+
+  s->shadow_margin = margin;
+  s->shadow_width = bw;
+  s->shadow_height = bh;
+  s->shadow_hash = hash;
+  PositionWindowShadow(s);
+}
 double ClockMilliseconds() {
   static const double frequency = [] {
     LARGE_INTEGER f;
@@ -537,6 +844,8 @@ void RenderFrame(Surface *s) {
       }
     }
   }
+  g.Flush(FlushIntentionSync);
+  UpdateSurfaceWindowShadow(s);
   const double elapsed = ClockMilliseconds() - started;
   s->paint_stats.raster_ms += elapsed;
   s->total_paint_stats.raster_ms += elapsed;
@@ -1388,6 +1697,7 @@ void sui_surface_destroy(void *handle) {
   if (s->updating_views)
     native_view_end_updates(false);
   RemoveWindowSubclass(s->host, HostProc, subclass_id);
+  ClearWindowShadow(s);
   if (s->host_clipped_children)
     SetWindowLongPtrW(s->host, GWL_STYLE,
                       GetWindowLongPtrW(s->host, GWL_STYLE) | WS_CLIPCHILDREN);
@@ -1475,6 +1785,32 @@ void sui_surface_set_background(void *handle, uint32_t argb) {
   GetClientRect(s->host, &client);
   UnionRect(&s->damage, &s->damage, &client);
   InvalidateRect(s->host, nullptr, FALSE);
+}
+void sui_surface_set_window_shadow(void *handle, int enabled, int is_dark) {
+  auto *s = static_cast<Surface *>(handle);
+  if (!s) return;
+  const bool want = enabled != 0;
+  const bool dark = is_dark != 0;
+  if (s->window_shadow_enabled == want && s->window_shadow_dark == dark) return;
+  s->window_shadow_enabled = want;
+  s->window_shadow_dark = dark;
+  if (!want) {
+    ClearWindowShadow(s);
+  } else if (s->buffer && s->buffer->pixels) {
+    UpdateSurfaceWindowShadow(s);
+  }
+}
+void sui_surface_flush_paint(void *handle) {
+  auto *s = static_cast<Surface *>(handle);
+  if (!s || !s->host || !IsWindow(s->host)) return;
+  RenderFrame(s);
+  HWND root = GetAncestor(s->host, GA_ROOT);
+  if (root && IsWindowVisible(root)) {
+    RedrawWindow(
+        s->host, nullptr, nullptr,
+        RDW_INVALIDATE | RDW_NOERASE | RDW_UPDATENOW | RDW_ALLCHILDREN);
+    PositionWindowShadow(s);
+  }
 }
 void sui_surface_custom_view(void *handle, void *view_hwnd,
                              uint64_t native_view) {

@@ -339,6 +339,19 @@ open class NSHostingView<Content: SwiftUIRuntime.View>: NSView {
     }
   }
 
+  private var isFlushingLayout = false
+
+  open override func layout() {
+    super.layout()
+    guard !isFlushingLayout else { return }
+    isFlushingLayout = true
+    defer { isFlushingLayout = false }
+    renderer?.renderIfNeeded()
+    #if os(Windows)
+      backend?.flushSyncPaint()
+    #endif
+  }
+
   open override func viewDidChangeFrameSize(from oldSize: NSSize) {
     super.viewDidChangeFrameSize(from: oldSize)
     guard frame.width > 0 && frame.height > 0 else { return }
@@ -359,11 +372,14 @@ open class NSHostingView<Content: SwiftUIRuntime.View>: NSView {
         env.colorScheme = isDark ? SwiftUIRuntime.ColorScheme.dark : SwiftUIRuntime.ColorScheme.light
       }
       let bg = win.backgroundColor.resolved(for: win.effectiveAppearance)
+      let isFrameless = !win.styleMask.contains(.titled)
       if !win.isOpaque || bg.a < 0.05 {
         // Transparent borderless panels clear to per-pixel alpha=0 so outer margins stay hollow
         backend?.setBackgroundColor(.clear)
+        backend?.setWindowShadow(enabled: isFrameless && win.hasShadow, isDark: isDark)
         win.syncBackgroundToNative()
       } else {
+        backend?.setWindowShadow(enabled: false, isDark: isDark)
         backend?.setBackgroundColor(SwiftUIRuntime.Color(
           red: Double(bg.r), green: Double(bg.g), blue: Double(bg.b), opacity: Double(bg.a)
         ))

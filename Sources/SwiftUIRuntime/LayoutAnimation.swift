@@ -59,6 +59,7 @@ final class LayoutAnimator {
   private struct GeometryScope {
     let previousChildren: [Element]
     let inheritedAnimation: Animation?
+    let transactionDisabled: Bool
   }
 
   private var targets: [NodeID: TargetSizing] = [:]
@@ -113,10 +114,17 @@ final class LayoutAnimator {
     previous: Element?,
     inheritedAnimation: Animation?,
     renderPass: Int,
-    now: TimeInterval
+    now: TimeInterval,
+    transactionDisabled: Bool = false
   ) {
     let effectiveAnimation: Animation?
-    if element.props.animationPass == renderPass {
+    if transactionDisabled {
+      element.props.animation = nil
+      element.props.animationDisabled = true
+      element.props.animationPass = renderPass
+      element.hasScopedAnimation = false
+      effectiveAnimation = nil
+    } else if element.props.animationPass == renderPass {
       element.hasScopedAnimation = true
       if element.props.animationDisabled {
         effectiveAnimation = nil
@@ -134,6 +142,9 @@ final class LayoutAnimator {
     let matched = previous.flatMap { $0.kind == element.kind && $0.id.rawValue != 0 ? $0 : nil }
     if let matched {
       let id = matched.id
+      if transactionDisabled {
+        motions.removeValue(forKey: id)
+      }
       if element.reusesLayout && !matched.hasLayoutAnimation && !matched.hasScopedAnimation
         && motions[id] == nil && effectiveAnimation == nil
       {
@@ -147,7 +158,8 @@ final class LayoutAnimator {
         element.id = id
         geometryScopes[id] = GeometryScope(
           previousChildren: matched.children,
-          inheritedAnimation: effectiveAnimation)
+          inheritedAnimation: effectiveAnimation,
+          transactionDisabled: transactionDisabled)
       }
     } else {
       element.hasLayoutAnimation = false
@@ -172,7 +184,8 @@ final class LayoutAnimator {
             previous: oldChildren[index],
             inheritedAnimation: effectiveAnimation,
             renderPass: renderPass,
-            now: now)
+            now: now,
+            transactionDisabled: transactionDisabled)
           if element.children[index].hasLayoutAnimation { element.hasLayoutAnimation = true }
           if element.children[index].hasScopedAnimation { element.hasScopedAnimation = true }
         }
@@ -192,7 +205,8 @@ final class LayoutAnimator {
             previous: oldChild,
             inheritedAnimation: effectiveAnimation,
             renderPass: renderPass,
-            now: now)
+            now: now,
+            transactionDisabled: transactionDisabled)
           if element.children[index].hasLayoutAnimation { element.hasLayoutAnimation = true }
           if element.children[index].hasScopedAnimation { element.hasScopedAnimation = true }
         }
@@ -204,7 +218,8 @@ final class LayoutAnimator {
           previous: nil,
           inheritedAnimation: effectiveAnimation,
           renderPass: renderPass,
-          now: now)
+          now: now,
+          transactionDisabled: transactionDisabled)
         if element.children[index].hasScopedAnimation { element.hasScopedAnimation = true }
       }
     }
@@ -225,7 +240,8 @@ final class LayoutAnimator {
       previous: prior,
       inheritedAnimation: scope?.inheritedAnimation,
       renderPass: renderPass,
-      now: now)
+      now: now,
+      transactionDisabled: scope?.transactionDisabled ?? false)
   }
 
   private func interpolateNode(

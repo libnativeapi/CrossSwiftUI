@@ -223,6 +223,7 @@ open class NSWindow: NSResponder {
         let isFrameless = !styleMask.contains(.titled)
         let isTransparent = !isOpaque || backgroundColor.resolved(for: effectiveAppearance).a < 0.05
         nativeWindow?.setHasShadow(isFrameless && isTransparent ? false : hasShadow)
+        contentView?.viewDidChangeEffectiveAppearance()
       #endif
     }
   }
@@ -467,6 +468,7 @@ open class NSWindow: NSResponder {
       }
       #if os(Windows)
         if let hwnd = nw.nativeObject {
+          cak_window_apply_frameless(hwnd, isFrameless ? 1 : 0)
           cak_window_set_tool_style(hwnd, hideFromTaskbar ? 1 : 0, isNonActivating ? 1 : 0)
         }
         if isFrameless && isTransparent {
@@ -486,6 +488,11 @@ open class NSWindow: NSResponder {
         nw.setHasShadow(false)
         _ = nw.setCornerPreference(.doNotRound)
         nw.setBackgroundColor(NativeAPI.Color(r: 0, g: 0, b: 0, a: 0))
+        #if os(Windows)
+          if let hwnd = nw.nativeObject {
+            cak_window_apply_frameless(hwnd, 1)
+          }
+        #endif
         applyWindowsBackdrop(.none)
         return
       }
@@ -563,14 +570,15 @@ open class NSWindow: NSResponder {
       if let nw = nativeWindow {
         let top = CrossAppKitCoordinates.rectToNativeTopLeft(frameRect)
         let r = NativeAPI.Rectangle(x: top.x, y: top.y, width: max(1, top.width), height: max(1, top.height))
-        if animateFlag {
-          _ = nw.animateBounds(r)
-        } else {
+        if !animateFlag || !nw.animateBounds(r) {
           nw.setBounds(r)
         }
       }
     #endif
     contentView?.frame = NSRect(origin: .zero, size: contentLayoutRect.size)
+    if flag && isVisible {
+      contentView?.layoutSubtreeIfNeeded()
+    }
   }
 
   open func setFrameOrigin(_ point: NSPoint) {
@@ -608,11 +616,14 @@ open class NSWindow: NSResponder {
         nativeWindow?.setNonActivating(false)
         #if os(Windows)
           if let hwnd = nativeWindow?.nativeObject {
-            let hideFromTaskbar = !styleMask.contains(.titled) || styleMask.contains(.nonactivatingPanel)
+            let isFrameless = !styleMask.contains(.titled)
+            let hideFromTaskbar = isFrameless || styleMask.contains(.nonactivatingPanel)
+            cak_window_apply_frameless(hwnd, isFrameless ? 1 : 0)
             cak_window_set_tool_style(hwnd, hideFromTaskbar ? 1 : 0, 0)
           }
         #endif
       }
+      contentView?.layoutSubtreeIfNeeded()
       nativeWindow?.show()
       if canBecomeKey { nativeWindow?.focus() }
     #endif
@@ -631,6 +642,12 @@ open class NSWindow: NSResponder {
   open func orderFront(_ sender: Any?) {
     isVisible = true
     #if !os(macOS)
+      #if os(Windows)
+        if let hwnd = nativeWindow?.nativeObject, !styleMask.contains(.titled) {
+          cak_window_apply_frameless(hwnd, 1)
+        }
+      #endif
+      contentView?.layoutSubtreeIfNeeded()
       if styleMask.contains(.nonactivatingPanel) {
         nativeWindow?.showInactive()
       } else {
@@ -642,6 +659,11 @@ open class NSWindow: NSResponder {
   open func orderFrontRegardless() {
     isVisible = true
     #if !os(macOS)
+      #if os(Windows)
+        if let hwnd = nativeWindow?.nativeObject, !styleMask.contains(.titled) {
+          cak_window_apply_frameless(hwnd, 1)
+        }
+      #endif
       if canBecomeKey && isKeyWindow {
         nativeWindow?.show()
       } else {
@@ -847,7 +869,11 @@ open class NSWindow: NSResponder {
     UserDefaults.standard.set("\(f.origin.x) \(f.origin.y) \(f.size.width) \(f.size.height)", forKey: "NSWindow Frame \(name)")
   }
 
-  public func invalidateShadow() {}
+  public func invalidateShadow() {
+    if isVisible {
+      contentView?.layoutSubtreeIfNeeded()
+    }
+  }
   public func standardWindowButton(_ b: ButtonType) -> NSButton? { nil }
   public func selectNextKeyView(_ sender: Any?) {}
   public func selectPreviousKeyView(_ sender: Any?) {}
