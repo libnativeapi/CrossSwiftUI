@@ -118,6 +118,7 @@
     }
     private let content: NativeAPI.View
     private var surface: UnsafeMutableRawPointer?
+    private var surfaceBackgroundColor: SwiftUIRuntime.Color = .white
     private var buttons: [NodeID: (view: NativeAPI.Button, listener: ListenerId)] = [:]
     private var hostedViews: [NodeID: (mount: any _HostedViewMount, nativeHandle: UnsafeMutableRawPointer?)] = [:]
 
@@ -252,6 +253,7 @@
     }
 
     public func setBackgroundColor(_ color: SwiftUIRuntime.Color) {
+      surfaceBackgroundColor = color
       guard let surface else { return }
       sui_surface_set_background(surface, color.argb)
     }
@@ -387,7 +389,7 @@
       lastTimings["draw"] = (Date.timeIntervalSinceReferenceDate - started) * 1000
       started = Date.timeIntervalSinceReferenceDate
       sui_controls_begin(surface)
-      updateButtons(root, clip: root.frame, geometryOnly: geometryOnly)
+      updateButtons(root, clip: root.frame, background: surfaceBackgroundColor, geometryOnly: geometryOnly)
       lastTimings["controls"] = (Date.timeIntervalSinceReferenceDate - started) * 1000
       started = Date.timeIntervalSinceReferenceDate
       sui_surface_end(surface)
@@ -539,7 +541,25 @@
         !modalAllowed || (root?.hasActivePresentation == true && !allowed)
       let clip = node.props.clipped ? clip.intersection(node.frame) : clip
       var nativeClip = nativeClip.map { node.props.clipped ? $0.intersection(node.frame) : $0 }
-      let background = node.props.background.flatMap { $0.opacity > 0.99 ? $0 : nil } ?? background
+      let parentBackground = background
+      let background: SwiftUIRuntime.Color
+      if let bg = node.props.background {
+        let a = min(max(bg.opacity, 0), 1)
+        if a >= 0.999 {
+          background = bg
+        } else if a > 0.001 {
+          background = SwiftUIRuntime.Color(
+            red: bg.red * a + parentBackground.red * (1 - a),
+            green: bg.green * a + parentBackground.green * (1 - a),
+            blue: bg.blue * a + parentBackground.blue * (1 - a),
+            opacity: 1.0
+          )
+        } else {
+          background = parentBackground
+        }
+      } else {
+        background = parentBackground
+      }
       let wantsFocus = desiredFocus == node.id
       let viewport = node.frame.intersection(clip)
       let shownInViewport =

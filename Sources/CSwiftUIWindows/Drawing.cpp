@@ -697,6 +697,10 @@ LRESULT CALLBACK EditProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp, UINT_PTR,
   if (found == s->edits.end())
     return DefSubclassProc(hwnd, msg, wp, lp);
   auto id = found->second.id;
+  if (msg == WM_ERASEBKGND) {
+    Draw(s, hwnd, reinterpret_cast<HDC>(wp));
+    return 1;
+  }
   if (msg == WM_KEYDOWN && wp == VK_TAB) {
     sui_surface_focus_next(s, hwnd, (Modifiers() & 1) != 0);
     return 0;
@@ -704,7 +708,16 @@ LRESULT CALLBACK EditProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp, UINT_PTR,
   if ((msg == WM_KEYDOWN || msg == WM_SYSKEYDOWN || msg == WM_MOUSEWHEEL) &&
       Input(s, hwnd, id, msg, wp, lp))
     return 0;
-  return DefSubclassProc(hwnd, msg, wp, lp);
+  const LRESULT res = DefSubclassProc(hwnd, msg, wp, lp);
+  if (msg == WM_CHAR || msg == WM_KEYDOWN || msg == WM_SETTEXT ||
+      msg == EM_REPLACESEL || msg == WM_PASTE || msg == WM_CUT ||
+      msg == WM_CLEAR || msg == WM_HSCROLL || msg == WM_VSCROLL ||
+      msg == WM_SETFOCUS || msg == WM_KILLFOCUS || msg == WM_LBUTTONDOWN ||
+      msg == WM_LBUTTONUP || (msg == WM_MOUSEMOVE && (wp & MK_LBUTTON)) ||
+      msg == WM_IME_COMPOSITION || msg == WM_IME_ENDCOMPOSITION) {
+    InvalidateRect(hwnd, nullptr, TRUE);
+  }
+  return res;
 }
 LRESULT CALLBACK HostProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp, UINT_PTR,
                           DWORD_PTR data) {
@@ -715,8 +728,17 @@ LRESULT CALLBACK HostProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp, UINT_PTR,
   if (msg == WM_NCDESTROY && hwnd == s->host) s->trace.Finish();
   // NativeAPI observes notifications on its content HWND. Scroll grouping is
   // an implementation detail and must not interrupt BUTTON/EDIT notifications.
-  if (hwnd != s->host && msg == WM_COMMAND)
+  if (hwnd != s->host &&
+      (msg == WM_COMMAND || msg == WM_CTLCOLOREDIT || msg == WM_CTLCOLORSTATIC))
     return SendMessageW(s->host, msg, wp, lp);
+  if ((msg == WM_CTLCOLOREDIT || msg == WM_CTLCOLORSTATIC) && lp) {
+    HWND child = reinterpret_cast<HWND>(lp);
+    if (s->edits.count(child)) {
+      DefSubclassProc(hwnd, msg, wp, lp);
+      SetBkMode(reinterpret_cast<HDC>(wp), TRANSPARENT);
+      return reinterpret_cast<LRESULT>(GetStockObject(HOLLOW_BRUSH));
+    }
+  }
   if (msg == WM_DPICHANGED || msg == WM_DPICHANGED_AFTERPARENT) {
     // NativeAPI first applies the suggested bounds. Logical dimensions may
     // stay identical, but retained control frames still need the new DPI.
