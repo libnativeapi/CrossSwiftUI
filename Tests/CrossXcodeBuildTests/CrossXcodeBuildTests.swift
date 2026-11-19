@@ -542,6 +542,31 @@ final class CrossXcodeBuildTests: XCTestCase {
     ))
   }
 
+  func testSwiftPMBackendGeneratesSwift6ManifestWhenSwiftVersionIs6() throws {
+    let demoProject = repositoryRoot.appendingPathComponent("Examples/XcodeDemo/XcodeDemo.xcodeproj")
+    let loader = XcodeProjectLoader()
+    let resolved = try loader.load(
+      from: demoProject,
+      configuration: .release,
+      buildSettingOverrides: ["SWIFT_VERSION": "6.0"]
+    )
+
+    let synthesizer = SwiftPMBackend()
+    let manifest = synthesizer.generatePackageManifest(
+      project: resolved,
+      platform: .windows,
+      configuration: .release,
+      consoleSubsystem: false,
+      crossSwiftRoot: repositoryRoot,
+      nativeAPISwiftRoot: nil,
+      compiledResourceURL: nil
+    )
+
+    XCTAssertTrue(manifest.hasPrefix("// swift-tools-version: 6.0\n"))
+    XCTAssertFalse(manifest.contains("enableUpcomingFeature(\"BareSlashRegexLiterals\")"))
+    XCTAssertTrue(manifest.contains(".product(name: \"CrossFoundation\", package: \"crossswift\")"))
+  }
+
   private func makeMinimalPNG(width: Int, height: Int) -> Data {
     var data = Data([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A])
     data.append(contentsOf: [0, 0, 0, 13]) // IHDR length
