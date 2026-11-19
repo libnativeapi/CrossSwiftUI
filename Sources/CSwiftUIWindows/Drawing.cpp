@@ -70,15 +70,18 @@ struct EditHook {
   wchar_t face[LF_FACESIZE]{};
   double line_center = 0;
   double line_height = 0;
+  HBRUSH bg_brush = nullptr;
+  COLORREF bg_color = CLR_INVALID;
 };
 struct Framebuffer {
   UINT width, height;
   HDC dc = CreateCompatibleDC(nullptr);
   HBITMAP dib = nullptr;
   HGDIOBJ previous = nullptr;
+  uint32_t *pixels = nullptr;
   std::unique_ptr<Bitmap> bitmap;
   Framebuffer(UINT w, UINT h) : width(w), height(h) {
-    void *pixels = nullptr;
+    void *raw_pixels = nullptr;
     BITMAPINFO info{};
     info.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
     info.bmiHeader.biWidth = LONG(w);
@@ -86,10 +89,11 @@ struct Framebuffer {
     info.bmiHeader.biPlanes = 1;
     info.bmiHeader.biBitCount = 32;
     info.bmiHeader.biCompression = BI_RGB;
-    dib = CreateDIBSection(dc, &info, DIB_RGB_COLORS, &pixels, nullptr, 0);
+    dib = CreateDIBSection(dc, &info, DIB_RGB_COLORS, &raw_pixels, nullptr, 0);
+    pixels = static_cast<uint32_t *>(raw_pixels);
     previous = SelectObject(dc, dib);
     bitmap = std::make_unique<Bitmap>(w, h, INT(w * 4), PixelFormat32bppPARGB,
-                                      static_cast<BYTE *>(pixels));
+                                      static_cast<BYTE *>(raw_pixels));
   }
   ~Framebuffer() {
     bitmap.reset();
@@ -708,16 +712,7 @@ LRESULT CALLBACK EditProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp, UINT_PTR,
   if ((msg == WM_KEYDOWN || msg == WM_SYSKEYDOWN || msg == WM_MOUSEWHEEL) &&
       Input(s, hwnd, id, msg, wp, lp))
     return 0;
-  const LRESULT res = DefSubclassProc(hwnd, msg, wp, lp);
-  if (msg == WM_CHAR || msg == WM_KEYDOWN || msg == WM_SETTEXT ||
-      msg == EM_REPLACESEL || msg == WM_PASTE || msg == WM_CUT ||
-      msg == WM_CLEAR || msg == WM_HSCROLL || msg == WM_VSCROLL ||
-      msg == WM_SETFOCUS || msg == WM_KILLFOCUS || msg == WM_LBUTTONDOWN ||
-      msg == WM_LBUTTONUP || (msg == WM_MOUSEMOVE && (wp & MK_LBUTTON)) ||
-      msg == WM_IME_COMPOSITION || msg == WM_IME_ENDCOMPOSITION) {
-    InvalidateRect(hwnd, nullptr, TRUE);
-  }
-  return res;
+  return DefSubclassProc(hwnd, msg, wp, lp);
 }
 LRESULT CALLBACK HostProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp, UINT_PTR,
                           DWORD_PTR data) {
@@ -733,8 +728,34 @@ LRESULT CALLBACK HostProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp, UINT_PTR,
     return SendMessageW(s->host, msg, wp, lp);
   if ((msg == WM_CTLCOLOREDIT || msg == WM_CTLCOLORSTATIC) && lp) {
     HWND child = reinterpret_cast<HWND>(lp);
-    if (s->edits.count(child)) {
+    auto found = s->edits.find(child);
+    if (found != s->edits.end()) {
       DefSubclassProc(hwnd, msg, wp, lp);
+      RenderFrame(s);
+      if (s->buffer && s->buffer->pixels && s->buffer->width > 0 && s->buffer->height > 0) {
+        POINT offset = {0, 0};
+        MapWindowPoints(child, s->host, &offset, 1);
+        RECT cr{};
+        GetClientRect(child, &cr);
+        LONG sx = offset.x + max<LONG>(0, (cr.right - cr.left) / 2);
+        LONG sy = offset.y + max<LONG>(0, (cr.bottom - cr.top) / 2);
+        if (sx < 0) sx = 0;
+        if (sy < 0) sy = 0;
+        if (sx >= LONG(s->buffer->width)) sx = LONG(s->buffer->width) - 1;
+        if (sy >= LONG(s->buffer->height)) sy = LONG(s->buffer->height) - 1;
+        const uint32_t bgra = s->buffer->pixels[size_t(sy) * s->buffer->width + size_t(sx)];
+        const COLORREF sampled = RGB((bgra >> 16) & 0xFF, (bgra >> 8) & 0xFF, bgra & 0xFF);
+        HDC hdc = reinterpret_cast<HDC>(wp);
+        SetBkColor(hdc, sampled);
+        SetBkMode(hdc, OPAQUE);
+        auto &hook = found->second;
+        if (hook.bg_color != sampled || !hook.bg_brush) {
+          if (hook.bg_brush) DeleteObject(hook.bg_brush);
+          hook.bg_brush = CreateSolidBrush(sampled);
+          hook.bg_color = sampled;
+        }
+        return reinterpret_cast<LRESULT>(hook.bg_brush);
+      }
       SetBkMode(reinterpret_cast<HDC>(wp), TRANSPARENT);
       return reinterpret_cast<LRESULT>(GetStockObject(HOLLOW_BRUSH));
     }
@@ -1338,6 +1359,8 @@ void sui_surface_remove_edit(void *handle, void *edit) {
   auto found = s->edits.find(hwnd);
   if (found == s->edits.end())
     return;
+  if (found->second.bg_brush)
+    DeleteObject(found->second.bg_brush);
   s->edits.erase(found);
   RemoveWindowSubclass(hwnd, EditProc, subclass_id);
   ReleaseControl(s, hwnd);
