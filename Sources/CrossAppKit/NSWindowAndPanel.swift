@@ -319,6 +319,7 @@ open class NSWindow: NSResponder {
   private var storedFrame: NSRect
   private var suppressMoveCallbacks = false
   private var hasPendingNativeBounds = false
+  private var isCommittingNativeBounds = false
   private var pendingContentSize: NSSize = .zero
   public private(set) var isVisible: Bool = false
   public internal(set) var isKeyWindow: Bool = false
@@ -540,8 +541,10 @@ open class NSWindow: NSResponder {
         }
       case .resized(_, let newSize):
         storedFrame.size = NSSize(width: CGFloat(newSize.width), height: CGFloat(newSize.height))
-        let cs = contentLayoutRect.size
-        contentView?.frame = NSRect(origin: .zero, size: cs)
+        if !isCommittingNativeBounds {
+          let cs = contentLayoutRect.size
+          contentView?.frame = NSRect(origin: .zero, size: cs)
+        }
         let note = Notification(name: Self.didResizeNotification, object: self)
         NotificationCenter.default.post(note)
         delegate?.windowDidResize(note)
@@ -579,7 +582,10 @@ open class NSWindow: NSResponder {
         let r = NativeAPI.Rectangle(x: top.x, y: top.y, width: max(1, top.width), height: max(1, top.height))
         let targetContentSize: NSSize
         if !styleMask.contains(.titled) {
-          targetContentSize = frameRect.size
+          let scale = max(1.0, screen?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 1.0)
+          let snappedW = max(1.0, (frameRect.size.width * scale).rounded(.toNearestOrAwayFromZero)) / scale
+          let snappedH = max(1.0, (frameRect.size.height * scale).rounded(.toNearestOrAwayFromZero)) / scale
+          targetContentSize = NSSize(width: snappedW, height: snappedH)
         } else {
           let currentContent = contentLayoutRect.size
           let borderW = max(0, previousFrame.width - currentContent.width)
@@ -595,8 +601,13 @@ open class NSWindow: NSResponder {
           guard let self else { return }
           self.hasPendingNativeBounds = false
           let prevSuppress = self.suppressMoveCallbacks
+          let prevCommitting = self.isCommittingNativeBounds
           self.suppressMoveCallbacks = true
-          defer { self.suppressMoveCallbacks = prevSuppress }
+          self.isCommittingNativeBounds = true
+          defer {
+            self.suppressMoveCallbacks = prevSuppress
+            self.isCommittingNativeBounds = prevCommitting
+          }
           nw.setBounds(r)
           self.contentView?.frame = NSRect(origin: .zero, size: self.contentLayoutRect.size)
         }

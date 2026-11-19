@@ -149,6 +149,12 @@ import Foundation
   }
 
   package func resize(to size: Size, invalidateMeasurements: Bool) {
+    if !invalidateMeasurements,
+      abs(size.width - contentSize.width) < 1e-4,
+      abs(size.height - contentSize.height) < 1e-4
+    {
+      return
+    }
     guard size != contentSize || invalidateMeasurements else { return }
     if invalidateMeasurements {
       layoutEngine.invalidateMeasurements()

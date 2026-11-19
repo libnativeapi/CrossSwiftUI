@@ -291,6 +291,11 @@
       sui_surface_commit_pending_resize(surface)
     }
 
+    public func flushPendingEdits() {
+      guard let surface else { return }
+      sui_surface_flush_edits(surface)
+    }
+
     private struct TextMeasurementKey: Hashable {
       let text: String, family: String
       let size: Double, weight: Double
@@ -547,6 +552,7 @@
           tick()
         }
       }
+      flushPendingEdits()
       if !motions.isEmpty || root?.hasLayoutAnimation == true { _ = content.requestUpdate() }
     }
     private func enqueue(_ action: @escaping () -> Void) {

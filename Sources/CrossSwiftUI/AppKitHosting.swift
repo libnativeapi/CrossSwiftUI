@@ -286,6 +286,7 @@ open class NSHostingView<Content: SwiftUIRuntime.View>: NSView {
   #if os(Windows)
     private var backend: WindowsDrawingBackend?
     private var isApplyingWindowResize = false
+    private var isCommittingPendingWindowBounds = false
     private var pendingWindowBoundsCommit: (() -> Void)?
   #elseif os(Linux)
     private var backend: LinuxDrawingBackend?
@@ -406,7 +407,9 @@ open class NSHostingView<Content: SwiftUIRuntime.View>: NSView {
       let finalCommit = pendingWindowBoundsCommit ?? commitNativeBounds
       pendingWindowBoundsCommit = nil
       backend.prerenderPendingResize()
+      isCommittingPendingWindowBounds = true
       finalCommit()
+      isCommittingPendingWindowBounds = false
       backend.commitPendingResize()
       return true
     #else
@@ -496,16 +499,28 @@ open class NSHostingView<Content: SwiftUIRuntime.View>: NSView {
       self.renderer = createdRenderer
 
       createdRenderer.onDidFinishRenderPasses = { [weak self] in
-        guard let self, !self.isApplyingWindowResize, let commit = self.pendingWindowBoundsCommit else {
+        guard let self, !self.isApplyingWindowResize, !self.isCommittingPendingWindowBounds,
+          let commit = self.pendingWindowBoundsCommit
+        else {
           return
         }
         self.pendingWindowBoundsCommit = nil
         self.backend?.prerenderPendingResize()
+        self.isCommittingPendingWindowBounds = true
         commit()
+        self.isCommittingPendingWindowBounds = false
         self.backend?.commitPendingResize()
       }
-      createdBackend.onResize = { [weak createdRenderer] newSize in
-        createdRenderer?.resize(to: newSize)
+      createdBackend.onResize = { [weak self, weak createdRenderer] newSize in
+        guard let self, let createdRenderer else { return }
+        if self.isCommittingPendingWindowBounds || self.isApplyingWindowResize || self.pendingWindowBoundsCommit != nil {
+          if abs(Double(self.frame.width) - newSize.width) < 1.0
+            && abs(Double(self.frame.height) - newSize.height) < 1.0
+          {
+            return
+          }
+        }
+        createdRenderer.resize(to: newSize)
       }
       createdBackend.inputHandler = { [weak self, weak createdRenderer] id, event, point, value, modifiers, text in
         ActiveHostingContext.currentHostingView = self

@@ -73,6 +73,9 @@ struct EditHook {
   HBRUSH bg_brush = nullptr;
   COLORREF bg_color = CLR_INVALID;
   bool transparent_bg = true;
+  bool en_change_fired = false;
+  bool pending_text_paint = false;
+  bool caret_hidden = false;
   double sample_x = 0;
   double sample_y = 0;
 };
@@ -241,6 +244,7 @@ struct Surface {
   bool positioning_shadow = false;
   HWND shadow_layer = nullptr;
   HWND shadow_root = nullptr;
+  HWND hooked_root = nullptr;
   int shadow_margin = 0;
   int shadow_width = 0;
   int shadow_height = 0;
@@ -248,6 +252,7 @@ struct Surface {
   LONG pending_width = 0;
   LONG pending_height = 0;
   bool defer_commit = false;
+  bool commit_on_pos_change = false;
   struct DeferredFrame {
     double x, y, w, h;
   };
@@ -335,20 +340,28 @@ void PositionWindowShadow(Surface *s) {
       SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER | SWP_SHOWWINDOW);
 }
 
+void CommitPendingResizeImpl(Surface *s, bool from_pos_changed);
+
 LRESULT CALLBACK ShadowRootSubclassProc(
     HWND hwnd, UINT msg, WPARAM wp, LPARAM lp, UINT_PTR subclass_id, DWORD_PTR data
 ) {
   auto *s = reinterpret_cast<Surface *>(data);
   if (msg == WM_NCDESTROY) {
     RemoveWindowSubclass(hwnd, ShadowRootSubclassProc, subclass_id);
-    if (s && s->shadow_root == hwnd) {
-      s->shadow_root = nullptr;
-      if (s->shadow_layer) {
-        DestroyWindow(s->shadow_layer);
-        s->shadow_layer = nullptr;
+    if (s) {
+      if (s->hooked_root == hwnd) s->hooked_root = nullptr;
+      if (s->shadow_root == hwnd) {
+        s->shadow_root = nullptr;
+        if (s->shadow_layer) {
+          DestroyWindow(s->shadow_layer);
+          s->shadow_layer = nullptr;
+        }
       }
     }
     return DefSubclassProc(hwnd, msg, wp, lp);
+  }
+  if (s && msg == WM_WINDOWPOSCHANGED && s->defer_commit && s->commit_on_pos_change) {
+    CommitPendingResizeImpl(s, true);
   }
   const LRESULT res = DefSubclassProc(hwnd, msg, wp, lp);
   if (s && s->shadow_layer && (msg == WM_WINDOWPOSCHANGED || msg == WM_SHOWWINDOW)) {
@@ -357,11 +370,27 @@ LRESULT CALLBACK ShadowRootSubclassProc(
   return res;
 }
 
+void EnsureRootHook(Surface *s, HWND root) {
+  if (!s || !root || !IsWindow(root)) return;
+  if (s->hooked_root != root) {
+    if (s->hooked_root && IsWindow(s->hooked_root)) {
+      RemoveWindowSubclass(s->hooked_root, ShadowRootSubclassProc, kShadowRootSubclassId);
+    }
+    s->hooked_root = root;
+  }
+  SetWindowSubclass(root, ShadowRootSubclassProc, kShadowRootSubclassId, reinterpret_cast<DWORD_PTR>(s));
+}
+
+void UnhookRoot(Surface *s) {
+  if (!s) return;
+  if (s->hooked_root && IsWindow(s->hooked_root)) {
+    RemoveWindowSubclass(s->hooked_root, ShadowRootSubclassProc, kShadowRootSubclassId);
+  }
+  s->hooked_root = nullptr;
+}
+
 void ClearWindowShadow(Surface *s) {
   if (!s) return;
-  if (s->shadow_root && IsWindow(s->shadow_root)) {
-    RemoveWindowSubclass(s->shadow_root, ShadowRootSubclassProc, kShadowRootSubclassId);
-  }
   s->shadow_root = nullptr;
   if (s->shadow_layer) {
     if (IsWindow(s->shadow_layer)) DestroyWindow(s->shadow_layer);
@@ -440,7 +469,7 @@ bool EnsureShadowLayerWindow(Surface *s, HWND root) {
         0, 0, 0, 0, nullptr, nullptr, GetModuleHandleW(nullptr), nullptr);
     if (!s->shadow_layer) return false;
     s->shadow_root = root;
-    SetWindowSubclass(root, ShadowRootSubclassProc, kShadowRootSubclassId, reinterpret_cast<DWORD_PTR>(s));
+    EnsureRootHook(s, root);
   }
   return true;
 }
@@ -610,32 +639,42 @@ void UpdateSurfaceWindowShadow(Surface *s) {
   const uint32_t far_strength = s->window_shadow_dark ? 112u : 58u;
   const uint32_t near_strength = s->window_shadow_dark ? 68u : 34u;
 
-  auto sample_bilinear = [dw, dh](const uint16_t *grid, int px, int py) -> uint32_t {
-    const int gx0 = min(dw - 1, px >> 1);
-    const int gy0 = min(dh - 1, py >> 1);
-    const int gx1 = min(dw - 1, gx0 + (px & 1));
-    const int gy1 = min(dh - 1, gy0 + (py & 1));
-    const uint16_t *r0 = grid + size_t(gy0) * dw;
-    const uint16_t *r1 = grid + size_t(gy1) * dw;
-    return (uint32_t(r0[gx0]) + uint32_t(r0[gx1]) + uint32_t(r1[gx0]) + uint32_t(r1[gx1]) + 2u) >> 2;
-  };
-
   for (int py = 0; py < sh; ++py) {
     uint32_t *dst_row = out + size_t(py) * sw;
     const int by = py - margin;
     const uint32_t *src_row = (by >= 0 && by < bh) ? (s->buffer->pixels + size_t(by) * bw) : nullptr;
+    const int gy0 = min(dh - 1, py >> 1);
+    const int gy1 = min(dh - 1, gy0 + (py & 1));
+    const uint16_t *far_r0 = far_ptr + size_t(gy0) * dw;
+    const uint16_t *far_r1 = far_ptr + size_t(gy1) * dw;
+    const uint16_t *near_r0 = near_ptr + size_t(gy0) * dw;
+    const uint16_t *near_r1 = near_ptr + size_t(gy1) * dw;
     for (int px = 0; px < sw; ++px) {
-      const uint32_t f_a = (sample_bilinear(far_ptr, px, py) * far_strength + 127u) / 255u;
-      const uint32_t n_a = (sample_bilinear(near_ptr, px, py) * near_strength + 127u) / 255u;
-      uint32_t combined = f_a + ((n_a * (255u - f_a) + 127u) / 255u);
+      uint32_t body_a = 0;
       if (src_row) {
         const int bx = px - margin;
         if (bx >= 0 && bx < bw) {
-          const uint32_t body_a = src_row[bx] >> 24;
-          // Mask out interior of opaque/glass silhouettes so shadow never muddies translucent glass
-          const uint32_t mask_out = body_a >= 200 ? 255u : min(255u, (body_a * 280u) >> 8);
-          combined = (combined * (255u - mask_out) + 127u) / 255u;
+          body_a = src_row[bx] >> 24;
+          if (body_a >= 200) {
+            dst_row[px] = 0;
+            continue;
+          }
         }
+      }
+      const int gx0 = min(dw - 1, px >> 1);
+      const int gx1 = min(dw - 1, gx0 + (px & 1));
+      const uint32_t far_v =
+          (uint32_t(far_r0[gx0]) + uint32_t(far_r0[gx1]) +
+           uint32_t(far_r1[gx0]) + uint32_t(far_r1[gx1]) + 2u) >> 2;
+      const uint32_t near_v =
+          (uint32_t(near_r0[gx0]) + uint32_t(near_r0[gx1]) +
+           uint32_t(near_r1[gx0]) + uint32_t(near_r1[gx1]) + 2u) >> 2;
+      const uint32_t f_a = (far_v * far_strength + 127u) / 255u;
+      const uint32_t n_a = (near_v * near_strength + 127u) / 255u;
+      uint32_t combined = f_a + ((n_a * (255u - f_a) + 127u) / 255u);
+      if (body_a > 0) {
+        const uint32_t mask_out = min(255u, (body_a * 280u) >> 8);
+        combined = (combined * (255u - mask_out) + 127u) / 255u;
       }
       dst_row[px] = (min(255u, combined) << 24);
     }
@@ -1230,6 +1269,11 @@ void PaintTransparentEdit(Surface *s, HWND hwnd) {
     BitBlt(screen_dc, 0, 0, w, h, pass_b.dc, 0, 0, SRCCOPY);
   }
   EndPaint(hwnd, &ps);
+  auto hook_it = s->edits.find(hwnd);
+  if (hook_it != s->edits.end() && hook_it->second.caret_hidden) {
+    hook_it->second.caret_hidden = false;
+    ShowCaret(hwnd);
+  }
 }
 } // namespace
 
@@ -1241,10 +1285,19 @@ LRESULT CALLBACK EditProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp, UINT_PTR,
     return DefSubclassProc(hwnd, msg, wp, lp);
   const bool transparent = found->second.transparent_bg;
   auto id = found->second.id;
+  if (msg == WM_KILLFOCUS || msg == WM_NCDESTROY) {
+    found->second.caret_hidden = false;
+  }
   if (transparent) {
     if (msg == WM_ERASEBKGND)
       return 1;
     if (msg == WM_PAINT) {
+      if (found->second.pending_text_paint || s->defer_commit) {
+        PAINTSTRUCT ps{};
+        BeginPaint(hwnd, &ps);
+        EndPaint(hwnd, &ps);
+        return 0;
+      }
       PaintTransparentEdit(s, hwnd);
       return 0;
     }
@@ -1256,8 +1309,48 @@ LRESULT CALLBACK EditProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp, UINT_PTR,
   if ((msg == WM_KEYDOWN || msg == WM_SYSKEYDOWN || msg == WM_MOUSEWHEEL) &&
       Input(s, hwnd, id, msg, wp, lp))
     return 0;
+  auto snapshot_text = [](HWND edit_hwnd) -> std::wstring {
+    int len = GetWindowTextLengthW(edit_hwnd);
+    if (len <= 0) return {};
+    std::wstring buf(size_t(len) + 1, L'\0');
+    GetWindowTextW(edit_hwnd, buf.data(), len + 1);
+    buf.resize(size_t(len));
+    return buf;
+  };
+  found->second.en_change_fired = false;
+  const bool suppress_direct_paint =
+      transparent &&
+      (msg == WM_CHAR || msg == EM_REPLACESEL || msg == WM_PASTE ||
+       msg == WM_CUT || msg == WM_CLEAR || msg == WM_UNDO ||
+       (msg == WM_KEYDOWN && (wp == VK_BACK || wp == VK_DELETE)));
+  std::wstring before_text = suppress_direct_paint ? snapshot_text(hwnd) : std::wstring{};
+  LONG_PTR saved_style = 0;
+  if (suppress_direct_paint) {
+    saved_style = GetWindowLongPtrW(hwnd, GWL_STYLE);
+    if (saved_style & WS_VISIBLE) {
+      SetWindowLongPtrW(hwnd, GWL_STYLE, saved_style & ~WS_VISIBLE);
+    }
+  }
   const LRESULT res = DefSubclassProc(hwnd, msg, wp, lp);
-  if (transparent &&
+  if (suppress_direct_paint && (saved_style & WS_VISIBLE)) {
+    SetWindowLongPtrW(hwnd, GWL_STYLE, saved_style);
+  }
+  auto after = s->edits.find(hwnd);
+  const bool text_mutated =
+      suppress_direct_paint && IsWindow(hwnd) && (snapshot_text(hwnd) != before_text);
+  const bool changed =
+      (after != s->edits.end()) && (after->second.en_change_fired || text_mutated);
+  if (after != s->edits.end()) {
+    after->second.en_change_fired = false;
+    if (changed) {
+      after->second.pending_text_paint = true;
+      ValidateRect(hwnd, nullptr);
+      if (GetFocus() == hwnd && !after->second.caret_hidden) {
+        if (HideCaret(hwnd)) after->second.caret_hidden = true;
+      }
+    }
+  }
+  if (transparent && !changed && !s->defer_commit &&
       (msg == WM_CHAR || msg == WM_KEYDOWN || msg == WM_KEYUP ||
        msg == WM_SETTEXT || msg == EM_SETSEL || msg == EM_REPLACESEL ||
        msg == WM_PASTE || msg == WM_CUT || msg == WM_CLEAR || msg == WM_UNDO ||
@@ -1282,6 +1375,13 @@ LRESULT CALLBACK HostProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp, UINT_PTR,
   if (hwnd != s->host &&
       (msg == WM_COMMAND || msg == WM_CTLCOLOREDIT || msg == WM_CTLCOLORSTATIC))
     return SendMessageW(s->host, msg, wp, lp);
+  if (hwnd == s->host && msg == WM_COMMAND && HIWORD(wp) == EN_CHANGE && lp) {
+    auto edit_it = s->edits.find(reinterpret_cast<HWND>(lp));
+    if (edit_it != s->edits.end() && edit_it->second.transparent_bg) {
+      edit_it->second.en_change_fired = true;
+      edit_it->second.pending_text_paint = true;
+    }
+  }
   if (msg == WM_DPICHANGED || msg == WM_DPICHANGED_AFTERPARENT) {
     // NativeAPI first applies the suggested bounds. Logical dimensions may
     // stay identical, but retained control frames still need the new DPI.
@@ -1792,6 +1892,62 @@ RECT Damage(Surface *s) {
   IntersectRect(&damage, &damage, &client);
   return damage;
 }
+void CommitPendingResizeImpl(Surface *s, bool from_pos_changed) {
+  if (!s || !s->host || !IsWindow(s->host) || !s->defer_commit) return;
+  const LONG target_w = s->pending_width;
+  const LONG target_h = s->pending_height;
+  s->defer_commit = false;
+  s->commit_on_pos_change = false;
+  s->pending_width = 0;
+  s->pending_height = 0;
+  HWND root = GetAncestor(s->host, GA_ROOT);
+  if (from_pos_changed && s->host != root && target_w > 0 && target_h > 0) {
+    SetWindowPos(
+        s->host, nullptr, 0, 0, target_w, target_h,
+        SWP_NOMOVE | SWP_NOZORDER | SWP_NOOWNERZORDER | SWP_NOACTIVATE | SWP_NOREDRAW | SWP_NOCOPYBITS);
+  }
+  if (!s->deferred_frames.empty()) {
+    if (!s->updating_views) {
+      native_view_begin_updates();
+      s->updating_views = true;
+    }
+    auto frames = std::move(s->deferred_frames);
+    s->deferred_frames.clear();
+    for (const auto &entry : frames) {
+      if (IsWindow(entry.first)) {
+        native_view_set_frame(
+            NativeView(s, entry.first),
+            {entry.second.x, entry.second.y, entry.second.w, entry.second.h});
+      }
+    }
+  }
+  if (s->updating_views) {
+    native_view_end_updates(false);
+    s->updating_views = false;
+  }
+  if (!s->deferred_clips.empty()) {
+    auto clips = std::move(s->deferred_clips);
+    s->deferred_clips.clear();
+    for (const auto &entry : clips) {
+      if (IsWindow(entry.first)) {
+        sui_control_clip(
+            entry.first, entry.second.x, entry.second.y, entry.second.w, entry.second.h);
+      }
+    }
+  }
+  for (auto &entry : s->edits) {
+    entry.second.pending_text_paint = false;
+  }
+  s->native_state_changed = false;
+  RenderFrame(s);
+  PublishPendingShadow(s);
+  if (root && IsWindowVisible(root)) {
+    RedrawWindow(
+        s->host, nullptr, nullptr,
+        RDW_INVALIDATE | RDW_NOERASE | RDW_UPDATENOW | RDW_ALLCHILDREN);
+    PositionWindowShadow(s);
+  }
+}
 } // namespace
 extern "C" {
 void *sui_surface_create(void *host, sui_event_callback callback, void *context,
@@ -1832,6 +1988,7 @@ void sui_surface_destroy(void *handle) {
     native_view_end_updates(false);
   RemoveWindowSubclass(s->host, HostProc, subclass_id);
   ClearWindowShadow(s);
+  UnhookRoot(s);
   if (s->host_clipped_children)
     SetWindowLongPtrW(s->host, GWL_STYLE,
                       GetWindowLongPtrW(s->host, GWL_STYLE) | WS_CLIPCHILDREN);
@@ -1957,11 +2114,16 @@ void sui_surface_begin_pending_resize(void *handle, double logical_width,
                                       double logical_height) {
   auto *s = static_cast<Surface *>(handle);
   if (!s || !s->host || !IsWindow(s->host)) return;
+  HWND root = GetAncestor(s->host, GA_ROOT);
+  if (root && IsWindow(root)) {
+    EnsureRootHook(s, root);
+  }
   const UINT dpi = GetDpiForWindow(s->host);
   const double scale = (dpi ? dpi : 96) / 96.0;
   s->pending_width = max(1L, LONG(std::lround(logical_width * scale)));
   s->pending_height = max(1L, LONG(std::lround(logical_height * scale)));
   s->defer_commit = true;
+  s->commit_on_pos_change = false;
   s->buffer_dirty = true;
   RECT pending{0, 0, s->pending_width, s->pending_height};
   UnionRect(&s->damage, &s->damage, &pending);
@@ -1970,51 +2132,25 @@ void sui_surface_prerender_pending_resize(void *handle) {
   auto *s = static_cast<Surface *>(handle);
   if (!s || !s->host || !IsWindow(s->host)) return;
   RenderFrame(s);
+  if (s->defer_commit) {
+    s->commit_on_pos_change = true;
+  }
 }
 void sui_surface_commit_pending_resize(void *handle) {
+  CommitPendingResizeImpl(static_cast<Surface *>(handle), false);
+}
+void sui_surface_flush_edits(void *handle) {
   auto *s = static_cast<Surface *>(handle);
-  if (!s || !s->host || !IsWindow(s->host)) return;
-  s->defer_commit = false;
-  s->pending_width = 0;
-  s->pending_height = 0;
-  if (!s->deferred_frames.empty()) {
-    if (!s->updating_views) {
-      native_view_begin_updates();
-      s->updating_views = true;
-    }
-    auto frames = std::move(s->deferred_frames);
-    s->deferred_frames.clear();
-    for (const auto &entry : frames) {
-      if (IsWindow(entry.first)) {
-        native_view_set_frame(
-            NativeView(s, entry.first),
-            {entry.second.x, entry.second.y, entry.second.w, entry.second.h});
+  if (!s || !s->host || !IsWindow(s->host) || s->defer_commit) return;
+  for (auto &entry : s->edits) {
+    if (entry.second.pending_text_paint) {
+      entry.second.pending_text_paint = false;
+      if (IsWindow(entry.first) && IsWindowVisible(entry.first)) {
+        RedrawWindow(
+            entry.first, nullptr, nullptr,
+            RDW_INVALIDATE | RDW_NOERASE | RDW_UPDATENOW);
       }
     }
-  }
-  if (s->updating_views) {
-    native_view_end_updates(false);
-    s->updating_views = false;
-  }
-  if (!s->deferred_clips.empty()) {
-    auto clips = std::move(s->deferred_clips);
-    s->deferred_clips.clear();
-    for (const auto &entry : clips) {
-      if (IsWindow(entry.first)) {
-        sui_control_clip(
-            entry.first, entry.second.x, entry.second.y, entry.second.w, entry.second.h);
-      }
-    }
-  }
-  s->native_state_changed = false;
-  RenderFrame(s);
-  PublishPendingShadow(s);
-  HWND root = GetAncestor(s->host, GA_ROOT);
-  if (root && IsWindowVisible(root)) {
-    RedrawWindow(
-        s->host, nullptr, nullptr,
-        RDW_INVALIDATE | RDW_NOERASE | RDW_UPDATENOW | RDW_ALLCHILDREN);
-    PositionWindowShadow(s);
   }
 }
 void sui_surface_custom_view(void *handle, void *view_hwnd,
@@ -2425,18 +2561,35 @@ void sui_surface_end(void *h) {
       } else
         InvalidateRect(entry.first, nullptr, FALSE);
     }
+    bool any_pending_edit = false;
     for (const auto &entry : s->edits) {
+      if (entry.second.pending_text_paint) {
+        any_pending_edit = true;
+        break;
+      }
+    }
+    RedrawWindow(
+        s->host, &s->damage, nullptr,
+        RDW_INVALIDATE | RDW_NOCHILDREN | (any_pending_edit ? RDW_UPDATENOW : 0));
+    for (auto &entry : s->edits) {
+      const bool was_pending = entry.second.pending_text_paint;
       RECT r;
       GetWindowRect(entry.first, &r);
       MapWindowPoints(nullptr, s->host, reinterpret_cast<POINT *>(&r), 2);
-      if (IntersectRect(&r, &r, &s->damage))
-        // Multiline EDIT leaves unused line space in its non-client frame.
-        // A deferred move/resize must erase that area too, otherwise it keeps
-        // pixels from the sidebar or other content previously underneath it.
-        RedrawWindow(entry.first, nullptr, nullptr,
-                     RDW_INVALIDATE | RDW_ERASE | RDW_FRAME);
+      if (was_pending || IntersectRect(&r, &r, &s->damage)) {
+        entry.second.pending_text_paint = false;
+        if (entry.second.transparent_bg) {
+          RedrawWindow(
+              entry.first, nullptr, nullptr,
+              RDW_INVALIDATE | RDW_NOERASE | (was_pending ? RDW_UPDATENOW : 0));
+        } else {
+          RedrawWindow(entry.first, nullptr, nullptr,
+                       RDW_INVALIDATE | RDW_ERASE | RDW_FRAME);
+        }
+      }
     }
-    RedrawWindow(s->host, &s->damage, nullptr, RDW_INVALIDATE | RDW_NOCHILDREN);
+  } else {
+    sui_surface_flush_edits(s);
   }
   checkpoint(5);
   s->trace.Add(3, !IsRectEmpty(&damage), s->trace.publication_start, s->host);

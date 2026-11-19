@@ -27,6 +27,7 @@ void sui_surface_begin_pending_resize(void *surface, double logical_width,
                                       double logical_height);
 void sui_surface_prerender_pending_resize(void *surface);
 void sui_surface_commit_pending_resize(void *surface);
+void sui_surface_flush_edits(void *surface);
 void sui_surface_custom_view(void *surface, void *view_hwnd,
                              uint64_t native_view);
 void sui_surface_remove_custom_view(void *surface, void *view_hwnd);
