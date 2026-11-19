@@ -11,6 +11,33 @@ public struct BuiltTargetArtifacts: Sendable {
   public let crossSwiftRoot: URL
   public let wasmPackageDirectory: URL?
   public let harmonyArtifacts: HarmonyBuildArtifacts?
+  public let adaptedRemotePackageDirectories: [URL]
+
+  public init(
+    targetPlatform: TargetPlatform,
+    architecture: TargetArchitecture,
+    executableURL: URL,
+    buildDirectory: URL,
+    scratchDirectory: URL,
+    compiledAssets: CompiledAssets,
+    swiftExecutableURL: URL,
+    crossSwiftRoot: URL,
+    wasmPackageDirectory: URL?,
+    harmonyArtifacts: HarmonyBuildArtifacts?,
+    adaptedRemotePackageDirectories: [URL] = []
+  ) {
+    self.targetPlatform = targetPlatform
+    self.architecture = architecture
+    self.executableURL = executableURL
+    self.buildDirectory = buildDirectory
+    self.scratchDirectory = scratchDirectory
+    self.compiledAssets = compiledAssets
+    self.swiftExecutableURL = swiftExecutableURL
+    self.crossSwiftRoot = crossSwiftRoot
+    self.wasmPackageDirectory = wasmPackageDirectory
+    self.harmonyArtifacts = harmonyArtifacts
+    self.adaptedRemotePackageDirectories = adaptedRemotePackageDirectories
+  }
 }
 
 public enum BuildBackendError: Error, LocalizedError {
@@ -119,6 +146,7 @@ public final class SwiftPMBackend {
 
     let adaptedRemotePackages = try prepareAdaptedRemotePackages(
       project: project,
+      platform: platform,
       buildRoot: buildRoot,
       crossSwiftRoot: crossSwiftRoot
     )
@@ -183,7 +211,8 @@ public final class SwiftPMBackend {
         swiftExecutableURL: swiftTool,
         crossSwiftRoot: crossSwiftRoot,
         wasmPackageDirectory: wasmPkgDir,
-        harmonyArtifacts: nil
+        harmonyArtifacts: nil,
+        adaptedRemotePackageDirectories: Array(adaptedRemotePackages.values)
       )
     }
 
@@ -728,12 +757,16 @@ public final class SwiftPMBackend {
 
   private func prepareAdaptedRemotePackages(
     project: ResolvedXcodeProject,
+    platform: TargetPlatform,
     buildRoot: URL,
     crossSwiftRoot: URL
   ) throws -> [String: URL] {
     var adapted: [String: URL] = [:]
     let cacheRoot = buildRoot.deletingLastPathComponent().appendingPathComponent("AdaptedPackageCache")
     let stagingRoot = buildRoot.appendingPathComponent("AdaptedPackages")
+    let allowedModules: Set<String> = platform == .wasm
+      ? ["SwiftUI", "SwiftUIRuntime"]
+      : PackageDependencyAdapter.crossSwiftProvidedModules
 
     let consumerRefs = project.remotePackages.isEmpty
       ? nil
@@ -752,7 +785,9 @@ public final class SwiftPMBackend {
         sourceRoot: checkoutDir,
         outputDirectory: outputDir,
         crossSwiftRoot: crossSwiftRoot,
-        consumerReferences: consumerRefs
+        consumerReferences: consumerRefs,
+        allowedCrossSwiftModules: allowedModules,
+        useWasmBundleShim: platform == .wasm
       ) {
         adapted[remote.id] = adaptedURL
       }

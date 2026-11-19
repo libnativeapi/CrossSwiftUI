@@ -25,6 +25,12 @@
     const status = document.getElementById("startup-status");
     try {
       const { init } = await import("./app/index.js");
+      try {
+        const res = await fetch("./Resources/web-manifest.json");
+        if (res.ok) {
+          window.__crossSwiftUIResources = await res.json();
+        }
+      } catch {}
       await init();
       status.remove();
     } catch (error) {

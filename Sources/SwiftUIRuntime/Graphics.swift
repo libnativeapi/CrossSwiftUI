@@ -420,7 +420,11 @@ public struct Image: View, _PrimitiveView {
       p.font = EnvironmentValues.current.font
     } else {
       #if os(WASI) || CROSS_SWIFTUI_HARMONY
-        p.imagePath = name
+        if let resolved = Self.assetPathResolver?(name, bundle) {
+          p.imagePath = resolved
+        } else {
+          p.imagePath = name
+        }
       #else
         if FileManager.default.fileExists(atPath: name) {
           p.imagePath = name

@@ -1,12 +1,11 @@
 import Foundation
-import SwiftUIRuntime
 
 /// Minimal, zero-dependency single-page vector PDF parser for icon assets
 /// (such as Apple `.xcassets` PDF vector imagesets used by Microsoft FluentIcons).
 /// Extracts `/MediaBox` (or `/CropBox`) and converts PDF path operators
 /// (`m`, `l`, `c`, `v`, `y`, `re`, `h`, `q`/`Q`/`cm`, `f`/`f*`/`S`/`s`/`B`/`b`)
 /// from both uncompressed and `/FlateDecode` content streams into `VectorImage`.
-enum PDFVectorParser {
+package enum PDFVectorParser {
   private struct AffineMatrix {
     var a: Double = 1
     var b: Double = 0
@@ -34,12 +33,12 @@ enum PDFVectorParser {
     }
   }
 
-  static func parse(filePath: String) -> VectorImage? {
+  package static func parse(filePath: String) -> VectorImage? {
     guard let data = try? Data(contentsOf: URL(fileURLWithPath: filePath)) else { return nil }
     return parse(data: data)
   }
 
-  static func parse(data: Data) -> VectorImage? {
+  package static func parse(data: Data) -> VectorImage? {
     guard data.count >= 8 else { return nil }
     let bytes = [UInt8](data)
     let latin1 = String(decoding: bytes, as: UTF8.self)

@@ -46,8 +46,15 @@ public final class XCStringsCatalog: @unchecked Sendable {
 
   @discardableResult
   public func load(from url: URL) -> Bool {
-    guard let data = try? Data(contentsOf: url),
-          let root = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+    guard let data = try? Data(contentsOf: url) else {
+      return false
+    }
+    return load(data: data, merge: false)
+  }
+
+  @discardableResult
+  public func load(data: Data, merge: Bool = false) -> Bool {
+    guard let root = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
           let stringsDict = root["strings"] as? [String: Any]
     else {
       return false
@@ -96,7 +103,13 @@ public final class XCStringsCatalog: @unchecked Sendable {
 
     lock.lock()
     self.sourceLanguage = srcLang
-    self.entries = parsed
+    if merge {
+      for (key, entry) in parsed {
+        self.entries[key] = entry
+      }
+    } else {
+      self.entries = parsed
+    }
     lock.unlock()
     return true
   }

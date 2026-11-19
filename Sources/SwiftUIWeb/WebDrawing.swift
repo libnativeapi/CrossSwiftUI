@@ -146,21 +146,80 @@ extension WebBackend {
       if let image = node.content {
         image.alt = .string(props.accessibilityLabel)
         image.style.objectFit = .string(props.aspectFit ? "contain" : "fill")
-        if props.imageTemplate {
-          image.style.visibility = .string("hidden")
+        if props.imagePath.hasPrefix("sf://"),
+           let vector = VectorImage.loadSymbol(String(props.imagePath.dropFirst(5)))
+        {
+          image.style.display = .string("none")
           _ = image.removeAttribute!("src")
-          let encoded = JSObject.global.JSON.stringify(props.imagePath).string ?? "\"\""
-          style.maskImage = .string("url(\(encoded))")
-          style.maskSize = .string(props.aspectFit ? "contain" : "100% 100%")
-          style.maskPosition = .string("center")
-          style.maskRepeat = .string("no-repeat")
-          style.backgroundColor = .string("currentColor")
+          style.maskImage = .string("")
+          style.webkitMaskImage = .string("")
+          let svg: JSObject
+          if let existing = dom.querySelector!("svg[data-sf]").object {
+            svg = existing
+          } else {
+            let created = svgElement("svg")
+            _ = created.setAttribute!("data-sf", "1")
+            _ = created.setAttribute!("aria-hidden", "true")
+            let css = created.style.object!
+            css.position = .string("absolute")
+            css.inset = .string("0")
+            css.width = .string("100%")
+            css.height = .string("100%")
+            css.display = .string("block")
+            css.pointerEvents = .string("none")
+            _ = dom.appendChild!(created)
+            svg = created
+          }
+          let b = vector.bounds
+          _ = svg.setAttribute!("viewBox", "\(b.minX) \(b.minY) \(b.width) \(b.height)")
+          _ = svg.setAttribute!("preserveAspectRatio", props.aspectFit ? "xMidYMid meet" : "none")
+          _ = svg.replaceChildren!()
+          for path in vector.paths {
+            let d = path.svgData
+            guard !d.isEmpty else { continue }
+            let pathEl = svgElement("path")
+            _ = pathEl.setAttribute!("d", d)
+            if vector.strokeWidth > 0 {
+              _ = pathEl.setAttribute!("fill", "none")
+              _ = pathEl.setAttribute!("stroke", "currentColor")
+              _ = pathEl.setAttribute!("stroke-width", vector.strokeWidth)
+              _ = pathEl.setAttribute!("stroke-linecap", "round")
+              _ = pathEl.setAttribute!("stroke-linejoin", "round")
+            } else {
+              _ = pathEl.setAttribute!("fill", "currentColor")
+              _ = pathEl.setAttribute!("fill-rule", "evenodd")
+            }
+            _ = svg.appendChild!(pathEl)
+          }
           if !props.accessibilityHidden { _ = dom.setAttribute!("role", "img") }
         } else {
-          style.maskImage = .string("")
-          image.style.visibility = .string("")
-          setAttribute("src", props.imagePath, on: image)
-          _ = dom.removeAttribute!("role")
+          if let existingSF = dom.querySelector!("svg[data-sf]").object {
+            _ = existingSF.remove!()
+          }
+          if props.imageTemplate {
+            image.style.display = .string("none")
+            _ = image.removeAttribute!("src")
+            let encoded = JSObject.global.JSON.stringify(props.imagePath).string ?? "\"\""
+            let maskURL = "url(\(encoded))"
+            let maskSize = props.aspectFit ? "contain" : "100% 100%"
+            style.maskImage = .string(maskURL)
+            style.webkitMaskImage = .string(maskURL)
+            style.maskSize = .string(maskSize)
+            style.webkitMaskSize = .string(maskSize)
+            style.maskPosition = .string("center")
+            style.webkitMaskPosition = .string("center")
+            style.maskRepeat = .string("no-repeat")
+            style.webkitMaskRepeat = .string("no-repeat")
+            style.backgroundColor = .string("currentColor")
+            if !props.accessibilityHidden { _ = dom.setAttribute!("role", "img") }
+          } else {
+            style.maskImage = .string("")
+            style.webkitMaskImage = .string("")
+            image.style.display = .string("block")
+            image.style.visibility = .string("")
+            setAttribute("src", props.imagePath, on: image)
+            _ = dom.removeAttribute!("role")
+          }
         }
       }
     case .scroll:
@@ -249,28 +308,4 @@ extension Font {
 
 extension Color {
   fileprivate var css: String { "rgba(\(red * 255), \(green * 255), \(blue * 255), \(opacity))" }
-}
-
-extension Path {
-  var svgData: String {
-    var result = ""
-    var index = 0
-    while index < commands.count {
-      let command: String
-      let count: Int
-      switch commands[index] {
-      case 0: (command, count) = ("M", 2)
-      case 1: (command, count) = ("L", 2)
-      case 2: (command, count) = ("C", 6)
-      case 3: (command, count) = ("Z", 0)
-      default: return result
-      }
-      let end = index + 1 + count
-      guard end <= commands.count else { break }
-      result += command
-      for coordinate in commands[(index + 1)..<end] { result += " \(coordinate)" }
-      index = end
-    }
-    return result
-  }
 }

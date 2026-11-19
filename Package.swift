@@ -298,7 +298,7 @@ if buildForDesktop {
     ),
     .target(
       name: "CrossXcodeBuild",
-      dependencies: []
+      dependencies: ["SwiftUIRuntime"]
     ),
     .executableTarget(
       name: "CrossXcodeBuildCLI",

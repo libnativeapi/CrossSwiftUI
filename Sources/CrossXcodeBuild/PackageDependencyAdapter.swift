@@ -140,7 +140,10 @@ public enum PackageDependencyAdapter {
 
   /// Inspects a local Swift package directory to determine whether any of its
   /// targets need CrossSwiftUI module dependencies or undeclared `.xcassets` resources.
-  public static func inspect(packageRoot: URL) -> InspectionResult {
+  public static func inspect(
+    packageRoot: URL,
+    allowedCrossSwiftModules: Set<String> = crossSwiftProvidedModules
+  ) -> InspectionResult {
     let manifestURL = packageRoot.appendingPathComponent("Package.swift")
     guard let manifest = try? String(contentsOf: manifestURL, encoding: .utf8) else {
       return InspectionResult(targets: [])
@@ -162,7 +165,7 @@ public enum PackageDependencyAdapter {
 
       let (imports, hasObjC) = scanSwiftSources(in: targetDir)
       let crossSwiftImports = imports
-        .filter { crossSwiftProvidedModules.contains($0) }
+        .filter { allowedCrossSwiftModules.contains($0) }
         .sorted()
 
       let allCatalogs = findAssetCatalogs(in: targetDir)
@@ -209,7 +212,8 @@ public enum PackageDependencyAdapter {
     _ manifest: String,
     inspection: InspectionResult,
     crossSwiftRoot: URL,
-    prunedLargeCatalogs: Set<String> = []
+    prunedLargeCatalogs: Set<String> = [],
+    useWasmBundleShim: Bool = false
   ) -> String {
     guard inspection.needsAdaptation else { return manifest }
 
@@ -229,24 +233,38 @@ public enum PackageDependencyAdapter {
       let productDeps = target.importedCrossSwiftModules.map { mod in
         ".product(name: \(swiftStringLiteral(mod)), package: \(swiftStringLiteral(crossSwiftIdentity)))"
       }
-      var resourceDecls = target.undeclaredAssetCatalogs.map { relPath in
-        ".copy(\(swiftStringLiteral(relPath)))"
-      }
-      var needsPointerFallback = false
-      for relPath in target.largeAssetCatalogs {
-        if prunedLargeCatalogs.contains(relPath) {
-          resourceDecls.append(".copy(\(swiftStringLiteral(relPath)))")
-        } else {
-          needsPointerFallback = true
+      var excludeDecls: [String] = []
+      var resourceDecls: [String] = []
+      if useWasmBundleShim {
+        // WASI has no on-disk .resources bundle for SwiftPM's synthesized Bundle.module;
+        // ApplicationStager publishes these catalogs into web-manifest.json instead.
+        for relPath in target.undeclaredAssetCatalogs {
+          excludeDecls.append(swiftStringLiteral(relPath))
         }
-      }
-      if needsPointerFallback {
-        resourceDecls.append(".copy(\"crossswift-assets.json\")")
+        for relPath in target.largeAssetCatalogs where prunedLargeCatalogs.contains(relPath) {
+          excludeDecls.append(swiftStringLiteral(relPath))
+        }
+      } else {
+        resourceDecls = target.undeclaredAssetCatalogs.map { relPath in
+          ".copy(\(swiftStringLiteral(relPath)))"
+        }
+        var needsPointerFallback = false
+        for relPath in target.largeAssetCatalogs {
+          if prunedLargeCatalogs.contains(relPath) {
+            resourceDecls.append(".copy(\(swiftStringLiteral(relPath)))")
+          } else {
+            needsPointerFallback = true
+          }
+        }
+        if needsPointerFallback {
+          resourceDecls.append(".copy(\"crossswift-assets.json\")")
+        }
       }
       updated = patchTargetBlock(
         in: updated,
         targetName: target.name,
         addDependencies: productDeps,
+        addExcludes: excludeDecls,
         addResources: resourceDecls
       )
     }
@@ -266,9 +284,14 @@ public enum PackageDependencyAdapter {
     sourceRoot: URL,
     outputDirectory: URL,
     crossSwiftRoot: URL,
-    consumerReferences: ConsumerReferences? = nil
+    consumerReferences: ConsumerReferences? = nil,
+    allowedCrossSwiftModules: Set<String> = crossSwiftProvidedModules,
+    useWasmBundleShim: Bool = false
   ) throws -> URL? {
-    let inspection = inspect(packageRoot: sourceRoot)
+    let inspection = inspect(
+      packageRoot: sourceRoot,
+      allowedCrossSwiftModules: allowedCrossSwiftModules
+    )
     guard inspection.needsAdaptation else { return nil }
 
     let fm = FileManager.default
@@ -299,7 +322,8 @@ public enum PackageDependencyAdapter {
       originalManifest,
       inspection: inspection,
       crossSwiftRoot: crossSwiftRoot,
-      prunedLargeCatalogs: prunedLargeCatalogRelPaths
+      prunedLargeCatalogs: prunedLargeCatalogRelPaths,
+      useWasmBundleShim: useWasmBundleShim
     )
 
     let stampSummary = prunedImagesetsByCatalogKey.keys.sorted().map { key in
@@ -378,7 +402,24 @@ public enum PackageDependencyAdapter {
         }
       }
 
-      if !fallbackCatalogPaths.isEmpty {
+      if useWasmBundleShim && (!target.undeclaredAssetCatalogs.isEmpty || !target.largeAssetCatalogs.isEmpty) {
+        let shimSource = """
+        #if os(WASI)
+        import Foundation
+
+        extension Foundation.Bundle {
+          static var module: Foundation.Bundle { .main }
+        }
+        #endif
+        """
+        try shimSource.write(
+          to: dstTarget.appendingPathComponent("_CrossSwiftUIWasmBundleShim.swift"),
+          atomically: true,
+          encoding: .utf8
+        )
+      }
+
+      if !useWasmBundleShim && !fallbackCatalogPaths.isEmpty {
         let pointerJSON = try JSONSerialization.data(
           withJSONObject: ["catalogPaths": fallbackCatalogPaths],
           options: [.prettyPrinted, .sortedKeys]
@@ -666,6 +707,7 @@ public enum PackageDependencyAdapter {
       ] {
         let res = try ProcessRunner.run(executable: gitExe, arguments: args, workingDirectory: checkoutDir)
         if res.exitCode != 0 {
+          try? fm.removeItem(at: checkoutDir)
           throw ProcessRunnerError.commandFailed(
             command: "git \(args.joined(separator: " "))",
             exitCode: res.exitCode,

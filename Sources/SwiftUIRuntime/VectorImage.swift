@@ -2,23 +2,28 @@ import Foundation
 
 /// SVG path geometry for bundled template images. Parsing is cached by URL.
 /// Supports the SVG path grammar, including elliptical arcs and smooth curves.
-import SwiftUIRuntime
+package struct VectorLayer {
+  package let path: Path
+  package let fill: Color?
+  package let stroke: Color?
+  package let strokeWidth: Double
 
-struct VectorLayer {
-  let path: Path
-  let fill: Color?
-  let stroke: Color?
-  let strokeWidth: Double
+  package init(path: Path, fill: Color?, stroke: Color?, strokeWidth: Double) {
+    self.path = path
+    self.fill = fill
+    self.stroke = stroke
+    self.strokeWidth = strokeWidth
+  }
 }
 
-struct VectorImage {
-  let bounds: CGRect
-  let layers: [VectorLayer]
-  let strokeWidth: Double
+package struct VectorImage {
+  package let bounds: CGRect
+  package let layers: [VectorLayer]
+  package let strokeWidth: Double
 
-  var paths: [Path] { layers.map(\.path) }
+  package var paths: [Path] { layers.map(\.path) }
 
-  init(bounds: CGRect, paths: [Path], strokeWidth: Double = 0) {
+  package init(bounds: CGRect, paths: [Path], strokeWidth: Double = 0) {
     self.bounds = bounds
     self.strokeWidth = strokeWidth
     self.layers = paths.map { p in
@@ -30,16 +35,16 @@ struct VectorImage {
     }
   }
 
-  init(bounds: CGRect, layers: [VectorLayer], strokeWidth: Double = 0) {
+  package init(bounds: CGRect, layers: [VectorLayer], strokeWidth: Double = 0) {
     self.bounds = bounds
     self.layers = layers
     self.strokeWidth = strokeWidth
   }
   private static let lock = NSLock()
-  nonisolated(unsafe) static var cache: [String: VectorImage] = [:]
-  nonisolated(unsafe) static var symbolDefinitions: [String: (viewBox: CGRect, strokeWidth: Double, paths: [String])] = [:]
+  nonisolated(unsafe) package static var cache: [String: VectorImage] = [:]
+  nonisolated(unsafe) package static var symbolDefinitions: [String: (viewBox: CGRect, strokeWidth: Double, paths: [String])] = [:]
 
-  static func registerSymbol(
+  package static func registerSymbol(
     _ name: String,
     viewBox: CGRect = CGRect(x: 0, y: 0, width: 24, height: 24),
     strokeWidth: Double = 2.0,
@@ -55,7 +60,7 @@ struct VectorImage {
       .replacingOccurrences(of: ".inverse", with: "")
   }
 
-  static func hasSymbol(_ name: String) -> Bool {
+  package static func hasSymbol(_ name: String) -> Bool {
     lock.lock()
     defer { lock.unlock() }
     ensureBuiltinSFSymbolsRegistered()
@@ -64,7 +69,7 @@ struct VectorImage {
     return symbolDefinitions[stripped] != nil
   }
 
-  static func loadSymbol(_ rawName: String) -> VectorImage? {
+  package static func loadSymbol(_ rawName: String) -> VectorImage? {
     lock.lock()
     defer { lock.unlock() }
     ensureBuiltinSFSymbolsRegistered()
@@ -80,7 +85,7 @@ struct VectorImage {
     return img
   }
 
-  static func load(_ file: String) -> VectorImage? {
+  package static func load(_ file: String) -> VectorImage? {
     if file.hasPrefix("sf://") {
       return loadSymbol(String(file.dropFirst(5)))
     }
@@ -363,5 +368,52 @@ struct VectorImage {
         control1: transform(cos(a) - k * sin(a), sin(a) + k * cos(a)),
         control2: transform(cos(b) + k * sin(b), sin(b) - k * cos(b)))
     }
+  }
+
+  package func toSVG() -> String {
+    let minX = bounds.minX
+    let minY = bounds.minY
+    let width = bounds.width
+    let height = bounds.height
+    var lines: [String] = [
+      "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"\(minX) \(minY) \(width) \(height)\">"
+    ]
+    for path in paths {
+      let d = path.svgData
+      guard !d.isEmpty else { continue }
+      if strokeWidth > 0 {
+        lines.append(
+          "  <path d=\"\(d)\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"\(strokeWidth)\" stroke-linecap=\"round\" stroke-linejoin=\"round\"/>"
+        )
+      } else {
+        lines.append("  <path d=\"\(d)\" fill=\"currentColor\" fill-rule=\"evenodd\"/>")
+      }
+    }
+    lines.append("</svg>")
+    return lines.joined(separator: "\n") + "\n"
+  }
+}
+
+extension Path {
+  package var svgData: String {
+    var result = ""
+    var index = 0
+    while index < commands.count {
+      let command: String
+      let count: Int
+      switch commands[index] {
+      case 0: (command, count) = ("M", 2)
+      case 1: (command, count) = ("L", 2)
+      case 2: (command, count) = ("C", 6)
+      case 3: (command, count) = ("Z", 0)
+      default: return result
+      }
+      let end = index + 1 + count
+      guard end <= commands.count else { break }
+      result += command
+      for coordinate in commands[(index + 1)..<end] { result += " \(coordinate)" }
+      index = end
+    }
+    return result
   }
 }

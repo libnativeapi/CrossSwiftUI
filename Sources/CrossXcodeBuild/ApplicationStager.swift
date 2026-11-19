@@ -1,4 +1,5 @@
 import Foundation
+import SwiftUIRuntime
 
 public struct StagedApplication: Sendable {
   public let project: ResolvedXcodeProject
@@ -259,6 +260,11 @@ public final class ApplicationStager {
       let webAppDir = appDir.appendingPathComponent("app")
       try fm.copyItem(at: wasmPkgDir, to: webAppDir)
       try fm.copyItem(at: built.compiledAssets.resourcesDirectory, to: resourcesDestURL)
+      try stageWasmWebManifest(
+        project: project,
+        built: built,
+        resourcesDestURL: resourcesDestURL
+      )
 
       let home = fm.homeDirectoryForCurrentUser
       if let npmURL = ProcessRunner.findExecutable(
@@ -315,6 +321,10 @@ public final class ApplicationStager {
           <main id="swiftui-root"></main>
           <script type="module">
             const { init } = await import("./app/index.js");
+            try {
+              const res = await fetch("./Resources/web-manifest.json");
+              if (res.ok) { window.__crossSwiftUIResources = await res.json(); }
+            } catch {}
             await init();
           </script>
         </body>
@@ -634,6 +644,139 @@ public final class ApplicationStager {
       return "Office;"
     }
     return "Utility;"
+  }
+
+  private func stageWasmWebManifest(
+    project: ResolvedXcodeProject,
+    built: BuiltTargetArtifacts,
+    resourcesDestURL: URL
+  ) throws {
+    let fm = FileManager.default
+    var images: [String: String] = [:]
+    var xcstrings: [String] = []
+    let webAssetsDir = resourcesDestURL.appendingPathComponent("_web_assets")
+
+    func relativeResourceURL(for url: URL) -> String? {
+      let base = resourcesDestURL.standardizedFileURL.path
+      let full = url.standardizedFileURL.path
+      let prefix = base.hasSuffix("/") ? base : base + "/"
+      guard full.hasPrefix(prefix) else { return nil }
+      let rel = String(full.dropFirst(prefix.count))
+      let encoded = rel.split(separator: "/").map { seg in
+        String(seg).addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? String(seg)
+      }.joined(separator: "/")
+      return "./Resources/" + encoded
+    }
+
+    func resolveImagesetFile(in imagesetURL: URL) -> URL? {
+      let contentsURL = imagesetURL.appendingPathComponent("Contents.json")
+      var candidates: [(url: URL, priority: Int)] = []
+      if let data = try? Data(contentsOf: contentsURL),
+         let json = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+         let entries = json["images"] as? [[String: Any]]
+      {
+        for entry in entries {
+          guard let filename = entry["filename"] as? String, !filename.isEmpty else { continue }
+          let fileURL = imagesetURL.appendingPathComponent(filename)
+          guard fm.fileExists(atPath: fileURL.path) else { continue }
+          let ext = fileURL.pathExtension.lowercased()
+          let scale = (entry["scale"] as? String) ?? ""
+          let priority: Int
+          switch ext {
+          case "svg": priority = 100
+          case "pdf": priority = 90
+          case "png", "webp", "jpg", "jpeg":
+            if scale == "3x" { priority = 80 }
+            else if scale == "2x" { priority = 70 }
+            else { priority = 60 }
+          default: priority = 10
+          }
+          candidates.append((fileURL, priority))
+        }
+      }
+      if let best = candidates.max(by: { $0.priority < $1.priority }) {
+        return best.url
+      }
+      if let files = try? fm.contentsOfDirectory(at: imagesetURL, includingPropertiesForKeys: nil) {
+        return files.first {
+          let ext = $0.pathExtension.lowercased()
+          return ext == "svg" || ext == "pdf" || ext == "png" || ext == "webp" || ext == "jpg" || ext == "jpeg"
+        }
+      }
+      return nil
+    }
+
+    func scanCatalogs(under root: URL, isInsideResources: Bool) {
+      guard fm.fileExists(atPath: root.path),
+            let enumerator = fm.enumerator(
+              at: root,
+              includingPropertiesForKeys: [.isDirectoryKey],
+              options: [.skipsHiddenFiles]
+            )
+      else { return }
+      for case let url as URL in enumerator {
+        let name = url.lastPathComponent
+        if name == ".build" || name == ".git" || name == "node_modules" {
+          enumerator.skipDescendants()
+          continue
+        }
+        let lower = name.lowercased()
+        if isInsideResources && lower.hasSuffix(".xcstrings") {
+          if let text = try? String(contentsOf: url, encoding: .utf8) {
+            xcstrings.append(text)
+          }
+          continue
+        }
+        if lower.hasSuffix(".imageset") {
+          enumerator.skipDescendants()
+          let assetName = String(name.dropLast(".imageset".count))
+          guard !assetName.isEmpty, images[assetName] == nil else { continue }
+          guard let fileURL = resolveImagesetFile(in: url) else { continue }
+          let ext = fileURL.pathExtension.lowercased()
+          if ext == "pdf" {
+            if let vector = PDFVectorParser.parse(filePath: fileURL.path) {
+              try? fm.createDirectory(at: webAssetsDir, withIntermediateDirectories: true)
+              let safeName = ProcessRunner.sanitizedSlug(assetName) + "-" + ProcessRunner.fnv1aHex(assetName) + ".svg"
+              let svgURL = webAssetsDir.appendingPathComponent(safeName)
+              try? vector.toSVG().write(to: svgURL, atomically: true, encoding: .utf8)
+              if let rel = relativeResourceURL(for: svgURL) {
+                images[assetName] = rel
+              }
+            }
+          } else if isInsideResources, let rel = relativeResourceURL(for: fileURL) {
+            images[assetName] = rel
+          } else {
+            try? fm.createDirectory(at: webAssetsDir, withIntermediateDirectories: true)
+            let safeName = ProcessRunner.sanitizedSlug(assetName) + "-" + ProcessRunner.fnv1aHex(assetName) + "." + ext
+            let dstURL = webAssetsDir.appendingPathComponent(safeName)
+            if fm.fileExists(atPath: dstURL.path) {
+              try? fm.removeItem(at: dstURL)
+            }
+            if (try? fm.copyItem(at: fileURL, to: dstURL)) != nil,
+               let rel = relativeResourceURL(for: dstURL)
+            {
+              images[assetName] = rel
+            }
+          }
+        }
+      }
+    }
+
+    scanCatalogs(under: resourcesDestURL, isInsideResources: true)
+    for adaptedDir in built.adaptedRemotePackageDirectories {
+      scanCatalogs(under: adaptedDir, isInsideResources: false)
+    }
+    for localPkg in project.localPackages {
+      scanCatalogs(under: localPkg.path, isInsideResources: false)
+    }
+
+    let payload: [String: Any] = [
+      "images": images,
+      "xcstrings": xcstrings,
+    ]
+    let jsonData = try JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys])
+    let manifestURL = resourcesDestURL.appendingPathComponent("web-manifest.json")
+    try jsonData.write(to: manifestURL, options: .atomic)
   }
 
   private func htmlEscape(_ text: String) -> String {
