@@ -238,6 +238,7 @@ import Carbon
   }
 
   extension DispatchSource {
+    @_disfavoredOverload
     public static func makeTimerSource(queue: DispatchQueue?) -> _CrossDispatchSourceTimer {
       let raw: any Dispatch.DispatchSourceTimer = Dispatch.DispatchSource.makeTimerSource(
         flags: [], queue: queue)

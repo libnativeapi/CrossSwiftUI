@@ -489,7 +489,9 @@ private struct ForegroundStyleView<Content: View, Style: ShapeStyle>: View, _Pri
     EnvironmentValues.current.foregroundColor = color
     var el = _render(content, path: path)
     EnvironmentValues.current = saved
-    el.props.foreground = color
+    if el.props.foreground == nil {
+      el.props.foreground = color
+    }
     return el
   }
 }

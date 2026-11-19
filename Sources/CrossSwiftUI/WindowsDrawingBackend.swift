@@ -754,15 +754,20 @@
         if var edit = edits[node.id], let handle = edit.view.nativeObject {
           let p = node.props
           let r = node.frame
+          let isTransparentBg = (p.background == nil) || (p.background!.opacity < 0.999)
+          let defaultFg: SwiftUIRuntime.Color =
+            environment.colorScheme == .dark ? .white : .black
+          let resolvedFg = p.foreground ?? defaultFg
           if !geometryOnly || !retained {
             let font = p.font ?? .body
             if edit.view.text != p.text {
               edit.view.setText(p.text)
             }
-            let placeholder = p.placeholder.isEmpty ? nil : p.placeholder
-            if !retained || edit.placeholder != placeholder {
-              edit.view.setPlaceholder(placeholder)
-              edit.placeholder = placeholder
+            let nativePlaceholder: String? =
+              isTransparentBg ? nil : (p.placeholder.isEmpty ? nil : p.placeholder)
+            if !retained || edit.placeholder != nativePlaceholder {
+              edit.view.setPlaceholder(nativePlaceholder)
+              edit.placeholder = nativePlaceholder
             }
             let fontFamily = font.family.isEmpty ? nil : font.family
             let fontSizePt = Double(font.size) * 72.0 / 96.0
@@ -777,9 +782,6 @@
               edit.fontSizePt = fontSizePt
               edit.fontWeight = fontWeight
             }
-            let defaultFg: SwiftUIRuntime.Color =
-              environment.colorScheme == .dark ? .white : .black
-            let resolvedFg = p.foreground ?? defaultFg
             if !retained || edit.textColorARGB != resolvedFg.argb {
               edit.view.setTextColor(resolvedFg.nativeColor)
               edit.textColorARGB = resolvedFg.argb
@@ -825,11 +827,15 @@
             sui_control_frame(
               surface, handle, editRect.minX, editRect.minY, editRect.width, editRect.height)
           }
-          let isTransparentBg = (p.background == nil) || (p.background!.opacity < 0.999)
-          sui_edit_set_transparent(
-            surface, handle, isTransparentBg ? 1 : 0,
-            editRect.minX + editRect.width * 0.5,
-            editRect.minY + editRect.height * 0.5)
+          let placeholderARGB = resolvedFg.opacity(0.42).argb
+          p.placeholder.withCString { placeholderCStr in
+            sui_edit_set_transparent(
+              surface, handle, isTransparentBg ? 1 : 0,
+              editRect.minX + editRect.width * 0.5,
+              editRect.minY + editRect.height * 0.5,
+              placeholderCStr, resolvedFg.argb, placeholderARGB,
+              p.multiline ? 1 : 0)
+          }
           sui_edit_order(surface, handle)
           sui_control_opacity(handle, p.opacity)
           let visible = shownInViewport ? editRect.intersection(nativeClip ?? clip) : .zero

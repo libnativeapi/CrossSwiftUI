@@ -76,6 +76,12 @@ struct EditHook {
   bool en_change_fired = false;
   bool pending_text_paint = false;
   bool caret_hidden = false;
+  bool ime_composing = false;
+  bool multiline = false;
+  bool unthemed = false;
+  uint32_t text_argb = 0xFF000000u;
+  uint32_t placeholder_argb = 0x6B000000u;
+  std::wstring placeholder;
   double sample_x = 0;
   double sample_y = 0;
 };
@@ -1208,12 +1214,13 @@ int Input(Surface *s, HWND hwnd, int64_t id, UINT msg, WPARAM wp, LPARAM lp) {
                   Modifiers() | (msg == WM_MOUSEHWHEEL ? 1 : 0));
 }
 namespace {
+constexpr UINT_PTR kEditPrintSubclassId = 0x5AD00002u;
 HWND g_print_edit = nullptr;
 COLORREF g_print_bg = CLR_INVALID;
-WNDPROC g_saved_host_proc = nullptr;
 
-LRESULT CALLBACK EditPrintColorProc(HWND wnd, UINT msg, WPARAM wp, LPARAM lp) {
-  const LRESULT base = CallWindowProcW(g_saved_host_proc, wnd, msg, wp, lp);
+LRESULT CALLBACK EditPrintColorSubclassProc(HWND wnd, UINT msg, WPARAM wp,
+                                            LPARAM lp, UINT_PTR, DWORD_PTR) {
+  const LRESULT base = DefSubclassProc(wnd, msg, wp, lp);
   if ((msg == WM_CTLCOLOREDIT || msg == WM_CTLCOLORSTATIC) &&
       reinterpret_cast<HWND>(lp) == g_print_edit && g_print_bg != CLR_INVALID) {
     HDC hdc = reinterpret_cast<HDC>(wp);
@@ -1225,30 +1232,91 @@ LRESULT CALLBACK EditPrintColorProc(HWND wnd, UINT msg, WPARAM wp, LPARAM lp) {
   return base;
 }
 
-void PaintTransparentEdit(Surface *s, HWND hwnd) {
+void DisableEditVisualThemeOnce(HWND hwnd, EditHook &hook) {
+  if (hook.unthemed || !hwnd || !IsWindow(hwnd))
+    return;
+  hook.unthemed = true;
+  HMODULE uxtheme = GetModuleHandleW(L"uxtheme.dll");
+  if (!uxtheme)
+    uxtheme = LoadLibraryW(L"uxtheme.dll");
+  if (!uxtheme)
+    return;
+  using SetWindowThemeFn = HRESULT(WINAPI *)(HWND, LPCWSTR, LPCWSTR);
+  if (auto fn = reinterpret_cast<SetWindowThemeFn>(
+          GetProcAddress(uxtheme, "SetWindowTheme"))) {
+    fn(hwnd, L"", L"");
+  }
+}
+
+void CompositeTransparentEditToDC(Surface *s, HWND hwnd, HDC target_dc) {
   RenderFrame(s);
-  PAINTSTRUCT ps{};
-  HDC screen_dc = BeginPaint(hwnd, &ps);
   RECT cr{};
   GetClientRect(hwnd, &cr);
   const int w = cr.right - cr.left;
   const int h = cr.bottom - cr.top;
-  if (w > 0 && h > 0 && s->buffer && s->buffer->pixels &&
-      s->buffer->width > 0 && s->buffer->height > 0) {
-    POINT offset = {0, 0};
-    MapWindowPoints(hwnd, s->host, &offset, 1);
+  if (w <= 0 || h <= 0 || !s->buffer || !s->buffer->pixels ||
+      s->buffer->width == 0 || s->buffer->height == 0) {
+    return;
+  }
+  auto hook_it = s->edits.find(hwnd);
+  if (hook_it == s->edits.end())
+    return;
+  EditHook &hook = hook_it->second;
+  DisableEditVisualThemeOnce(hwnd, hook);
 
-    Framebuffer pass_b{UINT(w), UINT(h)};
-    Framebuffer pass_w{UINT(w), UINT(h)};
-    RECT full{0, 0, w, h};
-    FillRect(pass_b.dc, &full, static_cast<HBRUSH>(GetStockObject(BLACK_BRUSH)));
-    FillRect(pass_w.dc, &full, static_cast<HBRUSH>(GetStockObject(WHITE_BRUSH)));
+  POINT offset = {0, 0};
+  MapWindowPoints(hwnd, s->host, &offset, 1);
+
+  Framebuffer pass_b{UINT(w), UINT(h)};
+  Framebuffer pass_w{UINT(w), UINT(h)};
+  RECT full{0, 0, w, h};
+  FillRect(pass_b.dc, &full, static_cast<HBRUSH>(GetStockObject(BLACK_BRUSH)));
+  FillRect(pass_w.dc, &full, static_cast<HBRUSH>(GetStockObject(WHITE_BRUSH)));
+
+  const bool empty_idle =
+      (GetWindowTextLengthW(hwnd) == 0) && !hook.ime_composing;
+  uint32_t alpha_scale = 255;
+
+  if (empty_idle) {
+    alpha_scale = (hook.placeholder_argb >> 24) & 0xFF;
+    if (!hook.placeholder.empty() && alpha_scale > 0) {
+      const COLORREF cue_rgb = RGB((hook.placeholder_argb >> 16) & 0xFF,
+                                   (hook.placeholder_argb >> 8) & 0xFF,
+                                   hook.placeholder_argb & 0xFF);
+      RECT fmt{0, 0, w, h};
+      SendMessageW(hwnd, EM_GETRECT, 0, reinterpret_cast<LPARAM>(&fmt));
+      if (fmt.right <= fmt.left || fmt.bottom <= fmt.top)
+        fmt = full;
+      HFONT hfont =
+          reinterpret_cast<HFONT>(SendMessageW(hwnd, WM_GETFONT, 0, 0));
+      const UINT dt_flags =
+          DT_LEFT | DT_TOP | DT_NOPREFIX |
+          (hook.multiline ? (DT_WORDBREAK | DT_EDITCONTROL) : DT_SINGLELINE);
+      for (HDC dc : {pass_b.dc, pass_w.dc}) {
+        HGDIOBJ old_font = hfont ? SelectObject(dc, hfont) : nullptr;
+        SetBkMode(dc, TRANSPARENT);
+        SetTextColor(dc, cue_rgb);
+        RECT draw_rc = fmt;
+        DrawTextW(dc, hook.placeholder.c_str(), int(hook.placeholder.size()),
+                  &draw_rc, dt_flags);
+        if (old_font)
+          SelectObject(dc, old_font);
+      }
+    }
+  } else {
+    alpha_scale = (hook.text_argb >> 24) & 0xFF;
+    HWND parent = GetParent(hwnd);
+    if (!parent)
+      parent = s->host;
+
+    const LONG_PTR saved_style = GetWindowLongPtrW(hwnd, GWL_STYLE);
+    if (saved_style & WS_DISABLED) {
+      SetWindowLongPtrW(hwnd, GWL_STYLE, saved_style & ~WS_DISABLED);
+    }
 
     g_print_edit = hwnd;
-    g_saved_host_proc = reinterpret_cast<WNDPROC>(GetWindowLongPtrW(
-        s->host, GWLP_WNDPROC));
-    SetWindowLongPtrW(s->host, GWLP_WNDPROC,
-                      reinterpret_cast<LONG_PTR>(EditPrintColorProc));
+    const BOOL hooked = SetWindowSubclass(
+        parent, EditPrintColorSubclassProc, kEditPrintSubclassId, 0);
 
     g_print_bg = RGB(0, 0, 0);
     DefSubclassProc(hwnd, WM_PRINTCLIENT, reinterpret_cast<WPARAM>(pass_b.dc),
@@ -1257,41 +1325,68 @@ void PaintTransparentEdit(Surface *s, HWND hwnd) {
     DefSubclassProc(hwnd, WM_PRINTCLIENT, reinterpret_cast<WPARAM>(pass_w.dc),
                     PRF_CLIENT);
 
-    SetWindowLongPtrW(s->host, GWLP_WNDPROC,
-                      reinterpret_cast<LONG_PTR>(g_saved_host_proc));
-    g_saved_host_proc = nullptr;
+    if (hooked) {
+      RemoveWindowSubclass(parent, EditPrintColorSubclassProc,
+                           kEditPrintSubclassId);
+    }
     g_print_edit = nullptr;
     g_print_bg = CLR_INVALID;
 
-    const int buf_w = int(s->buffer->width);
-    const int buf_h = int(s->buffer->height);
-    for (int y = 0; y < h; ++y) {
-      const int sy = max(0, min(buf_h - 1, int(offset.y) + y));
-      const uint32_t *bg_row = s->buffer->pixels + size_t(sy) * size_t(buf_w);
-      uint32_t *b_row = pass_b.pixels + size_t(y) * size_t(w);
-      const uint32_t *w_row = pass_w.pixels + size_t(y) * size_t(w);
-      for (int x = 0; x < w; ++x) {
-        const int sx = max(0, min(buf_w - 1, int(offset.x) + x));
-        const uint32_t d = bg_row[sx];
-        const uint32_t pb = b_row[x];
-        const uint32_t pw = w_row[x];
-        const int dA = (d >> 24) & 0xFF;
-        const int dR = (d >> 16) & 0xFF, dG = (d >> 8) & 0xFF, dB = d & 0xFF;
-        const int bR = (pb >> 16) & 0xFF, bG = (pb >> 8) & 0xFF, bB = pb & 0xFF;
-        const int wR = (pw >> 16) & 0xFF, wG = (pw >> 8) & 0xFF, wB = pw & 0xFF;
-        const int invA_R = max(0, min(255, wR - bR));
-        const int invA_G = max(0, min(255, wG - bG));
-        const int invA_B = max(0, min(255, wB - bB));
-        const int invA = (invA_R + invA_G + invA_B) / 3;
-        const uint32_t outA = uint32_t(min(255, (255 - invA) + (invA * dA + 127) / 255));
-        const uint32_t outR = uint32_t(min(255, bR + (invA_R * dR + 127) / 255));
-        const uint32_t outG = uint32_t(min(255, bG + (invA_G * dG + 127) / 255));
-        const uint32_t outB = uint32_t(min(255, bB + (invA_B * dB + 127) / 255));
-        b_row[x] = (outA << 24) | (outR << 16) | (outG << 8) | outB;
-      }
+    if (saved_style & WS_DISABLED) {
+      SetWindowLongPtrW(hwnd, GWL_STYLE, saved_style);
     }
-    BitBlt(screen_dc, 0, 0, w, h, pass_b.dc, 0, 0, SRCCOPY);
   }
+
+  const int buf_w = int(s->buffer->width);
+  const int buf_h = int(s->buffer->height);
+  for (int y = 0; y < h; ++y) {
+    const int sy = max(0, min(buf_h - 1, int(offset.y) + y));
+    const uint32_t *bg_row = s->buffer->pixels + size_t(sy) * size_t(buf_w);
+    uint32_t *b_row = pass_b.pixels + size_t(y) * size_t(w);
+    const uint32_t *w_row = pass_w.pixels + size_t(y) * size_t(w);
+    for (int x = 0; x < w; ++x) {
+      const int sx = max(0, min(buf_w - 1, int(offset.x) + x));
+      const uint32_t d = bg_row[sx];
+      const uint32_t pb = b_row[x];
+      const uint32_t pw = w_row[x];
+      const int dA = (d >> 24) & 0xFF;
+      const int dR = (d >> 16) & 0xFF, dG = (d >> 8) & 0xFF, dB = d & 0xFF;
+      const int bR = (pb >> 16) & 0xFF, bG = (pb >> 8) & 0xFF, bB = pb & 0xFF;
+      const int wR = (pw >> 16) & 0xFF, wG = (pw >> 8) & 0xFF, wB = pw & 0xFF;
+      int cov_R = 255 - max(0, min(255, wR - bR));
+      int cov_G = 255 - max(0, min(255, wG - bG));
+      int cov_B = 255 - max(0, min(255, wB - bB));
+      int pm_R = bR, pm_G = bG, pm_B = bB;
+      if (alpha_scale < 255) {
+        cov_R = (cov_R * int(alpha_scale) + 127) / 255;
+        cov_G = (cov_G * int(alpha_scale) + 127) / 255;
+        cov_B = (cov_B * int(alpha_scale) + 127) / 255;
+        pm_R = (pm_R * int(alpha_scale) + 127) / 255;
+        pm_G = (pm_G * int(alpha_scale) + 127) / 255;
+        pm_B = (pm_B * int(alpha_scale) + 127) / 255;
+      }
+      const int invA_R = 255 - cov_R;
+      const int invA_G = 255 - cov_G;
+      const int invA_B = 255 - cov_B;
+      const int invA = (invA_R + invA_G + invA_B) / 3;
+      const uint32_t outA =
+          uint32_t(min(255, (255 - invA) + (invA * dA + 127) / 255));
+      const uint32_t outR =
+          uint32_t(min(255, pm_R + (invA_R * dR + 127) / 255));
+      const uint32_t outG =
+          uint32_t(min(255, pm_G + (invA_G * dG + 127) / 255));
+      const uint32_t outB =
+          uint32_t(min(255, pm_B + (invA_B * dB + 127) / 255));
+      b_row[x] = (outA << 24) | (outR << 16) | (outG << 8) | outB;
+    }
+  }
+  BitBlt(target_dc, 0, 0, w, h, pass_b.dc, 0, 0, SRCCOPY);
+}
+
+void PaintTransparentEdit(Surface *s, HWND hwnd) {
+  PAINTSTRUCT ps{};
+  HDC screen_dc = BeginPaint(hwnd, &ps);
+  CompositeTransparentEditToDC(s, hwnd, screen_dc);
   EndPaint(hwnd, &ps);
   auto hook_it = s->edits.find(hwnd);
   if (hook_it != s->edits.end() && hook_it->second.caret_hidden) {
@@ -1309,12 +1404,21 @@ LRESULT CALLBACK EditProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp, UINT_PTR,
     return DefSubclassProc(hwnd, msg, wp, lp);
   const bool transparent = found->second.transparent_bg;
   auto id = found->second.id;
-  if (msg == WM_KILLFOCUS || msg == WM_NCDESTROY) {
+  if (msg == WM_IME_STARTCOMPOSITION) {
+    found->second.ime_composing = true;
+  } else if (msg == WM_IME_ENDCOMPOSITION) {
+    found->second.ime_composing = false;
+  } else if (msg == WM_KILLFOCUS || msg == WM_NCDESTROY) {
     found->second.caret_hidden = false;
+    found->second.ime_composing = false;
   }
   if (transparent) {
     if (msg == WM_ERASEBKGND)
       return 1;
+    if (msg == WM_PRINTCLIENT && g_print_edit != hwnd) {
+      CompositeTransparentEditToDC(s, hwnd, reinterpret_cast<HDC>(wp));
+      return 0;
+    }
     if (msg == WM_PAINT) {
       if (found->second.pending_text_paint || s->defer_commit) {
         PAINTSTRUCT ps{};
@@ -2101,7 +2205,9 @@ void sui_edit_order(void *handle, void *edit) {
   OrderControl(s, hwnd);
 }
 void sui_edit_set_transparent(void *handle, void *edit, int transparent,
-                              double sample_x, double sample_y) {
+                              double sample_x, double sample_y,
+                              const char *placeholder, uint32_t text_argb,
+                              uint32_t placeholder_argb, int multiline) {
   auto *s = static_cast<Surface *>(handle);
   if (!s)
     return;
@@ -2110,11 +2216,29 @@ void sui_edit_set_transparent(void *handle, void *edit, int transparent,
   if (found == s->edits.end())
     return;
   auto &hook = found->second;
-  hook.transparent_bg = transparent != 0;
+  const bool want_transparent = transparent != 0;
+  std::wstring next_placeholder = Wide(placeholder);
+  const bool want_multiline = multiline != 0;
+  const bool visual_changed =
+      hook.transparent_bg != want_transparent ||
+      hook.placeholder != next_placeholder || hook.text_argb != text_argb ||
+      hook.placeholder_argb != placeholder_argb ||
+      hook.multiline != want_multiline;
+  hook.transparent_bg = want_transparent;
   hook.sample_x = sample_x;
   hook.sample_y = sample_y;
-  if (!hook.transparent_bg)
+  hook.placeholder = std::move(next_placeholder);
+  hook.text_argb = text_argb;
+  hook.placeholder_argb = placeholder_argb;
+  hook.multiline = want_multiline;
+  if (hook.transparent_bg) {
+    DisableEditVisualThemeOnce(hwnd, hook);
+  } else {
     hook.bg_color = CLR_INVALID;
+  }
+  if (visual_changed && IsWindow(hwnd) && !s->defer_commit) {
+    InvalidateRect(hwnd, nullptr, FALSE);
+  }
 }
 void sui_surface_set_background(void *handle, uint32_t argb) {
   auto *s = static_cast<Surface *>(handle);

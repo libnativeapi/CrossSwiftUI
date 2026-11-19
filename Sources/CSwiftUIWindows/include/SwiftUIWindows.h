@@ -19,7 +19,9 @@ void sui_surface_edit(void *surface, void *edit, int64_t id,
 void sui_surface_remove_edit(void *surface, void *edit);
 void sui_edit_order(void *surface, void *edit);
 void sui_edit_set_transparent(void *surface, void *edit, int transparent,
-                              double sample_x, double sample_y);
+                              double sample_x, double sample_y,
+                              const char *placeholder, uint32_t text_argb,
+                              uint32_t placeholder_argb, int multiline);
 void sui_surface_set_background(void *surface, uint32_t argb);
 void sui_surface_set_window_shadow(void *surface, int enabled, int is_dark);
 void sui_surface_flush_paint(void *surface);
