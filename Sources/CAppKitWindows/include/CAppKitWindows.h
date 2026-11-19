@@ -70,6 +70,8 @@ void cak_edit_set_selection(void *hwnd, int start, int length);
 int cak_edit_has_ime_composition(void *hwnd);
 char *cak_hwnd_get_text(void *hwnd);
 int cak_send_paste_chord(void);
+int cak_send_copy_chord(void);
+int cak_send_vk_key(uint16_t vk);
 int cak_send_unicode_text(const char *utf8_text);
 int cak_send_backspaces(int count);
 
@@ -93,9 +95,27 @@ int cak_empty_recycle_bin(void);
 
 // Crypto (Windows CNG BCrypt)
 int cak_sha256(const uint8_t *data, size_t len, uint8_t out_digest[32]);
+int cak_sha384(const uint8_t *data, size_t len, uint8_t out_digest[48]);
 int cak_sha512(const uint8_t *data, size_t len, uint8_t out_digest[64]);
 int cak_sha1(const uint8_t *data, size_t len, uint8_t out_digest[20]);
 int cak_md5(const uint8_t *data, size_t len, uint8_t out_digest[16]);
+int cak_pbkdf2(
+    int alg_id, // 1=SHA1, 2=SHA224(unsupported), 3=SHA256, 4=SHA384, 5=SHA512
+    const uint8_t *password, size_t password_len,
+    const uint8_t *salt, size_t salt_len,
+    uint32_t iterations,
+    uint8_t *out_key, size_t key_len
+);
+int cak_aes_crypt(
+    int decrypt,
+    int ecb_mode,
+    int pkcs7_pad,
+    const uint8_t *key, size_t key_len,
+    const uint8_t *iv,
+    const uint8_t *data, size_t data_len,
+    uint8_t *out_buf, size_t out_cap,
+    size_t *out_written
+);
 int cak_hmac_sha256(
     const uint8_t *key, size_t key_len,
     const uint8_t *data, size_t data_len,
@@ -118,6 +138,35 @@ int cak_aes_gcm_encrypt(
     uint8_t *out_tag, size_t tag_len
 );
 int cak_random_bytes(uint8_t *buf, size_t len);
+
+// POSIX / Darwin File & Directory Shims
+typedef struct {
+  uint16_t st_mode;
+  uint32_t st_flags;
+  int64_t st_size;
+  int64_t mtime_sec;
+  int64_t mtime_nsec;
+  int64_t atime_sec;
+  int64_t atime_nsec;
+  int64_t ctime_sec;
+  int64_t ctime_nsec;
+  int64_t btime_sec;
+  int64_t btime_nsec;
+} cak_stat_info;
+
+int cak_posix_open(const char *utf8_path, int posix_flags, int mode, int *out_errno);
+int cak_posix_close(int fd);
+int cak_posix_stat(const char *utf8_path, int follow_links, cak_stat_info *out_info, int *out_errno);
+int cak_posix_fstat(int fd, cak_stat_info *out_info, int *out_errno);
+int cak_posix_mkdir(const char *utf8_path, int *out_errno);
+int cak_posix_utimes(
+    const char *utf8_path,
+    int64_t atime_sec, int64_t atime_usec,
+    int64_t mtime_sec, int64_t mtime_usec,
+    int *out_errno
+);
+char *cak_realpath(const char *utf8_path);
+int cak_getattrlistbulk(int dirfd, void *attrbuf, size_t attrbuf_size);
 
 #ifdef __cplusplus
 }

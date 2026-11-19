@@ -13,6 +13,9 @@ import Carbon
 #if canImport(Dispatch)
   @_exported import Dispatch
 #endif
+#if os(Windows)
+  import CAppKitWindows
+#endif
 #if !os(macOS)
   import SwiftUIRuntime
 
@@ -202,6 +205,46 @@ import Carbon
     }
   }
 
+  public final class _CrossDispatchSourceTimer: @unchecked Sendable {
+    private let raw: any Dispatch.DispatchSourceTimer
+    public init(_ raw: any Dispatch.DispatchSourceTimer) { self.raw = raw }
+
+    public func schedule(
+      deadline: DispatchTime,
+      repeating interval: DispatchTimeInterval = .never,
+      leeway: DispatchTimeInterval = .nanoseconds(0)
+    ) {
+      raw.schedule(deadline: deadline, repeating: interval, leeway: leeway)
+    }
+
+    public func schedule(
+      deadline: DispatchTime,
+      repeating interval: Double,
+      leeway: DispatchTimeInterval = .nanoseconds(0)
+    ) {
+      raw.schedule(deadline: deadline, repeating: interval, leeway: leeway)
+    }
+
+    public func setEventHandler(
+      qos: DispatchQoS = .unspecified,
+      flags: DispatchWorkItemFlags = [],
+      handler: (@Sendable () -> Void)?
+    ) {
+      raw.setEventHandler(qos: qos, flags: flags, handler: handler)
+    }
+
+    public func resume() { raw.resume() }
+    public func cancel() { raw.cancel() }
+  }
+
+  extension DispatchSource {
+    public static func makeTimerSource(queue: DispatchQueue?) -> _CrossDispatchSourceTimer {
+      let raw: any Dispatch.DispatchSourceTimer = Dispatch.DispatchSource.makeTimerSource(
+        flags: [], queue: queue)
+      return _CrossDispatchSourceTimer(raw)
+    }
+  }
+
   // MARK: - InlinePresentationIntent & AttributedString Markdown parsing
 
   public struct InlinePresentationIntent: OptionSet, Codable, Hashable, Sendable {
@@ -328,5 +371,64 @@ import Carbon
   extension NotificationCenter.MessageIdentifier
   where Self == NotificationCenter.BaseMessageIdentifier<Locale.CurrentLocaleDidChangeMessage> {
     public static var currentLocaleDidChange: Self { .init() }
+  }
+
+  // MARK: - URLSessionConfiguration KVC / Selector & Windows FileHandle compatibility
+
+  #if os(Windows)
+    extension FileHandle {
+      public var fileDescriptor: Int32 { -1 }
+    }
+  #endif
+
+  extension URLSessionConfiguration {
+    public func responds(to aSelector: Selector) -> Bool { false }
+    public func setValue(_ value: Any?, forKey key: String) {}
+  }
+
+  open class NSCache<KeyType: AnyObject, ObjectType: AnyObject>: NSObject {
+    private let backing = Foundation.NSCache<KeyType, ObjectType>()
+
+    public override init() { super.init() }
+
+    open var name: String {
+      get { backing.name }
+      set { backing.name = newValue }
+    }
+
+    open var totalCostLimit: Int {
+      get { backing.totalCostLimit }
+      set { backing.totalCostLimit = newValue }
+    }
+
+    open var countLimit: Int {
+      get { backing.countLimit }
+      set { backing.countLimit = newValue }
+    }
+
+    open var evictsObjectsWithDiscardedContent: Bool {
+      get { backing.evictsObjectsWithDiscardedContent }
+      set { backing.evictsObjectsWithDiscardedContent = newValue }
+    }
+
+    open func object(forKey key: KeyType) -> ObjectType? {
+      backing.object(forKey: key)
+    }
+
+    open func setObject(_ obj: ObjectType, forKey key: KeyType) {
+      backing.setObject(obj, forKey: key)
+    }
+
+    open func setObject(_ obj: ObjectType, forKey key: KeyType, cost g: Int) {
+      backing.setObject(obj, forKey: key, cost: g)
+    }
+
+    open func removeObject(forKey key: KeyType) {
+      backing.removeObject(forKey: key)
+    }
+
+    open func removeAllObjects() {
+      backing.removeAllObjects()
+    }
   }
 #endif

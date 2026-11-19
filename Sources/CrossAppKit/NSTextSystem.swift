@@ -621,7 +621,7 @@ open class NSText: NSView {
           continuation.yield(note)
         }
         nonisolated(unsafe) let boxToken = token
-        nonisolated(unsafe) let center = self
+        let center = self
         continuation.onTermination = { _ in
           center.removeObserver(boxToken)
         }

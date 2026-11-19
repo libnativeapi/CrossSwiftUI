@@ -6,6 +6,14 @@ public protocol EnvironmentKey {
   associatedtype Value
   static var defaultValue: Value { get }
 }
+
+@attached(accessor)
+@attached(peer, names: prefixed(__Key_))
+public macro Entry() = #externalMacro(module: "SwiftUIRuntimeMacros", type: "EntryMacro")
+
+@attached(accessor)
+public macro _EntryDefaultValue() =
+  #externalMacro(module: "SwiftUIRuntimeMacros", type: "EntryDefaultValueMacro")
 public enum ColorScheme: Sendable { case light, dark }
 public struct EnvironmentValues {
   var objects: [ObjectIdentifier: AnyObject] = [:]

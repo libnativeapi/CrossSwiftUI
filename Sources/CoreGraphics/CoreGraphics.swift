@@ -1,5 +1,11 @@
 @_exported import Foundation
-import CoreFoundation
+@_exported import CoreFoundation
+#if !os(macOS)
+  import Carbon
+#endif
+#if os(Windows)
+  import CAppKitWindows
+#endif
 
 #if !os(macOS)
   public typealias CGDirectDisplayID = UInt32
@@ -238,7 +244,10 @@ import CoreFoundation
   }
 
   public final class CGEventSource: @unchecked Sendable {
-    public init?(stateID: CGEventSourceStateID) {}
+    public let stateID: CGEventSourceStateID
+    public init?(stateID: CGEventSourceStateID) {
+      self.stateID = stateID
+    }
     public static func secondsSinceLastEventType(
       _ stateID: CGEventSourceStateID,
       eventType: CGEventType
@@ -281,26 +290,103 @@ import CoreFoundation
     public var flags: CGEventFlags = []
     public var type: CGEventType = .null
     public var timestamp: UInt64 = 0
+    private var virtualKey: CGKeyCode = 0
+    private var keyDown: Bool = false
+    private var integerFields: [CGEventField: Int64] = [:]
+    private var unicodeChars: [UniChar] = []
     public var data: CFData? { nil }
     public func __data(allocator: CFAllocator?) -> CFData? { nil }
 
     public init?(source: CGEventSource?) {}
-    public init?(keyboardEventSource source: CGEventSource?, virtualKey: CGKeyCode, keyDown: Bool) {}
-    public init?(withDataAllocator allocator: CFAllocator?, data: CFData) {}
+    public init?(keyboardEventSource source: CGEventSource?, virtualKey: CGKeyCode, keyDown: Bool) {
+      self.virtualKey = virtualKey
+      self.keyDown = keyDown
+      self.type = keyDown ? .keyDown : .keyUp
+      self.integerFields[.keyboardEventKeycode] = Int64(virtualKey)
+    }
+    public init?(withDataAllocator allocator: CFAllocator?, data: CFData) { nil }
 
-    public func getIntegerValueField(_ field: CGEventField) -> Int64 { 0 }
-    public func setIntegerValueField(_ field: CGEventField, value: Int64) {}
+    public func getIntegerValueField(_ field: CGEventField) -> Int64 {
+      integerFields[field] ?? 0
+    }
+    public func setIntegerValueField(_ field: CGEventField, value: Int64) {
+      integerFields[field] = value
+      if field == .keyboardEventKeycode {
+        virtualKey = CGKeyCode(truncatingIfNeeded: value)
+      }
+    }
     public func setDoubleValueField(_ field: CGEventField, value: Double) {}
-    public func keyboardSetUnicodeString(stringLength: Int, unicodeString: UnsafePointer<UniChar>?) {}
+    public func keyboardSetUnicodeString(stringLength: Int, unicodeString: UnsafePointer<UniChar>?) {
+      guard stringLength > 0, let unicodeString else {
+        unicodeChars = []
+        return
+      }
+      unicodeChars = Array(UnsafeBufferPointer(start: unicodeString, count: stringLength))
+    }
     public func keyboardGetUnicodeString(
       maxStringLength: Int,
       actualStringLength: UnsafeMutablePointer<Int>?,
       unicodeString: UnsafeMutablePointer<UniChar>?
     ) {
-      actualStringLength?.pointee = 0
+      let count = min(max(0, maxStringLength), unicodeChars.count)
+      actualStringLength?.pointee = count
+      if count > 0, let unicodeString {
+        for i in 0..<count { unicodeString[i] = unicodeChars[i] }
+      }
     }
-    public func post(tap: CGEventTapLocation) {}
-    public func postToPid(_ pid: Int32) {}
+    public func post(tap: CGEventTapLocation) {
+      dispatchSyntheticKeyboardEvent(targetPid: nil)
+    }
+    public func postToPid(_ pid: Int32) {
+      dispatchSyntheticKeyboardEvent(targetPid: pid)
+    }
+
+    private func dispatchSyntheticKeyboardEvent(targetPid: Int32?) {
+      #if os(Windows)
+        guard keyDown || type == .keyDown else { return }
+        if let pid = targetPid, pid > 0 {
+          _ = cak_activate_pid(UInt32(bitPattern: pid))
+        }
+        if !unicodeChars.isEmpty {
+          let text = String(utf16CodeUnits: unicodeChars, count: unicodeChars.count)
+          _ = cak_send_unicode_text(text)
+          return
+        }
+        let code = Int(virtualKey)
+        if flags.contains(.maskCommand) {
+          if code == Int(kVK_ANSI_V) {
+            _ = cak_send_paste_chord()
+          } else if code == Int(kVK_ANSI_C) {
+            _ = cak_send_copy_chord()
+          }
+          return
+        }
+        switch code {
+        case Int(kVK_Delete):
+          _ = cak_send_backspaces(1)
+        case Int(kVK_ForwardDelete):
+          _ = cak_send_vk_key(0x2E)
+        case Int(kVK_Return), Int(kVK_ANSI_KeypadEnter):
+          _ = cak_send_vk_key(0x0D)
+        case Int(kVK_Tab):
+          _ = cak_send_vk_key(0x09)
+        case Int(kVK_Escape):
+          _ = cak_send_vk_key(0x1B)
+        case Int(kVK_Space):
+          _ = cak_send_vk_key(0x20)
+        case Int(kVK_LeftArrow):
+          _ = cak_send_vk_key(0x25)
+        case Int(kVK_UpArrow):
+          _ = cak_send_vk_key(0x26)
+        case Int(kVK_RightArrow):
+          _ = cak_send_vk_key(0x27)
+        case Int(kVK_DownArrow):
+          _ = cak_send_vk_key(0x28)
+        default:
+          break
+        }
+      #endif
+    }
 
     public static func tapCreate(
       tap: CGEventTapLocation,
@@ -379,7 +465,32 @@ import CoreFoundation
     _ option: CGWindowListOption,
     _ relativeToWindow: CGWindowID
   ) -> CFArray? {
-    nil
+    #if os(Windows)
+      var count: Int32 = 0
+      guard let entries = cak_enum_top_windows(&count), count > 0 else {
+        return [] as NSArray
+      }
+      defer { cak_free(entries) }
+      var result: [[String: Any]] = []
+      result.reserveCapacity(Int(count))
+      for i in 0..<Int(count) {
+        let entry = entries[i]
+        if option.contains(.optionOnScreenOnly) && entry.is_minimized != 0 {
+          continue
+        }
+        let winID = UInt32(truncatingIfNeeded: entry.hwnd)
+        result.append([
+          kCGWindowNumber as String: winID,
+          kCGWindowOwnerPID as String: Int32(bitPattern: entry.pid),
+          kCGWindowLayer as String: 0,
+          kCGWindowIsOnscreen as String: entry.is_minimized == 0,
+          kCGWindowAlpha as String: 1.0,
+        ])
+      }
+      return result as NSArray
+    #else
+      return nil
+    #endif
   }
 
   public enum CGWindowLevelKey: Int32, Sendable {

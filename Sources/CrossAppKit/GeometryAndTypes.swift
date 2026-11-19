@@ -6,22 +6,6 @@ import Foundation
   import NativeAPI
 #endif
 #if !canImport(ObjectiveC)
-  public struct Selector: RawRepresentable, Hashable, ExpressibleByStringLiteral, Sendable {
-    public let rawValue: String
-    public init(_ value: String) { self.rawValue = value }
-    public init(rawValue: String) { self.rawValue = rawValue }
-    public init(stringLiteral value: String) { self.rawValue = value }
-
-    public static let insertNewline = Selector("insertNewline:")
-    public static let insertLineBreak = Selector("insertLineBreak:")
-    public static let insertNewlineIgnoringFieldEditor = Selector("insertNewlineIgnoringFieldEditor:")
-    public static let insertParagraphSeparator = Selector("insertParagraphSeparator:")
-    public static let insertTab = Selector("insertTab:")
-    public static let insertBacktab = Selector("insertBacktab:")
-    public static let insertTabIgnoringFieldEditor = Selector("insertTabIgnoringFieldEditor:")
-    public static let cancelOperation = Selector("cancelOperation:")
-  }
-
   public struct ObjCBool: ExpressibleByBooleanLiteral, Sendable {
     public var boolValue: Bool
     public init(_ value: Bool) { self.boolValue = value }

@@ -781,6 +781,7 @@ open class NSWindow: NSResponder {
     delegate?.windowDidResignKey(note)
   }
 
+  @discardableResult
   open func makeFirstResponder(_ responder: NSResponder?) -> Bool {
     if let r = responder, !r.acceptsFirstResponder && !(r is NSTextView) && !(r is NSWindow) {
       // Allow explicit nil or window reset

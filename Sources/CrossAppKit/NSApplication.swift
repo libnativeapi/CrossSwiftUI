@@ -264,6 +264,7 @@ open class NSAppleEventDescriptor: NSObject {
   public var eventClass: UInt32 = 0
   public var eventID: UInt32 = 0
   public var int32Value: Int32 = 0
+  public var booleanValue: Bool = false
   public var enumCodeValue: UInt32 = 0
   public var stringValue: String?
   public func attributeDescriptor(forKeyword keyword: UInt32) -> NSAppleEventDescriptor? { nil }
@@ -298,8 +299,22 @@ open class NSAppleScript: NSObject {
 
   @discardableResult
   public func executeAndReturnError(_ errorInfo: UnsafeMutablePointer<NSDictionary?>?) -> NSAppleEventDescriptor {
+    let desc = NSAppleEventDescriptor()
+    let script = source ?? ""
+    #if os(Windows)
+      if script.contains("count items of trash") {
+        errorInfo?.pointee = nil
+        desc.int32Value = 1
+        return desc
+      }
+      if script.contains("empty trash") {
+        _ = cak_empty_recycle_bin()
+        errorInfo?.pointee = nil
+        return desc
+      }
+    #endif
     errorInfo?.pointee = nil
-    return NSAppleEventDescriptor()
+    return desc
   }
 }
 

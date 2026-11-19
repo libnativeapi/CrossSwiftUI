@@ -1,5 +1,6 @@
 // swift-tools-version:5.9
 
+import CompilerPluginSupport
 import Foundation
 import PackageDescription
 
@@ -47,12 +48,14 @@ if buildForDesktop {
 #endif
 
 var targets: [Target] = [
+  .macro(name: "SwiftUIRuntimeMacros"),
   .target(
     name: "SwiftUIRuntime",
+    dependencies: ["SwiftUIRuntimeMacros"],
     linkerSettings: [
       // Deep declarative view trees exceed Windows' 1 MiB default in debug builds.
       .unsafeFlags(["-Xlinker", "/STACK:16777216"], .when(platforms: [.windows]))
-    ])
+    ]),
 ]
 
 var products: [Product] = [
@@ -165,16 +168,17 @@ if buildForDesktop {
   crossAppKitDependencies.append("Combine")
   crossAppKitDependencies.append("Carbon")
 
-  var cryptoDependencies: [Target.Dependency] = []
+  var winGlueDependencies: [Target.Dependency] = []
   #if os(Windows)
-    cryptoDependencies.append("CAppKitWindows")
+    winGlueDependencies.append("CAppKitWindows")
   #endif
 
   targets += [
-    .target(name: "CrossFoundation", dependencies: ["SwiftUIRuntime", "CoreFoundation", "Darwin", "CoreGraphics", "Carbon"]),
+    .target(name: "CrossFoundation", dependencies: ["SwiftUIRuntime", "CoreFoundation", "Darwin", "CoreGraphics", "Carbon"] + winGlueDependencies),
     .target(name: "CoreFoundation", path: "Sources/AppleShims/CoreFoundation"),
-    .target(name: "Darwin", path: "Sources/AppleShims/Darwin"),
-    .target(name: "ApplicationServices", dependencies: ["CoreFoundation", "CoreGraphics"], path: "Sources/AppleShims/ApplicationServices"),
+    .target(name: "CDarwinShims", path: "Sources/AppleShims/CDarwinShims", publicHeadersPath: "include"),
+    .target(name: "Darwin", dependencies: ["CoreFoundation", "CDarwinShims"] + winGlueDependencies, path: "Sources/AppleShims/Darwin"),
+    .target(name: "ApplicationServices", dependencies: ["CoreFoundation", "CoreGraphics"] + winGlueDependencies, path: "Sources/AppleShims/ApplicationServices"),
     .target(name: "ServiceManagement", path: "Sources/AppleShims/ServiceManagement"),
     .target(name: "Security", dependencies: ["CoreFoundation"], path: "Sources/AppleShims/Security"),
     .target(name: "CloudKit", path: "Sources/AppleShims/CloudKit"),
@@ -201,17 +205,17 @@ if buildForDesktop {
     .target(name: "AppleArchive", dependencies: ["System"], path: "Sources/AppleShims/AppleArchive"),
     .target(name: "Accelerate", path: "Sources/AppleShims/Accelerate"),
     .target(name: "notify", path: "Sources/AppleShims/notify"),
-    .target(name: "CommonCrypto", path: "Sources/AppleShims/CommonCrypto"),
+    .target(name: "CommonCrypto", dependencies: winGlueDependencies, path: "Sources/AppleShims/CommonCrypto"),
     .target(name: "FoundationModels", path: "Sources/AppleShims/FoundationModels"),
     .target(name: "NaturalLanguage", path: "Sources/AppleShims/NaturalLanguage"),
     .target(name: "Translation", path: "Sources/AppleShims/Translation"),
     .target(name: "Carbon", publicHeadersPath: "include"),
-    .target(name: "CoreGraphics", dependencies: ["CoreFoundation"]),
+    .target(name: "CoreGraphics", dependencies: ["CoreFoundation", "Carbon"] + winGlueDependencies),
     .target(name: "UniformTypeIdentifiers"),
     .target(name: "OSLog"),
     .target(name: "os", dependencies: ["OSLog"]),
     .target(name: "Combine"),
-    .target(name: "CryptoKit", dependencies: cryptoDependencies),
+    .target(name: "CryptoKit", dependencies: winGlueDependencies),
     .target(name: "AppKit", dependencies: ["CrossAppKit", "CrossFoundation", "CoreFoundation", "CoreGraphics", "CoreText", "UniformTypeIdentifiers", "ApplicationServices"]),
     .target(
       name: "CrossSwiftUI",

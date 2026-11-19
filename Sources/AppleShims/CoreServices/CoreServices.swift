@@ -2,6 +2,8 @@ import Foundation
 @_exported import CoreFoundation
 
 #if !os(macOS)
+  public typealias DCSDictionary = AnyObject
+
   public func DCSCopyTextDefinition(_ dictionary: AnyObject?, _ textString: CFString, _ range: CFRange) -> Unmanaged<CFString>? {
     nil
   }

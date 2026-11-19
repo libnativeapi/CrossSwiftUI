@@ -27,7 +27,15 @@
 #include <algorithm>
 #include <cstring>
 #include <cstdlib>
+#include <cerrno>
+#include <direct.h>
+#include <fcntl.h>
+#include <io.h>
+#include <mutex>
+#include <share.h>
 #include <string>
+#include <sys/stat.h>
+#include <unordered_map>
 #include <vector>
 
 namespace {
@@ -954,6 +962,31 @@ int cak_send_paste_chord(void) {
   return SendInput(4, inputs, sizeof(INPUT)) == 4 ? 1 : 0;
 }
 
+int cak_send_copy_chord(void) {
+  INPUT inputs[4] = {};
+  inputs[0].type = INPUT_KEYBOARD;
+  inputs[0].ki.wVk = VK_CONTROL;
+  inputs[1].type = INPUT_KEYBOARD;
+  inputs[1].ki.wVk = 'C';
+  inputs[2].type = INPUT_KEYBOARD;
+  inputs[2].ki.wVk = 'C';
+  inputs[2].ki.dwFlags = KEYEVENTF_KEYUP;
+  inputs[3].type = INPUT_KEYBOARD;
+  inputs[3].ki.wVk = VK_CONTROL;
+  inputs[3].ki.dwFlags = KEYEVENTF_KEYUP;
+  return SendInput(4, inputs, sizeof(INPUT)) == 4 ? 1 : 0;
+}
+
+int cak_send_vk_key(uint16_t vk) {
+  INPUT inputs[2] = {};
+  inputs[0].type = INPUT_KEYBOARD;
+  inputs[0].ki.wVk = vk;
+  inputs[1].type = INPUT_KEYBOARD;
+  inputs[1].ki.wVk = vk;
+  inputs[1].ki.dwFlags = KEYEVENTF_KEYUP;
+  return SendInput(2, inputs, sizeof(INPUT)) == 2 ? 1 : 0;
+}
+
 int cak_send_unicode_text(const char *utf8_text) {
   std::wstring w = ToWide(utf8_text);
   if (w.empty()) return 1;
@@ -1085,6 +1118,10 @@ int cak_sha256(const uint8_t *data, size_t len, uint8_t out_digest[32]) {
   return HashBCrypt(BCRYPT_SHA256_ALGORITHM, nullptr, 0, data, len, out_digest, 32);
 }
 
+int cak_sha384(const uint8_t *data, size_t len, uint8_t out_digest[48]) {
+  return HashBCrypt(BCRYPT_SHA384_ALGORITHM, nullptr, 0, data, len, out_digest, 48);
+}
+
 int cak_sha512(const uint8_t *data, size_t len, uint8_t out_digest[64]) {
   return HashBCrypt(BCRYPT_SHA512_ALGORITHM, nullptr, 0, data, len, out_digest, 64);
 }
@@ -1095,6 +1132,85 @@ int cak_sha1(const uint8_t *data, size_t len, uint8_t out_digest[20]) {
 
 int cak_md5(const uint8_t *data, size_t len, uint8_t out_digest[16]) {
   return HashBCrypt(BCRYPT_MD5_ALGORITHM, nullptr, 0, data, len, out_digest, 16);
+}
+
+int cak_pbkdf2(
+    int alg_id,
+    const uint8_t *password, size_t password_len,
+    const uint8_t *salt, size_t salt_len,
+    uint32_t iterations,
+    uint8_t *out_key, size_t key_len
+) {
+  const wchar_t *alg_name = nullptr;
+  switch (alg_id) {
+    case 1: alg_name = BCRYPT_SHA1_ALGORITHM; break;
+    case 3: alg_name = BCRYPT_SHA256_ALGORITHM; break;
+    case 4: alg_name = BCRYPT_SHA384_ALGORITHM; break;
+    case 5: alg_name = BCRYPT_SHA512_ALGORITHM; break;
+    default: return 0;
+  }
+  BCRYPT_ALG_HANDLE hAlg = nullptr;
+  if (BCryptOpenAlgorithmProvider(&hAlg, alg_name, nullptr, BCRYPT_ALG_HANDLE_HMAC_FLAG) != 0) {
+    return 0;
+  }
+  NTSTATUS st = BCryptDeriveKeyPBKDF2(
+      hAlg,
+      const_cast<PUCHAR>(password), (ULONG)password_len,
+      const_cast<PUCHAR>(salt), (ULONG)salt_len,
+      (ULONGLONG)iterations,
+      out_key, (ULONG)key_len,
+      0);
+  BCryptCloseAlgorithmProvider(hAlg, 0);
+  return st == 0 ? 1 : 0;
+}
+
+int cak_aes_crypt(
+    int decrypt,
+    int ecb_mode,
+    int pkcs7_pad,
+    const uint8_t *key, size_t key_len,
+    const uint8_t *iv,
+    const uint8_t *data, size_t data_len,
+    uint8_t *out_buf, size_t out_cap,
+    size_t *out_written
+) {
+  if (out_written) *out_written = 0;
+  BCRYPT_ALG_HANDLE hAlg = nullptr;
+  if (BCryptOpenAlgorithmProvider(&hAlg, BCRYPT_AES_ALGORITHM, nullptr, 0) != 0) return 0;
+  const wchar_t *mode = ecb_mode ? BCRYPT_CHAIN_MODE_ECB : BCRYPT_CHAIN_MODE_CBC;
+  ULONG mode_bytes = ecb_mode ? sizeof(BCRYPT_CHAIN_MODE_ECB) : sizeof(BCRYPT_CHAIN_MODE_CBC);
+  int ok = 0;
+  if (BCryptSetProperty(
+          hAlg, BCRYPT_CHAINING_MODE,
+          reinterpret_cast<PUCHAR>(const_cast<wchar_t *>(mode)),
+          mode_bytes, 0) == 0) {
+    BCRYPT_KEY_HANDLE hKey = nullptr;
+    if (BCryptGenerateSymmetricKey(
+            hAlg, &hKey, nullptr, 0, const_cast<PUCHAR>(key), (ULONG)key_len, 0) == 0) {
+      uint8_t iv_copy[16] = {};
+      if (!ecb_mode && iv) std::memcpy(iv_copy, iv, 16);
+      ULONG flags = pkcs7_pad ? BCRYPT_BLOCK_PADDING : 0;
+      ULONG written = 0;
+      static const uint8_t dummy = 0;
+      PUCHAR in_ptr = data_len > 0 ? const_cast<PUCHAR>(data) : const_cast<PUCHAR>(&dummy);
+      NTSTATUS st = decrypt
+          ? BCryptDecrypt(
+                hKey, in_ptr, (ULONG)data_len, nullptr,
+                ecb_mode ? nullptr : iv_copy, ecb_mode ? 0 : 16,
+                out_buf, (ULONG)out_cap, &written, flags)
+          : BCryptEncrypt(
+                hKey, in_ptr, (ULONG)data_len, nullptr,
+                ecb_mode ? nullptr : iv_copy, ecb_mode ? 0 : 16,
+                out_buf, (ULONG)out_cap, &written, flags);
+      if (st == 0) {
+        if (out_written) *out_written = (size_t)written;
+        ok = 1;
+      }
+      BCryptDestroyKey(hKey);
+    }
+  }
+  BCryptCloseAlgorithmProvider(hAlg, 0);
+  return ok;
 }
 
 int cak_hmac_sha256(
@@ -1186,6 +1302,446 @@ int cak_aes_gcm_encrypt(
 int cak_random_bytes(uint8_t *buf, size_t len) {
   if (!buf || len == 0) return 1;
   return BCryptGenRandom(nullptr, buf, (ULONG)len, BCRYPT_USE_SYSTEM_PREFERRED_RNG) == 0 ? 1 : 0;
+}
+
+namespace {
+
+std::wstring NormalizeWinPath(const char *utf8_path) {
+  std::wstring w = ToWide(utf8_path);
+  if (w.empty()) return w;
+  for (auto &ch : w) {
+    if (ch == L'/') ch = L'\\';
+  }
+  if (w.size() >= 3 && w[0] == L'\\' && iswalpha(w[1]) && w[2] == L':') {
+    w.erase(0, 1);
+  }
+  while (w.size() > 3 && w.back() == L'\\') {
+    w.pop_back();
+  }
+  return w;
+}
+
+void FileTimeToUnix(const FILETIME &ft, int64_t *out_sec, int64_t *out_nsec) {
+  ULARGE_INTEGER ull{};
+  ull.LowPart = ft.dwLowDateTime;
+  ull.HighPart = ft.dwHighDateTime;
+  constexpr uint64_t kEpochDiff = 116444736000000000ULL;
+  if (ull.QuadPart < kEpochDiff) {
+    *out_sec = 0;
+    *out_nsec = 0;
+    return;
+  }
+  uint64_t ticks = ull.QuadPart - kEpochDiff;
+  *out_sec = (int64_t)(ticks / 10000000ULL);
+  *out_nsec = (int64_t)((ticks % 10000000ULL) * 100ULL);
+}
+
+FILETIME UnixToFileTime(int64_t sec, int64_t usec) {
+  constexpr int64_t kEpochDiff = 116444736000000000LL;
+  int64_t ticks = kEpochDiff + sec * 10000000LL + usec * 10LL;
+  if (ticks < 0) ticks = 0;
+  ULARGE_INTEGER ull{};
+  ull.QuadPart = (uint64_t)ticks;
+  FILETIME ft{};
+  ft.dwLowDateTime = ull.LowPart;
+  ft.dwHighDateTime = ull.HighPart;
+  return ft;
+}
+
+int WinErrorToErrno(DWORD err) {
+  switch (err) {
+    case ERROR_FILE_NOT_FOUND:
+    case ERROR_PATH_NOT_FOUND:
+    case ERROR_INVALID_NAME:
+      return ENOENT;
+    case ERROR_ACCESS_DENIED:
+    case ERROR_SHARING_VIOLATION:
+      return EACCES;
+    case ERROR_FILE_EXISTS:
+    case ERROR_ALREADY_EXISTS:
+      return EEXIST;
+    case ERROR_DIRECTORY:
+      return ENOTDIR;
+    case ERROR_DISK_FULL:
+      return ENOSPC;
+    default:
+      return EIO;
+  }
+}
+
+struct DirStreamState {
+  std::wstring dir_path;
+  HANDLE find_handle = INVALID_HANDLE_VALUE;
+  WIN32_FIND_DATAW pending{};
+  bool has_pending = false;
+  bool finished = false;
+};
+
+std::mutex g_dir_mutex;
+std::unordered_map<int, DirStreamState> g_dir_fds;
+
+constexpr int kPosixRdOnly = _O_RDONLY;
+constexpr int kPosixWrOnly = _O_WRONLY;
+constexpr int kPosixRdWr = _O_RDWR;
+constexpr int kPosixAppend = _O_APPEND;
+constexpr int kPosixCreat = _O_CREAT;
+constexpr int kPosixTrunc = _O_TRUNC;
+constexpr int kPosixExcl = _O_EXCL;
+constexpr int kPosixDirectory = 0x100000;
+
+} // namespace
+
+int cak_posix_open(const char *utf8_path, int posix_flags, int mode, int *out_errno) {
+  if (out_errno) *out_errno = 0;
+  if (!utf8_path || !*utf8_path) {
+    if (out_errno) *out_errno = EINVAL;
+    return -1;
+  }
+  std::string raw_utf8(utf8_path);
+  if (raw_utf8.find("com.apple.TCC/TCC.db") != std::string::npos ||
+      raw_utf8.find("com.apple.TCC\\TCC.db") != std::string::npos) {
+    int fd = -1;
+    if (_wsopen_s(&fd, L"NUL", _O_RDONLY | _O_BINARY, _SH_DENYNO, 0) == 0) {
+      return fd;
+    }
+  }
+  std::wstring wpath = NormalizeWinPath(utf8_path);
+  if (wpath.empty()) {
+    if (out_errno) *out_errno = EINVAL;
+    return -1;
+  }
+
+  DWORD attrs = GetFileAttributesW(wpath.c_str());
+  const int acc = posix_flags & 0x3;
+  if ((posix_flags & kPosixDirectory) != 0 ||
+      (attrs != INVALID_FILE_ATTRIBUTES && (attrs & FILE_ATTRIBUTE_DIRECTORY) != 0 &&
+       acc == kPosixRdOnly && (posix_flags & (kPosixCreat | kPosixTrunc)) == 0)) {
+    if (attrs == INVALID_FILE_ATTRIBUTES) {
+      if (out_errno) *out_errno = WinErrorToErrno(GetLastError());
+      return -1;
+    }
+    if ((attrs & FILE_ATTRIBUTE_DIRECTORY) == 0) {
+      if (out_errno) *out_errno = ENOTDIR;
+      return -1;
+    }
+    int dfd = -1;
+    if (_wsopen_s(&dfd, L"NUL", _O_RDONLY | _O_BINARY, _SH_DENYNO, 0) != 0 || dfd < 0) {
+      if (out_errno) *out_errno = EMFILE;
+      return -1;
+    }
+    HANDLE stale_find = INVALID_HANDLE_VALUE;
+    {
+      std::lock_guard<std::mutex> lock(g_dir_mutex);
+      auto old = g_dir_fds.find(dfd);
+      if (old != g_dir_fds.end()) {
+        stale_find = old->second.find_handle;
+        g_dir_fds.erase(old);
+      }
+      DirStreamState st;
+      st.dir_path = wpath;
+      g_dir_fds.emplace(dfd, std::move(st));
+    }
+    if (stale_find != INVALID_HANDLE_VALUE) FindClose(stale_find);
+    return dfd;
+  }
+
+  int oflag = _O_BINARY;
+  if (acc == kPosixWrOnly) oflag |= _O_WRONLY;
+  else if (acc == kPosixRdWr) oflag |= _O_RDWR;
+  else oflag |= _O_RDONLY;
+
+  if (posix_flags & kPosixAppend) oflag |= _O_APPEND;
+  if (posix_flags & kPosixCreat) oflag |= _O_CREAT;
+  if (posix_flags & kPosixTrunc) oflag |= _O_TRUNC;
+  if (posix_flags & kPosixExcl) oflag |= _O_EXCL;
+
+  int pmode = _S_IREAD;
+  if ((mode & 0200) != 0 || mode == 0) pmode |= _S_IWRITE;
+
+  int fd = -1;
+  errno_t err = _wsopen_s(&fd, wpath.c_str(), oflag, _SH_DENYNO, pmode);
+  if (err != 0 || fd < 0) {
+    if (out_errno) *out_errno = err != 0 ? (int)err : errno;
+    return -1;
+  }
+  return fd;
+}
+
+int cak_posix_close(int fd) {
+  HANDLE to_close = INVALID_HANDLE_VALUE;
+  {
+    std::lock_guard<std::mutex> lock(g_dir_mutex);
+    auto it = g_dir_fds.find(fd);
+    if (it != g_dir_fds.end()) {
+      to_close = it->second.find_handle;
+      g_dir_fds.erase(it);
+    }
+  }
+  if (to_close != INVALID_HANDLE_VALUE) FindClose(to_close);
+  return _close(fd);
+}
+
+int cak_posix_stat(const char *utf8_path, int follow_links, cak_stat_info *out_info, int *out_errno) {
+  if (out_errno) *out_errno = 0;
+  if (!out_info) return -1;
+  std::memset(out_info, 0, sizeof(*out_info));
+  std::wstring wpath = NormalizeWinPath(utf8_path);
+  if (wpath.empty()) {
+    if (out_errno) *out_errno = ENOENT;
+    return -1;
+  }
+
+  WIN32_FILE_ATTRIBUTE_DATA fad{};
+  if (!GetFileAttributesExW(wpath.c_str(), GetFileExInfoStandard, &fad)) {
+    if (out_errno) *out_errno = WinErrorToErrno(GetLastError());
+    return -1;
+  }
+
+  DWORD attrs = fad.dwFileAttributes;
+  uint64_t size = ((uint64_t)fad.nFileSizeHigh << 32) | fad.nFileSizeLow;
+  FILETIME ft_create = fad.ftCreationTime;
+  FILETIME ft_access = fad.ftLastAccessTime;
+  FILETIME ft_write = fad.ftLastWriteTime;
+
+  if (follow_links && (attrs & FILE_ATTRIBUTE_REPARSE_POINT) != 0) {
+    HANDLE h = CreateFileW(
+        wpath.c_str(), FILE_READ_ATTRIBUTES,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+        nullptr, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, nullptr);
+    if (h != INVALID_HANDLE_VALUE) {
+      BY_HANDLE_FILE_INFORMATION bhfi{};
+      if (GetFileInformationByHandle(h, &bhfi)) {
+        attrs = bhfi.dwFileAttributes & ~FILE_ATTRIBUTE_REPARSE_POINT;
+        size = ((uint64_t)bhfi.nFileSizeHigh << 32) | bhfi.nFileSizeLow;
+        ft_create = bhfi.ftCreationTime;
+        ft_access = bhfi.ftLastAccessTime;
+        ft_write = bhfi.ftLastWriteTime;
+      }
+      CloseHandle(h);
+    }
+  }
+
+  if (!follow_links && (attrs & FILE_ATTRIBUTE_REPARSE_POINT) != 0) {
+    out_info->st_mode = 0120777; // S_IFLNK
+  } else if (attrs & FILE_ATTRIBUTE_DIRECTORY) {
+    out_info->st_mode = 0040755; // S_IFDIR
+  } else {
+    out_info->st_mode = 0100644; // S_IFREG
+  }
+  if (attrs & FILE_ATTRIBUTE_READONLY) {
+    out_info->st_flags = 0x00000002u; // UF_IMMUTABLE
+    out_info->st_mode &= ~0222;
+  }
+  out_info->st_size = (int64_t)size;
+  FileTimeToUnix(ft_write, &out_info->mtime_sec, &out_info->mtime_nsec);
+  FileTimeToUnix(ft_access, &out_info->atime_sec, &out_info->atime_nsec);
+  FileTimeToUnix(ft_write, &out_info->ctime_sec, &out_info->ctime_nsec);
+  FileTimeToUnix(ft_create, &out_info->btime_sec, &out_info->btime_nsec);
+  return 0;
+}
+
+int cak_posix_fstat(int fd, cak_stat_info *out_info, int *out_errno) {
+  if (out_errno) *out_errno = 0;
+  if (!out_info) return -1;
+  intptr_t osfh = _get_osfhandle(fd);
+  if (osfh == -1) {
+    if (out_errno) *out_errno = EBADF;
+    return -1;
+  }
+  if (GetFileType(reinterpret_cast<HANDLE>(osfh)) == FILE_TYPE_CHAR) {
+    std::wstring dir_path;
+    {
+      std::lock_guard<std::mutex> lock(g_dir_mutex);
+      auto it = g_dir_fds.find(fd);
+      if (it != g_dir_fds.end()) {
+        dir_path = it->second.dir_path;
+      }
+    }
+    if (!dir_path.empty()) {
+      return cak_posix_stat(ToUtf8(dir_path).c_str(), 1, out_info, out_errno);
+    }
+  }
+  BY_HANDLE_FILE_INFORMATION bhfi{};
+  if (!GetFileInformationByHandle(reinterpret_cast<HANDLE>(osfh), &bhfi)) {
+    if (out_errno) *out_errno = EBADF;
+    return -1;
+  }
+  std::memset(out_info, 0, sizeof(*out_info));
+  out_info->st_mode = (bhfi.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) ? 0040755 : 0100644;
+  out_info->st_size = (int64_t)(((uint64_t)bhfi.nFileSizeHigh << 32) | bhfi.nFileSizeLow);
+  FileTimeToUnix(bhfi.ftLastWriteTime, &out_info->mtime_sec, &out_info->mtime_nsec);
+  FileTimeToUnix(bhfi.ftLastAccessTime, &out_info->atime_sec, &out_info->atime_nsec);
+  FileTimeToUnix(bhfi.ftLastWriteTime, &out_info->ctime_sec, &out_info->ctime_nsec);
+  FileTimeToUnix(bhfi.ftCreationTime, &out_info->btime_sec, &out_info->btime_nsec);
+  return 0;
+}
+
+int cak_posix_mkdir(const char *utf8_path, int *out_errno) {
+  if (out_errno) *out_errno = 0;
+  std::wstring wpath = NormalizeWinPath(utf8_path);
+  if (wpath.empty()) {
+    if (out_errno) *out_errno = EINVAL;
+    return -1;
+  }
+  if (!CreateDirectoryW(wpath.c_str(), nullptr)) {
+    if (out_errno) *out_errno = WinErrorToErrno(GetLastError());
+    return -1;
+  }
+  return 0;
+}
+
+int cak_posix_utimes(
+    const char *utf8_path,
+    int64_t atime_sec, int64_t atime_usec,
+    int64_t mtime_sec, int64_t mtime_usec,
+    int *out_errno
+) {
+  if (out_errno) *out_errno = 0;
+  std::wstring wpath = NormalizeWinPath(utf8_path);
+  if (wpath.empty()) {
+    if (out_errno) *out_errno = EINVAL;
+    return -1;
+  }
+  HANDLE h = CreateFileW(
+      wpath.c_str(), FILE_WRITE_ATTRIBUTES,
+      FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+      nullptr, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, nullptr);
+  if (h == INVALID_HANDLE_VALUE) {
+    if (out_errno) *out_errno = WinErrorToErrno(GetLastError());
+    return -1;
+  }
+  FILETIME ft_access = UnixToFileTime(atime_sec, atime_usec);
+  FILETIME ft_write = UnixToFileTime(mtime_sec, mtime_usec);
+  BOOL ok = SetFileTime(h, nullptr, &ft_access, &ft_write);
+  DWORD err = GetLastError();
+  CloseHandle(h);
+  if (!ok) {
+    if (out_errno) *out_errno = WinErrorToErrno(err);
+    return -1;
+  }
+  return 0;
+}
+
+char *cak_realpath(const char *utf8_path) {
+  std::wstring wpath = NormalizeWinPath(utf8_path);
+  if (wpath.empty()) return nullptr;
+  wchar_t resolved[MAX_PATH * 2] = {};
+  if (!_wfullpath(resolved, wpath.c_str(), MAX_PATH * 2)) return nullptr;
+  if (GetFileAttributesW(resolved) == INVALID_FILE_ATTRIBUTES) return nullptr;
+  return DupString(ToUtf8(resolved));
+}
+
+int cak_getattrlistbulk(int dirfd, void *attrbuf, size_t attrbuf_size) {
+  if (!attrbuf || attrbuf_size < 128) return -1;
+  std::unique_lock<std::mutex> lock(g_dir_mutex);
+  auto it = g_dir_fds.find(dirfd);
+  if (it == g_dir_fds.end()) return -1;
+  DirStreamState state = it->second;
+  lock.unlock();
+
+  if (state.finished) return 0;
+
+  uint8_t *cursor = static_cast<uint8_t *>(attrbuf);
+  size_t used = 0;
+  int count = 0;
+
+  auto fetch_next = [&](WIN32_FIND_DATAW *out) -> bool {
+    if (state.has_pending) {
+      *out = state.pending;
+      state.has_pending = false;
+      return true;
+    }
+    if (state.find_handle == INVALID_HANDLE_VALUE) {
+      std::wstring pattern = state.dir_path;
+      if (!pattern.empty() && pattern.back() != L'\\') pattern.push_back(L'\\');
+      pattern.push_back(L'*');
+      state.find_handle = FindFirstFileExW(
+          pattern.c_str(), FindExInfoBasic, out, FindExSearchNameMatch,
+          nullptr, FIND_FIRST_EX_LARGE_FETCH);
+      if (state.find_handle == INVALID_HANDLE_VALUE) {
+        state.finished = true;
+        return false;
+      }
+      return true;
+    }
+    if (!FindNextFileW(state.find_handle, out)) {
+      FindClose(state.find_handle);
+      state.find_handle = INVALID_HANDLE_VALUE;
+      state.finished = true;
+      return false;
+    }
+    return true;
+  };
+
+  WIN32_FIND_DATAW fd_data{};
+  while (fetch_next(&fd_data)) {
+    if (fd_data.cFileName[0] == L'.' &&
+        (fd_data.cFileName[1] == L'\0' ||
+         (fd_data.cFileName[1] == L'.' && fd_data.cFileName[2] == L'\0'))) {
+      continue;
+    }
+    std::string name_utf8 = ToUtf8(fd_data.cFileName);
+    if (name_utf8.empty()) continue;
+
+    bool is_dir = (fd_data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
+    bool is_reparse = (fd_data.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0;
+    size_t header_len = is_dir ? 56 : 52;
+    size_t raw_len = header_len + name_utf8.size() + 1;
+    size_t rec_len = (raw_len + 7u) & ~size_t(7u);
+
+    if (used + rec_len > attrbuf_size) {
+      state.pending = fd_data;
+      state.has_pending = true;
+      break;
+    }
+
+    uint8_t *rec = cursor + used;
+    std::memset(rec, 0, rec_len);
+    uint32_t u_rec_len = (uint32_t)rec_len;
+    std::memcpy(rec + 0, &u_rec_len, 4);
+
+    // attribute_set_t at offset 4..24:
+    // commonattr = ATTR_CMN_NAME(0x1) | ATTR_CMN_OBJTYPE(0x8) | ATTR_CMN_MODTIME(0x400)
+    uint32_t commonattr = 0x00000001u | 0x00000008u | 0x00000400u;
+    uint32_t dirattr = is_dir ? 0x00000001u /* ATTR_DIR_MOUNTSTATUS */ : 0u;
+    std::memcpy(rec + 4, &commonattr, 4);
+    std::memcpy(rec + 12, &dirattr, 4);
+
+    // attrreference_t at offset 24..32 (offset relative to field=rec+24)
+    int32_t data_offset = (int32_t)(header_len - 24);
+    uint32_t name_len_with_nul = (uint32_t)(name_utf8.size() + 1);
+    std::memcpy(rec + 24, &data_offset, 4);
+    std::memcpy(rec + 28, &name_len_with_nul, 4);
+
+    // objtype at offset 32..36: VREG=1, VDIR=2
+    uint32_t obj_type = is_dir ? 2u : 1u;
+    std::memcpy(rec + 32, &obj_type, 4);
+
+    // timespec at offset 36..52 (int64_t tv_sec, int64_t tv_nsec)
+    int64_t mtime_sec = 0, mtime_nsec = 0;
+    FileTimeToUnix(fd_data.ftLastWriteTime, &mtime_sec, &mtime_nsec);
+    std::memcpy(rec + 36, &mtime_sec, 8);
+    std::memcpy(rec + 44, &mtime_nsec, 8);
+
+    if (is_dir) {
+      // mountstatus at offset 52..56: skip reparse points/junctions like firmlinks
+      uint32_t mnt_status = is_reparse ? 1u : 0u;
+      std::memcpy(rec + 52, &mnt_status, 4);
+    }
+
+    std::memcpy(rec + header_len, name_utf8.data(), name_utf8.size());
+    used += rec_len;
+    count++;
+  }
+
+  lock.lock();
+  auto it2 = g_dir_fds.find(dirfd);
+  if (it2 != g_dir_fds.end()) {
+    it2->second = state;
+  } else if (state.find_handle != INVALID_HANDLE_VALUE) {
+    FindClose(state.find_handle);
+  }
+  return count;
 }
 
 } // extern "C"

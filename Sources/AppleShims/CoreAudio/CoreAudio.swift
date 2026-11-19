@@ -15,11 +15,13 @@ import CoreFoundation
   public let kAudioObjectPropertyScopeInput: AudioObjectPropertyScope = 0x696E7074
   public let kAudioDevicePropertyScopeInput: AudioObjectPropertyScope = 0x696E7074
   public let kAudioObjectPropertyScopeOutput: AudioObjectPropertyScope = 0x6F757470
+  public let kAudioDevicePropertyScopeOutput: AudioObjectPropertyScope = 0x6F757470
   public let kAudioObjectPropertyElementMain: AudioObjectPropertyElement = 0
   public let kAudioObjectPropertyElementMaster: AudioObjectPropertyElement = 0
   public let kAudioHardwarePropertyDefaultOutputDevice: AudioObjectPropertySelector = 0x644F7574
   public let kAudioHardwarePropertyDefaultInputDevice: AudioObjectPropertySelector = 0x64496E20
   public let kAudioHardwarePropertyDevices: AudioObjectPropertySelector = 0x64657623
+  public let kAudioDevicePropertyPreferredChannelsForStereo: AudioObjectPropertySelector = 0x64636832
   public let kAudioDevicePropertyVolumeScalar: AudioObjectPropertySelector = 0x766F6C6D
   public let kAudioDevicePropertyMute: AudioObjectPropertySelector = 0x6D757465
   public let kAudioHardwareServiceDeviceProperty_VirtualMainVolume: AudioObjectPropertySelector = 0x766D7663

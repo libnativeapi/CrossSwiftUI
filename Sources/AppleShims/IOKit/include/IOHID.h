@@ -8,6 +8,10 @@ static const IOHIDRequestType kIOHIDRequestTypeListenEvent = 1;
 static const int32_t kIOHIDAccessTypeGranted = 0;
 static const uint32_t kIOHIDParamConnectType = 1;
 static const int32_t kIOHIDCapsLockState = 1;
+enum {
+  kHIDPage_GenericDesktop = 0x01,
+  kHIDUsage_GD_Keyboard   = 0x06
+};
 static inline int32_t IOHIDCheckAccess(IOHIDRequestType req) { (void)req; return kIOHIDAccessTypeGranted; }
 static inline int IOHIDRequestAccess(IOHIDRequestType req) { (void)req; return 1; }
 static inline kern_return_t IOHIDGetModifierLockState(io_connect_t handle, int32_t selector, bool *state) {

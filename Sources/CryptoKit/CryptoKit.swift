@@ -44,6 +44,16 @@ public struct SHA256Digest: Digest {
   }
 }
 
+public struct SHA384Digest: Digest {
+  public static let byteCount = 48
+  private let bytes: [UInt8]
+  public init(_ bytes: [UInt8]) { self.bytes = bytes }
+  public func makeIterator() -> IndexingIterator<[UInt8]> { bytes.makeIterator() }
+  public func withUnsafeBytes<R>(_ body: (UnsafeRawBufferPointer) throws -> R) rethrows -> R {
+    try bytes.withUnsafeBytes(body)
+  }
+}
+
 public struct SHA512Digest: Digest {
   public static let byteCount = 64
   private let bytes: [UInt8]
@@ -155,6 +165,22 @@ public struct SHA256: HashFunction, Sendable {
       out.append(UInt8(word & 0xff))
     }
     return out
+  }
+}
+
+public struct SHA384: HashFunction, Sendable {
+  public typealias Digest = SHA384Digest
+  public static let blockByteCount = 128
+  private var buffer: [UInt8] = []
+  public init() {}
+  public mutating func update<D: DataProtocol>(data: D) { buffer.append(contentsOf: data) }
+  public mutating func update(bufferPointer: UnsafeRawBufferPointer) { buffer.append(contentsOf: bufferPointer) }
+  public func finalize() -> SHA384Digest {
+    var out = [UInt8](repeating: 0, count: 48)
+    #if os(Windows)
+      _ = buffer.withUnsafeBufferPointer { buf in cak_sha384(buf.baseAddress, buf.count, &out) }
+    #endif
+    return SHA384Digest(out)
   }
 }
 
@@ -423,22 +449,34 @@ public enum AES {
       using key: SymmetricKey,
       nonce: Nonce? = nil
     ) throws -> SealedBox {
+      try seal(message, using: key, nonce: nonce, authenticating: Data())
+    }
+
+    public static func seal<Plaintext: DataProtocol, AD: DataProtocol>(
+      _ message: Plaintext,
+      using key: SymmetricKey,
+      nonce: Nonce? = nil,
+      authenticating authenticatedData: AD
+    ) throws -> SealedBox {
       let useNonce = nonce ?? Nonce()
       #if os(Windows)
         let pt = Array(message)
+        let aad = Array(authenticatedData)
         var ct = [UInt8](repeating: 0, count: max(1, pt.count))
         var tag = [UInt8](repeating: 0, count: 16)
         let ok = key.bytes.withUnsafeBufferPointer { kBuf in
           useNonce.bytes.withUnsafeBufferPointer { nBuf in
             pt.withUnsafeBufferPointer { pBuf in
-              cak_aes_gcm_encrypt(
-                kBuf.baseAddress, kBuf.count,
-                nBuf.baseAddress, nBuf.count,
-                pBuf.baseAddress, pBuf.count,
-                nil, 0,
-                &ct,
-                &tag, 16
-              )
+              aad.withUnsafeBufferPointer { aBuf in
+                cak_aes_gcm_encrypt(
+                  kBuf.baseAddress, kBuf.count,
+                  nBuf.baseAddress, nBuf.count,
+                  pBuf.baseAddress, pBuf.count,
+                  aBuf.baseAddress, aBuf.count,
+                  &ct,
+                  &tag, 16
+                )
+              }
             }
           }
         }

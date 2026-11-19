@@ -1,6 +1,36 @@
 import Foundation
 
+#if !canImport(ObjectiveC)
+  public struct Selector: RawRepresentable, Hashable, ExpressibleByStringLiteral, Sendable {
+    public let rawValue: String
+    public init(_ value: String) { self.rawValue = value }
+    public init(rawValue: String) { self.rawValue = rawValue }
+    public init(stringLiteral value: String) { self.rawValue = value }
+
+    public static let insertNewline = Selector("insertNewline:")
+    public static let insertLineBreak = Selector("insertLineBreak:")
+    public static let insertNewlineIgnoringFieldEditor = Selector("insertNewlineIgnoringFieldEditor:")
+    public static let insertParagraphSeparator = Selector("insertParagraphSeparator:")
+    public static let insertTab = Selector("insertTab:")
+    public static let insertBacktab = Selector("insertBacktab:")
+    public static let insertTabIgnoringFieldEditor = Selector("insertTabIgnoringFieldEditor:")
+    public static let cancelOperation = Selector("cancelOperation:")
+  }
+
+  public func NSSelectorFromString(_ aSelectorName: String) -> Selector {
+    Selector(aSelectorName)
+  }
+#endif
+
 #if !os(macOS)
+  public protocol _CrossCFTypeIDProvider: AnyObject {
+    var _crossCFTypeID: CFTypeID { get }
+  }
+
+  public protocol _CrossAXWindowIDProvider: AnyObject {
+    var _crossWindowID: UInt32 { get }
+  }
+
   public typealias CFTypeRef = AnyObject
   public typealias CFTypeID = UInt
   public typealias CFString = NSString
@@ -54,6 +84,9 @@ import Foundation
 
   public func CFGetTypeID(_ cf: CFTypeRef?) -> CFTypeID {
     guard let cf else { return 0 }
+    if let custom = cf as? any _CrossCFTypeIDProvider {
+      return custom._crossCFTypeID
+    }
     if let num = cf as? NSNumber {
       // Distinguish Bool-backed NSNumber from numeric NSNumber via objCType / Swift Bool bridge
       if type(of: num) == type(of: kCFBooleanTrue) && (num === kCFBooleanTrue || num === kCFBooleanFalse) {
@@ -66,6 +99,16 @@ import Foundation
     }
     if cf is NSString || cf is String { return _cfStringTypeID }
     return _cfOtherTypeID
+  }
+
+  public func CFArrayGetCount(_ theArray: CFArray) -> CFIndex {
+    theArray.count
+  }
+
+  public func CFArrayGetValueAtIndex(_ theArray: CFArray, _ idx: CFIndex) -> UnsafeRawPointer? {
+    guard idx >= 0 && idx < theArray.count else { return nil }
+    let element = theArray.object(at: idx) as AnyObject
+    return UnsafeRawPointer(Unmanaged.passUnretained(element).toOpaque())
   }
 
   public final class CFMachPort: @unchecked Sendable {}
@@ -139,6 +182,15 @@ import Foundation
   }
 
   public func CFPreferencesAppSynchronize(_ applicationID: CFString) -> Bool { true }
+
+  public func CFPreferencesGetAppBooleanValue(
+    _ key: CFString,
+    _ applicationID: CFString,
+    _ keyExistsAndHasValidFormat: UnsafeMutablePointer<DarwinBoolean>?
+  ) -> Bool {
+    keyExistsAndHasValidFormat?.pointee = DarwinBoolean(false)
+    return false
+  }
 
   public func CFDataGetBytePtr(_ theData: CFData?) -> UnsafePointer<UInt8>? {
     theData?.bytes.assumingMemoryBound(to: UInt8.self)

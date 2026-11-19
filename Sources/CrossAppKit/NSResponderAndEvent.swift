@@ -165,6 +165,9 @@ open class NSEvent: NSObject, @unchecked Sendable {
   public let scrollingDeltaY: CGFloat
   public let data1: Int
   public let data2: Int
+  #if !os(macOS)
+    public var cgEvent: CGEvent? { nil }
+  #endif
 
   public var specialKey: SpecialKey? {
     guard let scalar = charactersIgnoringModifiers?.unicodeScalars.first else { return nil }
