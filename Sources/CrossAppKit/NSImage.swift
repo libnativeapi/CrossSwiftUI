@@ -553,6 +553,25 @@ open class NSImage: NSObject, @unchecked Sendable {
     return file.path
   }
 
+  private nonisolated(unsafe) static var externalCatalogCache: [String: [String]] = [:]
+
+  private static func loadExternalCatalogPaths(in root: URL) -> [String] {
+    let manifestURL = root.appendingPathComponent("crossswift-assets.json")
+    let key = manifestURL.path
+    if let cached = externalCatalogCache[key] {
+      return cached
+    }
+    guard let data = try? Data(contentsOf: manifestURL),
+          let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+          let paths = json["catalogPaths"] as? [String]
+    else {
+      externalCatalogCache[key] = []
+      return []
+    }
+    externalCatalogCache[key] = paths
+    return paths
+  }
+
   public static func resolveAssetPath(named name: String, in bundle: Bundle? = nil) -> String? {
     var roots: [String] = []
     func appendRoot(_ path: String?) {
@@ -572,11 +591,16 @@ open class NSImage: NSObject, @unchecked Sendable {
     let fm = FileManager.default
     for root in roots {
       let base = URL(fileURLWithPath: root)
-      var candidates: [URL] = [
+      var candidates: [URL] = []
+      // Support external catalog pointers synthesized for large *.xcassets directories.
+      for extCatalog in loadExternalCatalogPaths(in: base) {
+        candidates.append(URL(fileURLWithPath: extCatalog).appendingPathComponent("\(name).imageset"))
+      }
+      candidates.append(contentsOf: [
         base.appendingPathComponent("\(name).imageset"),
         base.appendingPathComponent("Assets.xcassets/\(name).imageset"),
         base.appendingPathComponent("Tinycast/Assets.xcassets/\(name).imageset"),
-      ]
+      ])
       // Discover any *.xcassets catalog (e.g. FluentIcons.xcassets, IconAssets.xcassets)
       // directly in `root` or `root/Resources` without enumerating inside the catalogs.
       for container in [base, base.appendingPathComponent("Resources")] {

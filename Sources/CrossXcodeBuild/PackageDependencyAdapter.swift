@@ -37,17 +37,104 @@ public enum PackageDependencyAdapter {
     "Translation",
   ]
 
+  /// Consumer-side symbol and string-literal references collected from the app
+  /// targets and local packages, used to generically tree-shake oversized `*.xcassets`
+  /// catalogs down to only the `.imageset`s actually referenced by the project.
+  public struct ConsumerReferences: Equatable, Sendable {
+    public let memberIdentifiers: Set<String>
+    public let stringLiterals: Set<String>
+
+    public init(memberIdentifiers: Set<String> = [], stringLiterals: Set<String> = []) {
+      self.memberIdentifiers = memberIdentifiers
+      self.stringLiterals = stringLiterals
+    }
+
+    public var isEmpty: Bool {
+      memberIdentifiers.isEmpty && stringLiterals.isEmpty
+    }
+
+    /// Scans all Swift source files in the project's targets and local packages.
+    public static func scan(project: ResolvedXcodeProject) -> ConsumerReferences {
+      var files: [URL] = []
+      for target in project.allTargets {
+        files.append(contentsOf: target.swiftSources)
+      }
+      var dirs: [URL] = []
+      for local in project.localPackages {
+        dirs.append(local.path)
+      }
+      return scan(swiftFiles: files, additionalDirectories: dirs)
+    }
+
+    public static func scan(
+      swiftFiles: [URL],
+      additionalDirectories: [URL] = []
+    ) -> ConsumerReferences {
+      var allFiles = swiftFiles
+      let fm = FileManager.default
+      for dir in additionalDirectories {
+        guard let enumerator = fm.enumerator(
+          at: dir,
+          includingPropertiesForKeys: [.isDirectoryKey],
+          options: [.skipsHiddenFiles]
+        ) else { continue }
+        for case let fileURL as URL in enumerator {
+          let name = fileURL.lastPathComponent
+          if name == ".build" || name == ".git" || name == "node_modules" || name.lowercased().hasSuffix(".xcassets") {
+            enumerator.skipDescendants()
+            continue
+          }
+          if fileURL.pathExtension.lowercased() == "swift" {
+            allFiles.append(fileURL)
+          }
+        }
+      }
+
+      let memberRegex = try? NSRegularExpression(pattern: "\\.([A-Za-z_][A-Za-z0-9_]*)\\b")
+      let stringRegex = try? NSRegularExpression(pattern: "\"([^\"\\\\\\n]{1,160})\"")
+
+      var members = Set<String>()
+      var strings = Set<String>()
+      for file in allFiles {
+        guard let text = try? String(contentsOf: file, encoding: .utf8) else { continue }
+        let range = NSRange(text.startIndex..., in: text)
+        if let memberRegex {
+          for m in memberRegex.matches(in: text, range: range) {
+            if let r = Range(m.range(at: 1), in: text) {
+              members.insert(String(text[r]))
+            }
+          }
+        }
+        if let stringRegex {
+          for m in stringRegex.matches(in: text, range: range) {
+            if let r = Range(m.range(at: 1), in: text) {
+              strings.insert(String(text[r]))
+            }
+          }
+        }
+      }
+      return ConsumerReferences(memberIdentifiers: members, stringLiterals: strings)
+    }
+  }
+
   public struct TargetInspection: Equatable, Sendable {
     public let name: String
     public let relativePath: String
     public let importedCrossSwiftModules: [String]
     public let undeclaredAssetCatalogs: [String]
+    public let largeAssetCatalogs: [String]
+    public let hasObjCAttributes: Bool
   }
 
   public struct InspectionResult: Equatable, Sendable {
     public let targets: [TargetInspection]
     public var needsAdaptation: Bool {
-      targets.contains { !$0.importedCrossSwiftModules.isEmpty || !$0.undeclaredAssetCatalogs.isEmpty }
+      targets.contains {
+        !$0.importedCrossSwiftModules.isEmpty
+          || !$0.undeclaredAssetCatalogs.isEmpty
+          || !$0.largeAssetCatalogs.isEmpty
+          || $0.hasObjCAttributes
+      }
     }
   }
 
@@ -73,11 +160,12 @@ public enum PackageDependencyAdapter {
       let targetDir = packageRoot.appendingPathComponent(relPath)
       guard fm.fileExists(atPath: targetDir.path) else { continue }
 
-      let imports = scanImportedModules(in: targetDir)
+      let (imports, hasObjC) = scanSwiftSources(in: targetDir)
+      let crossSwiftImports = imports
         .filter { crossSwiftProvidedModules.contains($0) }
         .sorted()
 
-      let catalogs = findAssetCatalogs(in: targetDir)
+      let allCatalogs = findAssetCatalogs(in: targetDir)
         .filter { relCatalog in
           // Skip catalogs already mentioned in the target's manifest slice.
           let catalogName = URL(fileURLWithPath: relCatalog).lastPathComponent
@@ -85,11 +173,25 @@ public enum PackageDependencyAdapter {
         }
         .sorted()
 
+      var smallCatalogs: [String] = []
+      var largeCatalogs: [String] = []
+      for relCatalog in allCatalogs {
+        let catalogURL = targetDir.appendingPathComponent(relCatalog)
+        let entryCount = (try? fm.contentsOfDirectory(atPath: catalogURL.path).count) ?? 0
+        if entryCount > 200 {
+          largeCatalogs.append(relCatalog)
+        } else {
+          smallCatalogs.append(relCatalog)
+        }
+      }
+
       results.append(TargetInspection(
         name: decl.name,
         relativePath: relPath,
-        importedCrossSwiftModules: imports,
-        undeclaredAssetCatalogs: catalogs
+        importedCrossSwiftModules: crossSwiftImports,
+        undeclaredAssetCatalogs: smallCatalogs,
+        largeAssetCatalogs: largeCatalogs,
+        hasObjCAttributes: hasObjC
       ))
     }
 
@@ -99,10 +201,15 @@ public enum PackageDependencyAdapter {
   /// Patches `Package.swift` text in-place for a checked-out package so its targets
   /// depend on CrossSwiftUI products for implicitly imported Apple frameworks and
   /// explicitly copy any undeclared `*.xcassets` catalogs into `Bundle.module`.
+  ///
+  /// When `prunedLargeCatalogs` contains a large catalog's relative path, it is
+  /// staged as a pruned `.xcassets` directory and declared with `.copy(<relPath>)`
+  /// instead of falling back to a `crossswift-assets.json` pointer.
   public static func patchManifest(
     _ manifest: String,
     inspection: InspectionResult,
-    crossSwiftRoot: URL
+    crossSwiftRoot: URL,
+    prunedLargeCatalogs: Set<String> = []
   ) -> String {
     guard inspection.needsAdaptation else { return manifest }
 
@@ -115,13 +222,26 @@ public enum PackageDependencyAdapter {
 
     // 2. For each target needing modules or resources, patch its `.target(...)` block.
     for target in inspection.targets
-      where !target.importedCrossSwiftModules.isEmpty || !target.undeclaredAssetCatalogs.isEmpty
+      where !target.importedCrossSwiftModules.isEmpty
+        || !target.undeclaredAssetCatalogs.isEmpty
+        || !target.largeAssetCatalogs.isEmpty
     {
       let productDeps = target.importedCrossSwiftModules.map { mod in
         ".product(name: \(swiftStringLiteral(mod)), package: \(swiftStringLiteral(crossSwiftIdentity)))"
       }
-      let resourceDecls = target.undeclaredAssetCatalogs.map { relPath in
+      var resourceDecls = target.undeclaredAssetCatalogs.map { relPath in
         ".copy(\(swiftStringLiteral(relPath)))"
+      }
+      var needsPointerFallback = false
+      for relPath in target.largeAssetCatalogs {
+        if prunedLargeCatalogs.contains(relPath) {
+          resourceDecls.append(".copy(\(swiftStringLiteral(relPath)))")
+        } else {
+          needsPointerFallback = true
+        }
+      }
+      if needsPointerFallback {
+        resourceDecls.append(".copy(\"crossswift-assets.json\")")
       }
       updated = patchTargetBlock(
         in: updated,
@@ -135,54 +255,279 @@ public enum PackageDependencyAdapter {
   }
 
   /// Adapts a checked-out package directory into `outputDirectory` if inspection shows
-  /// it needs CrossSwiftUI module injection or undeclared `.xcassets` resource wiring.
-  /// Returns `nil` if the package needs no adaptation.
+  /// it needs CrossSwiftUI module injection, `@objc` stripping, or undeclared `.xcassets`
+  /// resource wiring. Returns `nil` if the package needs no adaptation.
+  ///
+  /// When `consumerReferences` is provided, oversized `*.xcassets` catalogs (> 200 entries)
+  /// are generically tree-shaken by matching consumer member/string references against the
+  /// package's Swift enum-to-string mappings and `.imageset` names so only referenced assets
+  /// are bundled into the self-contained `.resources` output.
   public static func adaptCheckoutIfNeeded(
     sourceRoot: URL,
     outputDirectory: URL,
-    crossSwiftRoot: URL
+    crossSwiftRoot: URL,
+    consumerReferences: ConsumerReferences? = nil
   ) throws -> URL? {
     let inspection = inspect(packageRoot: sourceRoot)
     guard inspection.needsAdaptation else { return nil }
+
+    let fm = FileManager.default
+    // Compute generic tree-shaken imageset subsets for any large *.xcassets catalogs.
+    var prunedImagesetsByCatalogKey: [String: [String]] = [:]
+    var prunedLargeCatalogRelPaths = Set<String>()
+    if let refs = consumerReferences, !refs.isEmpty {
+      for target in inspection.targets where !target.largeAssetCatalogs.isEmpty {
+        let srcTarget = sourceRoot.appendingPathComponent(target.relativePath)
+        let candidateNames = resolveReferencedAssetNames(in: srcTarget, consumerReferences: refs)
+        for relCatalog in target.largeAssetCatalogs {
+          let srcCatalog = srcTarget.appendingPathComponent(relCatalog)
+          let matched = candidateNames.filter { name in
+            fm.fileExists(atPath: srcCatalog.appendingPathComponent("\(name).imageset").path)
+          }.sorted()
+          if !matched.isEmpty {
+            let key = "\(target.name)|\(relCatalog)"
+            prunedImagesetsByCatalogKey[key] = matched
+            prunedLargeCatalogRelPaths.insert(relCatalog)
+          }
+        }
+      }
+    }
 
     let manifestURL = sourceRoot.appendingPathComponent("Package.swift")
     let originalManifest = try String(contentsOf: manifestURL, encoding: .utf8)
     let patchedManifest = patchManifest(
       originalManifest,
       inspection: inspection,
-      crossSwiftRoot: crossSwiftRoot
+      crossSwiftRoot: crossSwiftRoot,
+      prunedLargeCatalogs: prunedLargeCatalogRelPaths
     )
 
-    let fm = FileManager.default
+    let stampSummary = prunedImagesetsByCatalogKey.keys.sorted().map { key in
+      "\(key)=\(prunedImagesetsByCatalogKey[key]?.joined(separator: ",") ?? "")"
+    }.joined(separator: "\n")
+    let stampText = patchedManifest + "\n// PRUNED:\n" + stampSummary
+    let stampURL = outputDirectory.appendingPathComponent(".crossswift-adapt-stamp")
+    let dstManifestURL = outputDirectory.appendingPathComponent("Package.swift")
+    if let existingStamp = try? String(contentsOf: stampURL, encoding: .utf8),
+       existingStamp == stampText,
+       fm.fileExists(atPath: dstManifestURL.path)
+    {
+      return outputDirectory
+    }
+
     if fm.fileExists(atPath: outputDirectory.path) {
-      try fm.removeItem(at: outputDirectory)
+      try removeDirectoryPreservingLinkTargets(outputDirectory)
     }
     try fm.createDirectory(at: outputDirectory, withIntermediateDirectories: true)
 
-    // Stage top-level entries from sourceRoot (using directory links where possible to avoid
-    // duplicating large asset trees, and writing the patched Package.swift).
-    let items = try fm.contentsOfDirectory(atPath: sourceRoot.path)
-    for item in items {
-      if item == ".git" || item == ".build" || item == "Package.swift" { continue }
-      let src = sourceRoot.appendingPathComponent(item)
-      let dst = outputDirectory.appendingPathComponent(item)
-      var isDir: ObjCBool = false
-      let exists = fm.fileExists(atPath: src.path, isDirectory: &isDir)
-      guard exists else { continue }
-      if isDir.boolValue {
-        try linkOrCopyDirectory(from: src, to: dst)
-      } else {
-        try fm.copyItem(at: src, to: dst)
+    // Only stage the directories actually referenced by declared targets (plus Package.swift),
+    // avoiding unrelated repository trees (such as web/android assets or docs).
+    let needsSwiftRewrite = inspection.targets.contains { $0.hasObjCAttributes }
+    for target in inspection.targets {
+      let rel = target.relativePath
+      let srcTarget = sourceRoot.appendingPathComponent(rel)
+      let dstTarget = outputDirectory.appendingPathComponent(rel)
+      guard fm.fileExists(atPath: srcTarget.path) else { continue }
+      try stageDirectory(
+        from: srcTarget,
+        to: dstTarget,
+        skipNames: Set(target.largeAssetCatalogs.map { URL(fileURLWithPath: $0).lastPathComponent }),
+        stripObjCInSwiftFiles: needsSwiftRewrite
+      )
+
+      var fallbackCatalogPaths: [String] = []
+      for relCatalog in target.largeAssetCatalogs {
+        let key = "\(target.name)|\(relCatalog)"
+        let srcCatalog = srcTarget.appendingPathComponent(relCatalog)
+        if let matchedSets = prunedImagesetsByCatalogKey[key], !matchedSets.isEmpty {
+          let dstCatalog = dstTarget.appendingPathComponent(relCatalog)
+          try fm.createDirectory(at: dstCatalog, withIntermediateDirectories: true)
+          let srcContents = srcCatalog.appendingPathComponent("Contents.json")
+          if fm.fileExists(atPath: srcContents.path) {
+            try fm.copyItem(at: srcContents, to: dstCatalog.appendingPathComponent("Contents.json"))
+          } else {
+            try "{\n  \"info\" : { \"author\" : \"xcode\", \"version\" : 1 }\n}\n".write(
+              to: dstCatalog.appendingPathComponent("Contents.json"),
+              atomically: true,
+              encoding: .utf8
+            )
+          }
+          for name in matchedSets {
+            let srcSet = srcCatalog.appendingPathComponent("\(name).imageset")
+            let dstSet = dstCatalog.appendingPathComponent("\(name).imageset")
+            if !fm.fileExists(atPath: dstSet.path) {
+              try fm.copyItem(at: srcSet, to: dstSet)
+            }
+          }
+        } else {
+          fallbackCatalogPaths.append(srcCatalog.standardizedFileURL.path)
+        }
+      }
+
+      if !fallbackCatalogPaths.isEmpty {
+        let pointerJSON = try JSONSerialization.data(
+          withJSONObject: ["catalogPaths": fallbackCatalogPaths],
+          options: [.prettyPrinted, .sortedKeys]
+        )
+        try pointerJSON.write(
+          to: dstTarget.appendingPathComponent("crossswift-assets.json"),
+          options: .atomic
+        )
       }
     }
 
     try patchedManifest.write(
-      to: outputDirectory.appendingPathComponent("Package.swift"),
+      to: dstManifestURL,
       atomically: true,
       encoding: .utf8
     )
+    try stampText.write(to: stampURL, atomically: true, encoding: .utf8)
 
     return outputDirectory
+  }
+
+  /// Resolves candidate `.imageset` resource names referenced by `consumerReferences`
+  /// by combining direct string literals with any enum-case-to-string mappings found in
+  /// the target's Swift sources (`case foo = "bar"` or `case .foo: return "bar"`).
+  public static func resolveReferencedAssetNames(
+    in targetDir: URL,
+    consumerReferences: ConsumerReferences
+  ) -> Set<String> {
+    var candidates = consumerReferences.stringLiterals
+    let members = consumerReferences.memberIdentifiers
+    guard !members.isEmpty else { return candidates }
+
+    let fm = FileManager.default
+    guard let enumerator = fm.enumerator(
+      at: targetDir,
+      includingPropertiesForKeys: [.isDirectoryKey],
+      options: [.skipsHiddenFiles]
+    ) else { return candidates }
+
+    for case let fileURL as URL in enumerator {
+      let name = fileURL.lastPathComponent
+      if name.lowercased().hasSuffix(".xcassets") || name == ".build" || name == ".git" {
+        enumerator.skipDescendants()
+        continue
+      }
+      guard fileURL.pathExtension.lowercased() == "swift",
+            let text = try? String(contentsOf: fileURL, encoding: .utf8)
+      else { continue }
+
+      text.enumerateLines { line, _ in
+        guard line.contains("case "), line.contains("\"") else { return }
+        let trimmed = line.drop(while: { $0 == " " || $0 == "\t" })
+        guard trimmed.hasPrefix("case ") else { return }
+        let afterCase = trimmed.dropFirst(5).drop(while: { $0 == " " || $0 == "\t" })
+        let identStart = afterCase.hasPrefix(".") ? afterCase.dropFirst() : afterCase
+        let ident = String(identStart.prefix(while: { $0.isLetter || $0.isNumber || $0 == "_" }))
+        guard !ident.isEmpty, members.contains(ident) else { return }
+        // Extract the first double-quoted string literal on the line.
+        guard let q1 = afterCase.firstIndex(of: "\"") else { return }
+        let afterQ1 = afterCase.index(after: q1)
+        guard afterQ1 < afterCase.endIndex,
+              let q2 = afterCase[afterQ1...].firstIndex(of: "\"")
+        else { return }
+        let value = String(afterCase[afterQ1..<q2])
+        if !value.isEmpty && !value.hasPrefix(".") {
+          candidates.insert(value)
+        }
+      }
+    }
+
+    return candidates
+  }
+
+  private static func removeDirectoryPreservingLinkTargets(_ dir: URL) throws {
+    #if os(Windows)
+      let cmdExe = URL(fileURLWithPath: ProcessRunner.environmentValue("ComSpec") ?? "C:\\Windows\\System32\\cmd.exe")
+      let winPath = dir.path.replacingOccurrences(of: "/", with: "\\")
+      _ = try? ProcessRunner.run(executable: cmdExe, arguments: ["/c", "rmdir", "/s", "/q", winPath])
+    #else
+      try FileManager.default.removeItem(at: dir)
+    #endif
+  }
+
+  /// Stages `src` into `dst`, linking directories that contain no `.swift` files
+  /// (such as `*.xcassets` or `Assets/` trees) to avoid duplicating large assets,
+  /// while copying `.swift` files with `@objc` attributes stripped when needed.
+  private static func stageDirectory(
+    from src: URL,
+    to dst: URL,
+    skipNames: Set<String> = [],
+    stripObjCInSwiftFiles: Bool
+  ) throws {
+    let fm = FileManager.default
+    try fm.createDirectory(at: dst, withIntermediateDirectories: true)
+    let items = try fm.contentsOfDirectory(atPath: src.path)
+    for item in items {
+      if skipNames.contains(item) { continue }
+      let srcItem = src.appendingPathComponent(item)
+      let dstItem = dst.appendingPathComponent(item)
+      var isDir: ObjCBool = false
+      guard fm.fileExists(atPath: srcItem.path, isDirectory: &isDir) else { continue }
+      if isDir.boolValue {
+        if !stripObjCInSwiftFiles
+          || item.lowercased().hasSuffix(".xcassets")
+          || (!directoryContainsSwiftFiles(srcItem) && !directoryContainsAnyName(srcItem, names: skipNames))
+        {
+          try linkOrCopyDirectory(from: srcItem, to: dstItem)
+        } else {
+          try stageDirectory(
+            from: srcItem,
+            to: dstItem,
+            skipNames: skipNames,
+            stripObjCInSwiftFiles: true
+          )
+        }
+      } else if stripObjCInSwiftFiles && srcItem.pathExtension.lowercased() == "swift",
+                let text = try? String(contentsOf: srcItem, encoding: .utf8)
+      {
+        let cleaned = stripObjCAttributes(text)
+        try cleaned.write(to: dstItem, atomically: true, encoding: .utf8)
+      } else {
+        try fm.copyItem(at: srcItem, to: dstItem)
+      }
+    }
+  }
+
+  private static func directoryContainsAnyName(_ dir: URL, names: Set<String>) -> Bool {
+    guard !names.isEmpty else { return false }
+    let fm = FileManager.default
+    guard let items = try? fm.contentsOfDirectory(atPath: dir.path) else { return false }
+    return items.contains { names.contains($0) }
+  }
+
+  private static func directoryContainsSwiftFiles(_ dir: URL) -> Bool {
+    let fm = FileManager.default
+    guard let enumerator = fm.enumerator(
+      at: dir,
+      includingPropertiesForKeys: [.isDirectoryKey],
+      options: [.skipsHiddenFiles]
+    ) else { return false }
+    for case let url as URL in enumerator {
+      let name = url.lastPathComponent
+      if name.lowercased().hasSuffix(".xcassets") || name == ".build" || name == ".git" {
+        enumerator.skipDescendants()
+        continue
+      }
+      if url.pathExtension.lowercased() == "swift" {
+        return true
+      }
+    }
+    return false
+  }
+
+  private static func stripObjCAttributes(_ source: String) -> String {
+    guard source.contains("@objc"),
+          let regex = try? NSRegularExpression(pattern: #"(?<![A-Za-z0-9_])@objc(?:\([^)]*\))?[ \t]*"#)
+    else { return source }
+    let ns = source as NSString
+    return regex.stringByReplacingMatches(
+      in: source,
+      range: NSRange(location: 0, length: ns.length),
+      withTemplate: ""
+    )
   }
 
   /// Shallow-clones (or reuses a cached checkout of) a remote package dependency.
@@ -331,19 +676,21 @@ public enum PackageDependencyAdapter {
     return findMatchingDelimiter(in: text, openIndex: openIndex, open: o, close: c)
   }
 
-  private static func scanImportedModules(in directory: URL) -> Set<String> {
+  private static func scanSwiftSources(in directory: URL) -> (modules: Set<String>, hasObjC: Bool) {
     let fm = FileManager.default
     guard let enumerator = fm.enumerator(
       at: directory,
       includingPropertiesForKeys: [.isDirectoryKey],
       options: [.skipsHiddenFiles]
-    ) else { return [] }
+    ) else { return ([], false) }
 
-    guard let regex = try? NSRegularExpression(
+    guard let importRegex = try? NSRegularExpression(
       pattern: "(?m)^\\s*(?:@\\w+\\s+)*import\\s+(?:(?:typealias|struct|class|enum|protocol|let|var|func)\\s+)?([A-Za-z_][A-Za-z0-9_]*)"
-    ) else { return [] }
+    ) else { return ([], false) }
+    let objcRegex = try? NSRegularExpression(pattern: #"(?<![A-Za-z0-9_])@objc(?:\([^)]*\))?"#)
 
     var modules = Set<String>()
+    var hasObjC = false
     for case let fileURL as URL in enumerator {
       let name = fileURL.lastPathComponent
       if name.lowercased().hasSuffix(".xcassets") || name == ".build" || name == ".git" {
@@ -354,13 +701,16 @@ public enum PackageDependencyAdapter {
             let text = try? String(contentsOf: fileURL, encoding: .utf8)
       else { continue }
       let range = NSRange(text.startIndex..., in: text)
-      for match in regex.matches(in: text, range: range) {
+      for match in importRegex.matches(in: text, range: range) {
         if let r = Range(match.range(at: 1), in: text) {
           modules.insert(String(text[r]))
         }
       }
+      if !hasObjC, let objcRegex, objcRegex.firstMatch(in: text, range: range) != nil {
+        hasObjC = true
+      }
     }
-    return modules
+    return (modules, hasObjC)
   }
 
   private static func findAssetCatalogs(in targetDir: URL) -> [String] {
@@ -387,39 +737,143 @@ public enum PackageDependencyAdapter {
     return catalogs
   }
 
+  private static func stripSwiftComments(_ text: String) -> String {
+    var out = text
+    if let blockRegex = try? NSRegularExpression(pattern: "/\\*[\\s\\S]*?\\*/") {
+      let ns = out as NSString
+      out = blockRegex.stringByReplacingMatches(
+        in: out,
+        range: NSRange(location: 0, length: ns.length),
+        withTemplate: ""
+      )
+    }
+    if let lineRegex = try? NSRegularExpression(pattern: "(?m)//.*$") {
+      let ns = out as NSString
+      out = lineRegex.stringByReplacingMatches(
+        in: out,
+        range: NSRange(location: 0, length: ns.length),
+        withTemplate: ""
+      )
+    }
+    return out
+  }
+
+  /// Finds the index of a top-level argument label (e.g. `dependencies` or `targets`)
+  /// directly inside `Package(...)` (at nesting depth 1), ignoring comments and strings.
+  private static func findTopLevelPackageLabel(
+    _ label: String,
+    in manifest: String,
+    openParen: Int
+  ) -> (labelStart: Int, colonIndex: Int, openBracket: Int?)? {
+    let bytes = Array(manifest.utf8)
+    let labelBytes = Array(label.utf8)
+    let count = bytes.count
+    guard openParen < count, bytes[openParen] == 0x28 else { return nil }
+
+    var depth = 0
+    var inString = false
+    var escaped = false
+    var i = openParen
+
+    while i < count {
+      let b = bytes[i]
+      if inString {
+        if escaped { escaped = false }
+        else if b == 0x5C { escaped = true }
+        else if b == 0x22 { inString = false }
+        i += 1
+        continue
+      }
+      // Line comment
+      if b == 0x2F && i + 1 < count && bytes[i + 1] == 0x2F {
+        i += 2
+        while i < count && bytes[i] != 0x0A { i += 1 }
+        continue
+      }
+      // Block comment
+      if b == 0x2F && i + 1 < count && bytes[i + 1] == 0x2A {
+        i += 2
+        while i + 1 < count && !(bytes[i] == 0x2A && bytes[i + 1] == 0x2F) { i += 1 }
+        i += 2
+        continue
+      }
+      if b == 0x22 {
+        inString = true
+        i += 1
+        continue
+      }
+      if b == 0x28 || b == 0x5B { // '(' or '['
+        depth += 1
+        i += 1
+        continue
+      }
+      if b == 0x29 || b == 0x5D { // ')' or ']'
+        depth -= 1
+        if depth == 0 { return nil }
+        i += 1
+        continue
+      }
+
+      if depth == 1 && i + labelBytes.count < count {
+        let prevIsIdent = i > 0 && isIdentByte(bytes[i - 1])
+        if !prevIsIdent {
+          var matched = true
+          for k in 0..<labelBytes.count where bytes[i + k] != labelBytes[k] {
+            matched = false
+            break
+          }
+          if matched {
+            var j = i + labelBytes.count
+            while j < count && (bytes[j] == 0x20 || bytes[j] == 0x09 || bytes[j] == 0x0A || bytes[j] == 0x0D) {
+              j += 1
+            }
+            if j < count && bytes[j] == 0x3A { // ':'
+              var k = j + 1
+              while k < count && (bytes[k] == 0x20 || bytes[k] == 0x09 || bytes[k] == 0x0A || bytes[k] == 0x0D) {
+                k += 1
+              }
+              let openBracket = (k < count && bytes[k] == 0x5B) ? k : nil
+              return (labelStart: i, colonIndex: j, openBracket: openBracket)
+            }
+          }
+        }
+      }
+      i += 1
+    }
+    return nil
+  }
+
+  private static func isIdentByte(_ b: UInt8) -> Bool {
+    (b >= 0x41 && b <= 0x5A)
+      || (b >= 0x61 && b <= 0x7A)
+      || (b >= 0x30 && b <= 0x39)
+      || b == 0x5F
+  }
+
   private static func injectTopLevelPackageDependency(_ manifest: String, packageDecl: String) -> String {
-    // Look for top-level `dependencies: [` inside `Package(...)`.
     guard let pkgRegex = try? NSRegularExpression(pattern: "Package\\s*\\("),
           let pkgMatch = pkgRegex.firstMatch(in: manifest, range: NSRange(manifest.startIndex..., in: manifest))
     else { return manifest }
 
+    let openParen = pkgMatch.range.location + pkgMatch.range.length - 1
     let ns = manifest as NSString
-    let searchStart = pkgMatch.range.location + pkgMatch.range.length
-    let searchRange = NSRange(location: searchStart, length: ns.length - searchStart)
 
-    // Find `dependencies: [` that appears BEFORE `targets: [`.
-    let targetsLoc = (try? NSRegularExpression(pattern: "\\btargets\\s*:\\s*\\["))?
-      .firstMatch(in: manifest, range: searchRange)?.range.location ?? ns.length
-
-    let beforeTargets = NSRange(location: searchStart, length: max(0, targetsLoc - searchStart))
-    if let depRegex = try? NSRegularExpression(pattern: "\\bdependencies\\s*:\\s*\\["),
-       let depMatch = depRegex.firstMatch(in: manifest, range: beforeTargets)
+    if let depLoc = findTopLevelPackageLabel("dependencies", in: manifest, openParen: openParen),
+       let openBracket = depLoc.openBracket,
+       let closeBracket = findMatchingDelimiter(in: manifest, openIndex: openBracket, open: "[", close: "]")
     {
-      let openBracket = depMatch.range.location + depMatch.range.length - 1
-      if let closeBracket = findMatchingDelimiter(in: manifest, openIndex: openBracket, open: "[", close: "]") {
-        let inner = ns.substring(with: NSRange(location: openBracket + 1, length: closeBracket - openBracket - 1))
-        let trimmed = inner.trimmingCharacters(in: .whitespacesAndNewlines)
-        let prefix = ns.substring(to: closeBracket)
-        let suffix = ns.substring(from: closeBracket)
-        let sep = trimmed.isEmpty ? "\n    " : (trimmed.hasSuffix(",") ? "\n    " : ",\n    ")
-        return prefix + sep + packageDecl + "\n  " + suffix
-      }
+      let inner = ns.substring(with: NSRange(location: openBracket + 1, length: closeBracket - openBracket - 1))
+      let codeOnly = stripSwiftComments(inner).trimmingCharacters(in: .whitespacesAndNewlines)
+      let prefix = ns.substring(to: closeBracket)
+      let suffix = ns.substring(from: closeBracket)
+      let sep = codeOnly.isEmpty ? "\n    " : (codeOnly.hasSuffix(",") ? "\n    " : ",\n    ")
+      return prefix + sep + packageDecl + "\n  " + suffix
     }
 
-    // No top-level `dependencies:` parameter; insert right before `targets:`.
-    if targetsLoc < ns.length {
-      let prefix = ns.substring(to: targetsLoc)
-      let suffix = ns.substring(from: targetsLoc)
+    // No top-level `dependencies:` parameter; insert right before top-level `targets:`.
+    if let targetsLoc = findTopLevelPackageLabel("targets", in: manifest, openParen: openParen) {
+      let prefix = ns.substring(to: targetsLoc.labelStart)
+      let suffix = ns.substring(from: targetsLoc.labelStart)
       return prefix + "dependencies: [\n    \(packageDecl)\n  ],\n  " + suffix
     }
     return manifest
@@ -429,6 +883,7 @@ public enum PackageDependencyAdapter {
     in manifest: String,
     targetName: String,
     addDependencies: [String],
+    addExcludes: [String] = [],
     addResources: [String]
   ) -> String {
     guard let regex = try? NSRegularExpression(pattern: "\\.(?:target|executableTarget)\\s*\\(") else {
@@ -450,6 +905,13 @@ public enum PackageDependencyAdapter {
           in: patchedBody,
           paramName: "dependencies",
           entries: addDependencies
+        )
+      }
+      if !addExcludes.isEmpty {
+        patchedBody = insertIntoArrayParameter(
+          in: patchedBody,
+          paramName: "exclude",
+          entries: addExcludes
         )
       }
       if !addResources.isEmpty {
@@ -479,11 +941,11 @@ public enum PackageDependencyAdapter {
       let openBracket = match.range.location + match.range.length - 1
       if let closeBracket = findMatchingDelimiter(in: targetBody, openIndex: openBracket, open: "[", close: "]") {
         let inner = ns.substring(with: NSRange(location: openBracket + 1, length: closeBracket - openBracket - 1))
-        let trimmed = inner.trimmingCharacters(in: .whitespacesAndNewlines)
+        let codeOnly = stripSwiftComments(inner).trimmingCharacters(in: .whitespacesAndNewlines)
         let prefix = ns.substring(to: closeBracket)
         let suffix = ns.substring(from: closeBracket)
         let joined = entries.joined(separator: ",\n        ")
-        let sep = trimmed.isEmpty ? "\n        " : (trimmed.hasSuffix(",") ? "\n        " : ",\n        ")
+        let sep = codeOnly.isEmpty ? "\n        " : (codeOnly.hasSuffix(",") ? "\n        " : ",\n        ")
         return prefix + sep + joined + "\n      " + suffix
       }
     }

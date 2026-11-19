@@ -14,6 +14,12 @@ public macro Entry() = #externalMacro(module: "SwiftUIRuntimeMacros", type: "Ent
 @attached(accessor)
 public macro _EntryDefaultValue() =
   #externalMacro(module: "SwiftUIRuntimeMacros", type: "EntryDefaultValueMacro")
+
+@freestanding(declaration)
+public macro Preview<V: View>(
+  _ name: String? = nil,
+  @ViewBuilder body: @escaping () -> V
+) = #externalMacro(module: "SwiftUIRuntimeMacros", type: "PreviewMacro")
 public enum ColorScheme: Sendable { case light, dark }
 public struct EnvironmentValues {
   var objects: [ObjectIdentifier: AnyObject] = [:]

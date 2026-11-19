@@ -4,6 +4,7 @@ import AppKit
 #if canImport(CryptoKit)
 import CryptoKit
 #endif
+import FluentIcons
 import Foundation
 import SwiftUI
 
@@ -52,6 +53,12 @@ struct ContentView: View {
         Image(.heroBadge)
           .resizable()
           .frame(width: 40, height: 40)
+
+        Image(fluent: .home20Regular)
+          .resizable()
+          .renderingMode(.template)
+          .foregroundColor(Color(.brandAccent))
+          .frame(width: 24, height: 24)
 
         VStack(alignment: .leading, spacing: 4) {
           Text("demo.title")

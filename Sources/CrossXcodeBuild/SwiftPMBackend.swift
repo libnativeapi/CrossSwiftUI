@@ -727,6 +727,10 @@ public final class SwiftPMBackend {
     let cacheRoot = buildRoot.deletingLastPathComponent().appendingPathComponent("AdaptedPackageCache")
     let stagingRoot = buildRoot.appendingPathComponent("AdaptedPackages")
 
+    let consumerRefs = project.remotePackages.isEmpty
+      ? nil
+      : PackageDependencyAdapter.ConsumerReferences.scan(project: project)
+
     for remote in project.remotePackages {
       guard let checkoutDir = try? PackageDependencyAdapter.checkoutRemotePackage(
         remote,
@@ -739,7 +743,8 @@ public final class SwiftPMBackend {
       if let adaptedURL = try PackageDependencyAdapter.adaptCheckoutIfNeeded(
         sourceRoot: checkoutDir,
         outputDirectory: outputDir,
-        crossSwiftRoot: crossSwiftRoot
+        crossSwiftRoot: crossSwiftRoot,
+        consumerReferences: consumerRefs
       ) {
         adapted[remote.id] = adaptedURL
       }

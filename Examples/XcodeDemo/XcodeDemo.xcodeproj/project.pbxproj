@@ -6,6 +6,10 @@
 	objectVersion = 77;
 	objects = {
 
+/* Begin PBXBuildFile section */
+		AA10000000000000000001 /* FluentIcons in Frameworks */ = {isa = PBXBuildFile; productRef = AA10000000000000000011 /* FluentIcons */; };
+/* End PBXBuildFile section */
+
 /* Begin PBXFileReference section */
 		AA10000000000000000020 /* XcodeDemo.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = XcodeDemo.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
@@ -23,6 +27,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				AA10000000000000000001 /* FluentIcons in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -65,6 +70,7 @@
 			);
 			name = XcodeDemo;
 			packageProductDependencies = (
+				AA10000000000000000011 /* FluentIcons */,
 			);
 			productName = XcodeDemo;
 			productReference = AA10000000000000000020 /* XcodeDemo.app */;
@@ -95,6 +101,9 @@
 			);
 			mainGroup = AA10000000000000000050;
 			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				AA10000000000000000013 /* XCRemoteSwiftPackageReference "fluentui-system-icons" */,
+			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = AA10000000000000000051 /* Products */;
 			projectDirPath = "";
@@ -231,6 +240,25 @@
 			defaultConfigurationName = Release;
 		};
 /* End XCConfigurationList section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		AA10000000000000000013 /* XCRemoteSwiftPackageReference "fluentui-system-icons" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/microsoft/fluentui-system-icons.git";
+			requirement = {
+				kind = revision;
+				revision = 21d5d02f724be2aaf586564775fff73a18a76eb6;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		AA10000000000000000011 /* FluentIcons */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = AA10000000000000000013 /* XCRemoteSwiftPackageReference "fluentui-system-icons" */;
+			productName = FluentIcons;
+		};
+/* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = AA10000000000000000080 /* Project object */;
 }

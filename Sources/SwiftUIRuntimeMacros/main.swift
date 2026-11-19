@@ -326,7 +326,7 @@ while let header = readExact(count: 8) {
   } else if let expandReq = json["expandAttachedMacro"] as? [String: Any] {
     response = handleExpandAttachedMacro(expandReq)
   } else if json["expandFreestandingMacro"] != nil {
-    response = ["expandMacroResult": ["diagnostics": []]]
+    response = ["expandMacroResult": ["expandedSource": "", "diagnostics": []]]
   } else {
     response = [:]
   }

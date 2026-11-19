@@ -199,6 +199,10 @@ public final class ApplicationStager {
     case .windows:
       try fm.copyItem(at: built.executableURL, to: exeDestURL)
       try fm.copyItem(at: built.compiledAssets.resourcesDirectory, to: resourcesDestURL)
+      try copySwiftPMResourceBundles(
+        from: built.executableURL.deletingLastPathComponent(),
+        to: appDir
+      )
       try collectWindowsRuntimeDLLs(
         executableURL: built.executableURL,
         swiftExecutableURL: built.swiftExecutableURL,
@@ -210,6 +214,10 @@ public final class ApplicationStager {
         try fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: exeDestURL.path)
       #endif
       try fm.copyItem(at: built.compiledAssets.resourcesDirectory, to: resourcesDestURL)
+      try copySwiftPMResourceBundles(
+        from: built.executableURL.deletingLastPathComponent(),
+        to: appDir
+      )
       let libDir = appDir.appendingPathComponent("lib")
       try fm.createDirectory(at: libDir, withIntermediateDirectories: true)
       try collectLinuxRuntimeSharedLibraries(
@@ -335,6 +343,19 @@ public final class ApplicationStager {
       desktopEntryURL: desktopURL,
       linuxIconsDirectory: linuxIconsDir
     )
+  }
+
+  private func copySwiftPMResourceBundles(from binDir: URL, to appDir: URL) throws {
+    let fm = FileManager.default
+    guard let entries = try? fm.contentsOfDirectory(atPath: binDir.path) else { return }
+    for entry in entries where entry.hasSuffix(".resources") || entry.hasSuffix(".bundle") {
+      let src = binDir.appendingPathComponent(entry)
+      let dst = appDir.appendingPathComponent(entry)
+      if fm.fileExists(atPath: dst.path) {
+        try? fm.removeItem(at: dst)
+      }
+      try fm.copyItem(at: src, to: dst)
+    }
   }
 
   private func collectWindowsRuntimeDLLs(
