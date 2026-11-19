@@ -422,7 +422,9 @@ void RenderFrame(Surface *s) {
   s->damage = {};
   g.SetSmoothingMode(SmoothingModeAntiAlias);
   g.SetPixelOffsetMode(PixelOffsetModeHalf);
-  g.SetTextRenderingHint(TextRenderingHintClearTypeGridFit);
+  g.SetTextRenderingHint((s->background_argb >> 24) < 255
+                             ? TextRenderingHintAntiAliasGridFit
+                             : TextRenderingHintClearTypeGridFit);
   float scale = dpi / 96.f;
   g.ScaleTransform(scale, scale);
   std::vector<GraphicsState> clips;
@@ -449,6 +451,7 @@ void RenderFrame(Surface *s) {
       GraphicsPath path;
       VectorPath(path, c.path);
       if (c.kind == 5) {
+        path.SetFillMode(FillModeWinding);
         clips.push_back(g.Save());
         g.SetClip(&path, CombineModeIntersect);
       } else {
@@ -765,16 +768,19 @@ void PaintTransparentEdit(Surface *s, HWND hwnd) {
         const uint32_t d = bg_row[sx];
         const uint32_t pb = b_row[x];
         const uint32_t pw = w_row[x];
+        const int dA = (d >> 24) & 0xFF;
         const int dR = (d >> 16) & 0xFF, dG = (d >> 8) & 0xFF, dB = d & 0xFF;
         const int bR = (pb >> 16) & 0xFF, bG = (pb >> 8) & 0xFF, bB = pb & 0xFF;
         const int wR = (pw >> 16) & 0xFF, wG = (pw >> 8) & 0xFF, wB = pw & 0xFF;
         const int invA_R = max(0, min(255, wR - bR));
         const int invA_G = max(0, min(255, wG - bG));
         const int invA_B = max(0, min(255, wB - bB));
+        const int invA = (invA_R + invA_G + invA_B) / 3;
+        const uint32_t outA = uint32_t(min(255, (255 - invA) + (invA * dA + 127) / 255));
         const uint32_t outR = uint32_t(min(255, bR + (invA_R * dR + 127) / 255));
         const uint32_t outG = uint32_t(min(255, bG + (invA_G * dG + 127) / 255));
         const uint32_t outB = uint32_t(min(255, bB + (invA_B * dB + 127) / 255));
-        b_row[x] = 0xFF000000u | (outR << 16) | (outG << 8) | outB;
+        b_row[x] = (outA << 24) | (outR << 16) | (outG << 8) | outB;
       }
     }
     BitBlt(screen_dc, 0, 0, w, h, pass_b.dc, 0, 0, SRCCOPY);

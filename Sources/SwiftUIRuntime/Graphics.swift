@@ -132,6 +132,81 @@ public struct Path: Equatable {
     }
     return output
   }
+
+  public func reversed() -> Path {
+    enum Seg {
+      case line(CGPoint, CGPoint)
+      case curve(CGPoint, CGPoint, CGPoint, CGPoint)
+    }
+    var out = Path()
+    var subpaths: [(segs: [Seg], closed: Bool)] = []
+    var currentSegs: [Seg] = []
+    var cur = CGPoint.zero
+    var start = CGPoint.zero
+    var hasSub = false
+    var i = 0
+    while i < commands.count {
+      let op = Int(commands[i])
+      i += 1
+      switch op {
+      case 0:
+        if hasSub && !currentSegs.isEmpty {
+          subpaths.append((currentSegs, false))
+          currentSegs = []
+        }
+        cur = CGPoint(x: commands[i], y: commands[i + 1])
+        start = cur
+        hasSub = true
+        i += 2
+      case 1:
+        let p = CGPoint(x: commands[i], y: commands[i + 1])
+        currentSegs.append(.line(cur, p))
+        cur = p
+        i += 2
+      case 2:
+        let c1 = CGPoint(x: commands[i], y: commands[i + 1])
+        let c2 = CGPoint(x: commands[i + 2], y: commands[i + 3])
+        let p = CGPoint(x: commands[i + 4], y: commands[i + 5])
+        currentSegs.append(.curve(cur, c1, c2, p))
+        cur = p
+        i += 6
+      case 3:
+        if cur != start {
+          currentSegs.append(.line(cur, start))
+          cur = start
+        }
+        if !currentSegs.isEmpty {
+          subpaths.append((currentSegs, true))
+          currentSegs = []
+        }
+        hasSub = false
+      default:
+        break
+      }
+    }
+    if hasSub && !currentSegs.isEmpty {
+      subpaths.append((currentSegs, false))
+    }
+    for sub in subpaths.reversed() {
+      guard let last = sub.segs.last else { continue }
+      let firstPt: CGPoint
+      switch last {
+      case .line(_, let b): firstPt = b
+      case .curve(_, _, _, let b): firstPt = b
+      }
+      out.move(to: firstPt)
+      for seg in sub.segs.reversed() {
+        switch seg {
+        case .line(let a, _):
+          out.addLine(to: a)
+        case .curve(let a, let c1, let c2, _):
+          out.addCurve(to: a, control1: c2, control2: c1)
+        }
+      }
+      if sub.closed { out.closeSubpath() }
+    }
+    return out
+  }
 }
 public struct Circle: Shape {
   nonisolated public init() {}

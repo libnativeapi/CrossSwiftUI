@@ -695,7 +695,9 @@
             edit.view.setFontFamily(font.family.isEmpty ? nil : font.family)
             edit.view.setFontSize(Double(font.size) * 72.0 / 96.0)
             edit.view.setFontWeight(CInt(font.weight.value.rounded()))
-            edit.view.setTextColor((p.foreground ?? .black).nativeColor)
+            let defaultFg: SwiftUIRuntime.Color =
+              environment.colorScheme == .dark ? .white : .black
+            edit.view.setTextColor((p.foreground ?? defaultFg).nativeColor)
             if let explicitBg = p.background, explicitBg.opacity >= 0.999 {
               edit.view.setBackgroundColor(explicitBg.nativeColor)
             }

@@ -231,11 +231,18 @@ struct LayerView<Content: View, Layer: View>: View, _PrimitiveView {
     var props = NodeProps()
     props.alignment = alignment
     props.layerBehind = behind
+    let baseElement = _render(content, path: path.appending(index: 0))
+    var layerElement = _render(layer, path: path.appending(index: 1))
+    if layerElement.kind == .fragment {
+      layerElement.kind = .zStack
+      layerElement.props.alignment = alignment
+      layerElement.children = flattenChildren(layerElement)
+    }
     return Element(
       kind: .layer, props: props,
       children: [
-        _render(content, path: path.appending(index: 0)),
-        _render(layer, path: path.appending(index: 1)),
+        baseElement,
+        layerElement,
       ])
   }
 }

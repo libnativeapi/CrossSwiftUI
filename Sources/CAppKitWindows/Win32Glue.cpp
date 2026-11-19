@@ -775,8 +775,14 @@ void cak_window_set_backdrop(void *hwnd_ptr, int backdrop_kind, int is_dark) {
   if (!hwnd) return;
   BOOL dark = is_dark ? TRUE : FALSE;
   DwmSetWindowAttribute(hwnd, 20 /* DWMWA_USE_IMMERSIVE_DARK_MODE */, &dark, sizeof(dark));
-  int backdrop = backdrop_kind; // 2=Mica, 3=Acrylic, 4=Tabbed
+  int backdrop = backdrop_kind; // 1=None, 2=Mica, 3=Acrylic, 4=Tabbed
   DwmSetWindowAttribute(hwnd, 38 /* DWMWA_SYSTEMBACKDROP_TYPE */, &backdrop, sizeof(backdrop));
+  if (backdrop_kind == 1) {
+    COLORREF none_border = 0xFFFFFFFEu; // DWMWA_COLOR_NONE
+    DwmSetWindowAttribute(hwnd, 34 /* DWMWA_BORDER_COLOR */, &none_border, sizeof(none_border));
+    int dont_round = 1; // DWMWCP_DONOTROUND
+    DwmSetWindowAttribute(hwnd, 33 /* DWMWA_WINDOW_CORNER_PREFERENCE */, &dont_round, sizeof(dont_round));
+  }
 }
 
 void cak_window_set_tool_style(void *hwnd_ptr, int hide_from_taskbar, int non_activating) {

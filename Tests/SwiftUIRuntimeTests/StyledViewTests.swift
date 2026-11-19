@@ -296,4 +296,53 @@ final class StyledViewTests: XCTestCase {
     XCTAssertEqual(Set(narrowSwatches.map { Int($0.frame.minY.rounded()) }).count, 2)
     XCTAssertTrue(narrowSwatches.allSatisfy { $0.frame.maxX <= 280.5 })
   }
+
+  func testOverlayForEachPositionsChildrenInSharedLayer() {
+    let renderer = Renderer(
+      backend: FakeBackend(),
+      root: AnyView(
+        Color.clear
+          .frame(width: 200, height: 56)
+          .overlay(alignment: .topLeading) {
+            ForEach(0..<2, id: \.self) { index in
+              Image(systemName: "star")
+                .font(.system(size: 16))
+                .position(CGPoint(x: 120 + Double(index) * 40, y: 28))
+            }
+          }
+      ),
+      size: Size(width: 200, height: 56))
+    renderer.mount()
+    let images = nodes(renderer.tree!).filter { $0.kind == .image }
+    XCTAssertEqual(images.count, 2)
+    XCTAssertEqual(images[0].frame.minX + images[0].frame.width / 2, 120, accuracy: 0.5)
+    XCTAssertEqual(images[0].frame.minY + images[0].frame.height / 2, 28, accuracy: 0.5)
+    XCTAssertEqual(images[1].frame.minX + images[1].frame.width / 2, 160, accuracy: 0.5)
+    XCTAssertEqual(images[1].frame.minY + images[1].frame.height / 2, 28, accuracy: 0.5)
+    XCTAssertEqual(images[0].frame.width, 16, accuracy: 0.5)
+    XCTAssertEqual(images[1].frame.height, 16, accuracy: 0.5)
+  }
+
+  func testMaskBuildsCompoundClipPathSkippingTransparentShapes() {
+    let renderer = Renderer(
+      backend: FakeBackend(),
+      root: AnyView(
+        Color.black
+          .frame(width: 200, height: 56)
+          .mask {
+            ZStack(alignment: .topLeading) {
+              Capsule().fill(.white).frame(width: 120, height: 56)
+              Circle().fill(.white).frame(width: 40, height: 40).position(CGPoint(x: 150, y: 28))
+              Circle().fill(.white).frame(width: 40, height: 40).opacity(0).position(CGPoint(x: 190, y: 28))
+            }
+          }
+      ),
+      size: Size(width: 200, height: 56))
+    renderer.mount()
+    let masked = nodes(renderer.tree!).first { $0.clipPathBuilder != nil }
+    XCTAssertNotNil(masked)
+    let path = masked!.clipPathBuilder!(CGRect(x: 0, y: 0, width: 200, height: 56))
+    let closes = path.commands.filter { $0 == 3 }.count
+    XCTAssertEqual(closes, 2)
+  }
 }

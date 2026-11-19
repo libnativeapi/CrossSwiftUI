@@ -211,14 +211,18 @@ open class NSWindow: NSResponder {
   public var titlebarSeparatorStyle: TitlebarSeparatorStyle = .automatic
   public var toolbar: NSToolbar?
   public var animationBehavior: AnimationBehavior = .default
-  public var isOpaque: Bool = true
+  public var isOpaque: Bool = true {
+    didSet { syncBackgroundToNative() }
+  }
   public var backgroundColor: NSColor = .windowBackgroundColor {
     didSet { syncBackgroundToNative() }
   }
   public var hasShadow: Bool = true {
     didSet {
       #if !os(macOS)
-        nativeWindow?.setHasShadow(hasShadow)
+        let isFrameless = !styleMask.contains(.titled)
+        let isTransparent = !isOpaque || backgroundColor.resolved(for: effectiveAppearance).a < 0.05
+        nativeWindow?.setHasShadow(isFrameless && isTransparent ? false : hasShadow)
       #endif
     }
   }
@@ -451,24 +455,40 @@ open class NSWindow: NSResponder {
       let isNonActivating = !canBecomeKey
       nw.setNonActivating(isNonActivating)
       let hideFromTaskbar = isFrameless || styleMask.contains(.nonactivatingPanel)
+      let isTransparent = !isOpaque || backgroundColor.resolved(for: effectiveAppearance).a < 0.05
       if hideFromTaskbar {
         nw.setVisibleInTaskbar(false)
-        _ = nw.setCornerPreference(.round)
+        _ = nw.setCornerPreference(isFrameless && isTransparent ? .doNotRound : .round)
       } else {
         nw.setVisibleInTaskbar(true)
+      }
+      if isFrameless && isTransparent {
+        nw.setHasShadow(false)
       }
       #if os(Windows)
         if let hwnd = nw.nativeObject {
           cak_window_set_tool_style(hwnd, hideFromTaskbar ? 1 : 0, isNonActivating ? 1 : 0)
         }
+        if isFrameless && isTransparent {
+          applyWindowsBackdrop(.none)
+        }
       #endif
     #endif
   }
 
-  private func syncBackgroundToNative() {
+  public func syncBackgroundToNative() {
     #if !os(macOS)
       guard let nw = nativeWindow else { return }
       let c = backgroundColor.resolved(for: effectiveAppearance)
+      let isFrameless = !styleMask.contains(.titled)
+      let isTransparent = !isOpaque || c.a < 0.05
+      if isFrameless && isTransparent {
+        nw.setHasShadow(false)
+        _ = nw.setCornerPreference(.doNotRound)
+        nw.setBackgroundColor(NativeAPI.Color(r: 0, g: 0, b: 0, a: 0))
+        applyWindowsBackdrop(.none)
+        return
+      }
       nw.setBackgroundColor(NativeAPI.Color(
         r: UInt8(clamping: Int((c.r * 255).rounded())),
         g: UInt8(clamping: Int((c.g * 255).rounded())),

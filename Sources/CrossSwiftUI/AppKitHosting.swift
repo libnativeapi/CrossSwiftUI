@@ -359,13 +359,10 @@ open class NSHostingView<Content: SwiftUIRuntime.View>: NSView {
         env.colorScheme = isDark ? SwiftUIRuntime.ColorScheme.dark : SwiftUIRuntime.ColorScheme.light
       }
       let bg = win.backgroundColor.resolved(for: win.effectiveAppearance)
-      if bg.a < 0.05 {
-        // Transparent/scrim panels paint over dark/light acrylic backdrop
-        let base = isDark
-          ? SwiftUIRuntime.Color(red: 0.10, green: 0.10, blue: 0.11, opacity: 1.0)
-          : SwiftUIRuntime.Color(red: 0.95, green: 0.95, blue: 0.96, opacity: 1.0)
-        backend?.setBackgroundColor(base)
-        win.applyWindowsBackdrop(.acrylic)
+      if !win.isOpaque || bg.a < 0.05 {
+        // Transparent borderless panels clear to per-pixel alpha=0 so outer margins stay hollow
+        backend?.setBackgroundColor(.clear)
+        win.syncBackgroundToNative()
       } else {
         backend?.setBackgroundColor(SwiftUIRuntime.Color(
           red: Double(bg.r), green: Double(bg.g), blue: Double(bg.b), opacity: Double(bg.a)

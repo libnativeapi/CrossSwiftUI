@@ -20,10 +20,17 @@ struct VectorImage {
     symbolDefinitions[name] = (viewBox, strokeWidth, paths)
   }
 
+  private static func strippedSymbolVariant(_ name: String) -> String {
+    name
+      .replacingOccurrences(of: ".fill", with: "")
+      .replacingOccurrences(of: ".filled", with: "")
+      .replacingOccurrences(of: ".inverse", with: "")
+  }
+
   static func hasSymbol(_ name: String) -> Bool {
     ensureBuiltinSFSymbolsRegistered()
     if symbolDefinitions[name] != nil { return true }
-    let stripped = name.replacingOccurrences(of: ".fill", with: "")
+    let stripped = strippedSymbolVariant(name)
     return symbolDefinitions[stripped] != nil
   }
 
@@ -33,7 +40,7 @@ struct VectorImage {
     if let cached = cache[key] { return cached }
     let def =
       symbolDefinitions[rawName]
-      ?? symbolDefinitions[rawName.replacingOccurrences(of: ".fill", with: "")]
+      ?? symbolDefinitions[strippedSymbolVariant(rawName)]
       ?? symbolDefinitions["circle"]
     guard let def else { return nil }
     let img = VectorImage(bounds: def.viewBox, paths: def.paths.map { parse($0) }, strokeWidth: def.strokeWidth)

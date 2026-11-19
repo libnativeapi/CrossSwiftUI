@@ -494,7 +494,7 @@ extension View {
       if glass.variant == .clear {
         return scheme == .dark ? (1.0, 1.0, 1.0, 0.05) : (1.0, 1.0, 1.0, 0.35)
       }
-      return scheme == .dark ? (0.17, 0.17, 0.19, 0.78) : (0.96, 0.96, 0.98, 0.84)
+      return scheme == .dark ? (0.15, 0.15, 0.17, 0.94) : (0.96, 0.96, 0.98, 0.95)
     }
     let border = Color { scheme in
       scheme == .dark ? (1.0, 1.0, 1.0, 0.14) : (0.0, 0.0, 0.0, 0.10)
@@ -1197,14 +1197,110 @@ public struct AccessibilityFocusState<Value: Hashable>: _StateProperty {
   func install(_ key: StateKey) { inner.install(key) }
 }
 
+private struct MaskView<Content: View, Mask: View>: View, _PrimitiveView {
+  typealias Body = Never
+  let content: Content
+  let alignment: Alignment
+  let maskContent: Mask
+
+  var body: Never { fatalError("MaskView is primitive") }
+
+  private static func collectMaskPaths(_ node: Element, parentOpacity: Double, into out: inout Path) {
+    let effOpacity = parentOpacity * node.props.opacity
+    guard node.props.visible, effOpacity > 0.01 else { return }
+    let sx = node.props.scaleX
+    let sy = node.props.scaleY
+    let w = node.frame.width * sx
+    let h = node.frame.height * sy
+    let x = node.frame.minX + (node.frame.width - w) / 2
+    let y = node.frame.minY + (node.frame.height - h) / 2
+    let r = CGRect(x: x, y: y, width: w, height: h)
+
+    if w > 0.01 && h > 0.01 {
+      if node.kind == .gradient {
+        if let clip = node.clipPathBuilder {
+          out.addPath(clip(CGRect(origin: .zero, size: r.size)).transformed(x: r.minX, y: r.minY))
+        } else {
+          out.addRect(r)
+        }
+      } else if let pb = node.pathBuilder {
+        let bw = node.props.borderWidth
+        if bw > 0 && (node.props.background?.opacity ?? 0) <= 0.001 {
+          out.addPath(pb(r.insetBy(dx: -bw / 2, dy: -bw / 2)))
+          let inner = r.insetBy(dx: bw / 2, dy: bw / 2)
+          if inner.width > 0.1 && inner.height > 0.1 {
+            out.addPath(pb(inner).reversed())
+          }
+        } else {
+          out.addPath(pb(r))
+        }
+      } else if node.kind == .path {
+        out.addPath(node.props.path.transformed(x: r.minX, y: r.minY, sx: sx, sy: sy))
+      } else if node.kind == .shape {
+        out.addPath(Path(roundedRect: r, cornerRadius: node.props.cornerRadius))
+      } else if (node.props.background?.opacity ?? 0) > 0.01 {
+        out.addPath(Path(roundedRect: r, cornerRadius: node.props.cornerRadius))
+      }
+    }
+
+    for child in node.children {
+      collectMaskPaths(child, parentOpacity: effOpacity, into: &out)
+    }
+  }
+
+  func _makeElement(path: ViewPath) -> Element {
+    let saved = EnvironmentValues.current
+    var base = normalize(_render(content, path: path.appending(index: 0)))
+    EnvironmentValues.current = saved
+    let alignedMask = ZStack(alignment: alignment) { maskContent }
+      .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: alignment)
+    var maskTemplate = normalize(_render(alignedMask, path: path.appending(id: "Mask")))
+    EnvironmentValues.current = saved
+    resolveEnvironment(
+      &maskTemplate,
+      inheritedForeground: saved.foregroundColor ?? .white,
+      inheritedDisabled: !saved.isEnabled,
+      inheritedOpacity: 1.0,
+      inheritedVisible: true,
+      inheritedLineLimit: nil,
+      inheritedLineSpacing: 0
+    )
+
+    let buildClip: (CGRect) -> Path = { [maskTemplate] bounds in
+      guard bounds.width > 0.01, bounds.height > 0.01 else { return Path() }
+      var copy = maskTemplate
+      let engine = LayoutEngine()
+      engine.layout(root: &copy, in: Size(width: bounds.width, height: bounds.height))
+      var combined = Path()
+      Self.collectMaskPaths(copy, parentOpacity: 1.0, into: &combined)
+      if bounds.minX != 0 || bounds.minY != 0 {
+        return combined.transformed(x: bounds.minX, y: bounds.minY)
+      }
+      return combined
+    }
+
+    if base.clipPathBuilder != nil {
+      var wrapperProps = NodeProps()
+      wrapperProps.fillWidth = base.props.fillWidth
+      wrapperProps.fillHeight = base.props.fillHeight
+      wrapperProps.clipped = true
+      var wrapper = Element(kind: .frame, props: wrapperProps, children: [base])
+      wrapper.clipPathBuilder = buildClip
+      return wrapper
+    }
+    base.props.clipped = true
+    base.clipPathBuilder = buildClip
+    return base
+  }
+}
+
 extension View {
   public func mask<Mask: View>(alignment: Alignment = .center, @ViewBuilder _ mask: () -> Mask) -> some View {
-    let _ = mask()
-    return self
+    MaskView(content: self, alignment: alignment, maskContent: mask())
   }
 
   public func mask<Mask: View>(_ mask: Mask) -> some View {
-    self
+    MaskView(content: self, alignment: .center, maskContent: mask)
   }
 
   public func blur(radius: CGFloat, opaque: Bool = false) -> some View {
@@ -1289,7 +1385,9 @@ extension View {
 
   public func position(x: CGFloat = 0, y: CGFloat = 0) -> some View {
     GeometryReader { proxy in
-      self.offset(x: x - proxy.size.width / 2, y: y - proxy.size.height / 2)
+      self
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+        .offset(x: x - proxy.size.width / 2, y: y - proxy.size.height / 2)
     }
   }
 
