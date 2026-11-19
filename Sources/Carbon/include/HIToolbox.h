@@ -157,10 +157,41 @@ enum {
 
 typedef uint32_t OSType;
 typedef int32_t OSStatus;
+typedef uint32_t OptionBits;
+static const OSStatus noErr = 0;
 enum {
-  noErr = 0,
   eventNotHandledErr = -9874
 };
+
+typedef struct UCKeyboardLayout {
+  uint16_t keyLayoutHeaderFormat;
+} UCKeyboardLayout;
+
+enum {
+  kUCKeyActionDisplay = 3,
+  kUCKeyTranslateNoDeadKeysBit = 0
+};
+
+static inline uint8_t LMGetKbdType(void) { return 40; }
+
+static inline OSStatus UCKeyTranslate(
+  const UCKeyboardLayout *keyLayoutPtr,
+  uint16_t virtualKeyCode,
+  uint16_t keyAction,
+  uint32_t modifierKeyState,
+  uint32_t keyboardType,
+  OptionBits keyTranslateOptions,
+  uint32_t *deadKeyState,
+  size_t maxStringLength,
+  size_t *actualStringLength,
+  uint16_t *unicodeString
+) {
+  (void)keyLayoutPtr; (void)virtualKeyCode; (void)keyAction;
+  (void)modifierKeyState; (void)keyboardType; (void)keyTranslateOptions;
+  (void)deadKeyState; (void)maxStringLength; (void)unicodeString;
+  if (actualStringLength) *actualStringLength = 0;
+  return -1;
+}
 
 static const uint32_t kEventParamDirectObject = 0x2D2D2D2D; // '----'
 static const uint32_t typeEventHotKeyID       = 0x686B6964; // 'hkid'

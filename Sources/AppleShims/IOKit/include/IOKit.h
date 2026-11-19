@@ -22,4 +22,7 @@ static inline kern_return_t IOServiceOpen(io_service_t service, mach_port_t owni
 }
 static inline kern_return_t IOServiceClose(io_connect_t connect) { (void)connect; return KERN_SUCCESS; }
 static inline kern_return_t IOObjectRelease(io_object_t object) { (void)object; return KERN_SUCCESS; }
+static inline io_registry_entry_t IORegistryEntryFromPath(mach_port_t mainPort, const char *path) {
+  (void)mainPort; (void)path; return IO_OBJECT_NULL;
+}
 #endif

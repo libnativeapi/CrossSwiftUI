@@ -139,4 +139,17 @@ import Foundation
   }
 
   public func CFPreferencesAppSynchronize(_ applicationID: CFString) -> Bool { true }
+
+  public func CFDataGetBytePtr(_ theData: CFData?) -> UnsafePointer<UInt8>? {
+    theData?.bytes.assumingMemoryBound(to: UInt8.self)
+  }
+
+  public func IORegistryEntryCreateCFProperty(
+    _ entry: UInt32,
+    _ key: CFString,
+    _ allocator: CFAllocator?,
+    _ options: UInt32
+  ) -> Unmanaged<CFTypeRef>? {
+    nil
+  }
 #endif

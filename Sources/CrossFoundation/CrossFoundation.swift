@@ -293,9 +293,40 @@ import Carbon
     public static let byWords = NSString.EnumerationOptions(rawValue: 3)
   }
 
+  extension NSAttributedString {
+    public convenience init(_empty: Void = ()) {
+      self.init(string: "")
+    }
+  }
+
   extension NSMutableAttributedString {
     public convenience init() {
       self.init(string: "")
     }
+  }
+
+  extension URLSessionWebSocketDelegate {
+    public func urlSession(
+      _ session: URLSession,
+      webSocketTask: URLSessionWebSocketTask,
+      didCloseWith closeCode: URLSessionWebSocketTask.CloseCode,
+      reason: Data?
+    ) {}
+  }
+
+  extension DispatchSourceFileSystemObject {
+    public var data: DispatchSource.FileSystemEvent { [] }
+  }
+
+  extension Locale {
+    public struct CurrentLocaleDidChangeMessage: NotificationCenter.MainActorMessage {
+      public typealias Subject = Locale
+      public init() {}
+    }
+  }
+
+  extension NotificationCenter.MessageIdentifier
+  where Self == NotificationCenter.BaseMessageIdentifier<Locale.CurrentLocaleDidChangeMessage> {
+    public static var currentLocaleDidChange: Self { .init() }
   }
 #endif

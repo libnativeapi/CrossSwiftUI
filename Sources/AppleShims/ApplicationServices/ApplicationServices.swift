@@ -150,10 +150,12 @@ import CoreGraphics
   public let kTISPropertyInputSourceCategory: CFString = "TISPropertyInputSourceCategory" as NSString
   public let kTISCategoryKeyboardInputSource: CFString = "TISCategoryKeyboardInputSource" as NSString
   public let kTISPropertyInputSourceIsSelectCapable: CFString = "TISPropertyInputSourceIsSelectCapable" as NSString
+  public let kTISPropertyUnicodeKeyLayoutData: CFString = "TISPropertyUnicodeKeyLayoutData" as NSString
 
   @discardableResult
   public func TISSelectInputSource(_ inputSource: TISInputSource) -> Int32 { 0 }
   public func TISCopyCurrentASCIICapableKeyboardInputSource() -> Unmanaged<TISInputSource>? { nil }
+  public func TISCopyCurrentASCIICapableKeyboardLayoutInputSource() -> Unmanaged<TISInputSource>? { nil }
   public func TISCopyCurrentKeyboardInputSource() -> Unmanaged<TISInputSource>? { nil }
   public func TISCreateInputSourceList(_ properties: CFDictionary?, _ includeAllInstalled: Bool) -> Unmanaged<CFArray>? { nil }
   public func TISGetInputSourceProperty(_ inputSource: TISInputSource, _ propertyKey: CFString) -> UnsafeMutableRawPointer? { nil }

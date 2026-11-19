@@ -16,13 +16,21 @@
   public let F_SETFD: Int32 = 2
   public let FD_CLOEXEC: Int32 = 1
   public let O_EVTONLY: Int32 = 0x8000
-  public let O_RDONLY: Int32 = 0
-  public let O_WRONLY: Int32 = 1
-  public let O_RDWR: Int32 = 2
-  public let O_CREAT: Int32 = 0x0100
-  public let O_NONBLOCK: Int32 = 0x0004
-  public let O_NOFOLLOW: Int32 = 0x0100
-  public let O_CLOEXEC: Int32 = 0x1000000
+  #if !os(Windows)
+    public let O_RDONLY: Int32 = 0
+    public let O_WRONLY: Int32 = 1
+    public let O_RDWR: Int32 = 2
+    public let O_CREAT: Int32 = 0x0100
+    public let O_NONBLOCK: Int32 = 0x0004
+    public let O_NOFOLLOW: Int32 = 0x0100
+    public let O_CLOEXEC: Int32 = 0x1000000
+  #else
+    public let O_NONBLOCK: Int32 = 0
+    public let O_NOFOLLOW: Int32 = 0
+    public let O_CLOEXEC: Int32 = 0
+  #endif
+  public let S_IRUSR: Int32 = 0o400
+  public let S_IWUSR: Int32 = 0o200
   public let LOCK_EX: Int32 = 2
   public let LOCK_NB: Int32 = 4
   public let LOCK_UN: Int32 = 8
@@ -104,9 +112,110 @@
   public func openpty(_ amaster: UnsafeMutablePointer<Int32>?, _ aslave: UnsafeMutablePointer<Int32>?, _ name: UnsafeMutablePointer<CChar>?, _ termp: UnsafeMutableRawPointer?, _ winp: UnsafeMutablePointer<winsize>?) -> Int32 { -1 }
   public func waitpid(_ pid: pid_t, _ status: UnsafeMutablePointer<Int32>?, _ options: Int32) -> pid_t { -1 }
 
-  public func open(_ path: UnsafePointer<CChar>, _ oflag: Int32, _ mode: mode_t = 0) -> Int32 { -1 }
+  #if !os(Windows)
+    public func open(_ path: UnsafePointer<CChar>, _ oflag: Int32, _ mode: mode_t = 0) -> Int32 { -1 }
+    @discardableResult
+    public func close(_ fd: Int32) -> Int32 { 0 }
+  #endif
+
   @discardableResult
-  public func close(_ fd: Int32) -> Int32 { 0 }
+  public func ftruncate(_ fd: Int32, _ length: off_t) -> Int32 {
+    #if os(Windows)
+      return _chsize_s(fd, length) == 0 ? 0 : -1
+    #else
+      return -1
+    #endif
+  }
+
+  @discardableResult
+  public func pwrite(_ fd: Int32, _ buf: UnsafeRawPointer?, _ count: Int, _ offset: off_t) -> Int {
+    #if os(Windows)
+      guard let buf else { return -1 }
+      guard _lseeki64(fd, offset, SEEK_SET) >= 0 else { return -1 }
+      return Int(_write(fd, buf, UInt32(count)))
+    #else
+      return -1
+    #endif
+  }
+
+  public let PROT_READ: Int32 = 1
+  public let MAP_PRIVATE: Int32 = 2
+  public func mmap(
+    _ addr: UnsafeMutableRawPointer?,
+    _ length: Int,
+    _ prot: Int32,
+    _ flags: Int32,
+    _ fd: Int32,
+    _ offset: off_t
+  ) -> UnsafeMutableRawPointer? {
+    #if os(Windows)
+      guard length > 0, let buf = malloc(length) else { return UnsafeMutableRawPointer(bitPattern: -1) }
+      guard _lseeki64(fd, offset, SEEK_SET) >= 0 else {
+        free(buf)
+        return UnsafeMutableRawPointer(bitPattern: -1)
+      }
+      var remaining = length
+      var cursor = buf
+      while remaining > 0 {
+        let chunk = Int(_read(fd, cursor, UInt32(min(remaining, Int(Int32.max)))))
+        if chunk <= 0 { break }
+        cursor += chunk
+        remaining -= chunk
+      }
+      return buf
+    #else
+      return UnsafeMutableRawPointer(bitPattern: -1)
+    #endif
+  }
+
+  @discardableResult
+  public func munmap(_ addr: UnsafeMutableRawPointer?, _ length: Int) -> Int32 {
+    #if os(Windows)
+      free(addr)
+      return 0
+    #else
+      return -1
+    #endif
+  }
+
+  public let RTLD_LAZY: Int32 = 1
+  public func dlopen(_ path: UnsafePointer<CChar>?, _ mode: Int32) -> UnsafeMutableRawPointer? { nil }
+  public func dlsym(_ handle: UnsafeMutableRawPointer?, _ symbol: UnsafePointer<CChar>?) -> UnsafeMutableRawPointer? { nil }
+
+  // POSIX termios & posix_spawn stubs for PseudoTerminal
+  public typealias tcflag_t = UInt
+  public let ICANON: UInt = 0x0100
+  public let ISIG: UInt = 0x0080
+  public let OPOST: UInt = 0x0001
+  public let ONLCR: UInt = 0x0002
+  public struct termios: Sendable {
+    public var c_iflag: tcflag_t = 0
+    public var c_oflag: tcflag_t = 0
+    public var c_cflag: tcflag_t = 0
+    public var c_lflag: tcflag_t = 0
+    public init() {}
+  }
+  public func cfmakeraw(_ termios_p: UnsafeMutablePointer<termios>?) {}
+
+  public typealias posix_spawnattr_t = UnsafeMutableRawPointer
+  public typealias posix_spawn_file_actions_t = UnsafeMutableRawPointer
+  public let POSIX_SPAWN_SETSID: Int32 = 0x0400
+  @discardableResult public func posix_spawnattr_init(_ attr: UnsafeMutablePointer<posix_spawnattr_t?>?) -> Int32 { 0 }
+  @discardableResult public func posix_spawnattr_destroy(_ attr: UnsafeMutablePointer<posix_spawnattr_t?>?) -> Int32 { 0 }
+  @discardableResult public func posix_spawnattr_setflags(_ attr: UnsafeMutablePointer<posix_spawnattr_t?>?, _ flags: Int16) -> Int32 { 0 }
+  @discardableResult public func posix_spawn_file_actions_init(_ actions: UnsafeMutablePointer<posix_spawn_file_actions_t?>?) -> Int32 { 0 }
+  @discardableResult public func posix_spawn_file_actions_destroy(_ actions: UnsafeMutablePointer<posix_spawn_file_actions_t?>?) -> Int32 { 0 }
+  @discardableResult public func posix_spawn_file_actions_addchdir(_ actions: UnsafeMutablePointer<posix_spawn_file_actions_t?>?, _ path: UnsafePointer<CChar>?) -> Int32 { 0 }
+  @discardableResult public func posix_spawn_file_actions_adddup2(_ actions: UnsafeMutablePointer<posix_spawn_file_actions_t?>?, _ fildes: Int32, _ newfildes: Int32) -> Int32 { 0 }
+  @discardableResult public func posix_spawn_file_actions_addclose(_ actions: UnsafeMutablePointer<posix_spawn_file_actions_t?>?, _ fildes: Int32) -> Int32 { 0 }
+  public func posix_spawn(
+    _ pid: UnsafeMutablePointer<pid_t>?,
+    _ path: UnsafePointer<CChar>?,
+    _ file_actions: UnsafePointer<posix_spawn_file_actions_t?>?,
+    _ attrp: UnsafePointer<posix_spawnattr_t?>?,
+    _ argv: UnsafePointer<UnsafeMutablePointer<CChar>?>?,
+    _ envp: UnsafePointer<UnsafeMutablePointer<CChar>?>?
+  ) -> Int32 { -1 }
 
   // POSIX networking stubs for ExtensionNameResolver
   public typealias socklen_t = UInt32
