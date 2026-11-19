@@ -119,20 +119,45 @@ extension NSViewRepresentable {
 
 private enum ActiveHostingContext {
   nonisolated(unsafe) static weak var currentHostingView: NSView?
+  @MainActor static var mountsByHost: [ObjectIdentifier: [AnyHashable: any _HostedViewMount]] = [:]
+
+  @MainActor static func mount(for host: NSView?, key: AnyHashable?) -> (any _HostedViewMount)? {
+    guard let host, let key else { return nil }
+    return mountsByHost[ObjectIdentifier(host)]?[key]
+  }
+
+  @MainActor static func setMount(_ mount: any _HostedViewMount, for host: NSView?, key: AnyHashable?) {
+    guard let host, let key else { return }
+    mountsByHost[ObjectIdentifier(host), default: [:]][key] = mount
+  }
+
+  @MainActor static func removeMount(for host: NSView?, key: AnyHashable?) {
+    guard let host, let key else { return }
+    let id = ObjectIdentifier(host)
+    mountsByHost[id]?.removeValue(forKey: key)
+    if mountsByHost[id]?.isEmpty == true {
+      mountsByHost.removeValue(forKey: id)
+    }
+  }
 }
 
 private final class HostedMountInstance<R: NSViewRepresentable>: _HostedViewMount {
   let typedView: R.NSViewType
   let coordinator: R.Coordinator
+  weak var hostContainer: NSView?
+  let key: AnyHashable?
   var nsView: NSView { typedView }
 
-  init(typedView: R.NSViewType, coordinator: R.Coordinator) {
+  init(typedView: R.NSViewType, coordinator: R.Coordinator, hostContainer: NSView?, key: AnyHashable?) {
     self.typedView = typedView
     self.coordinator = coordinator
+    self.hostContainer = hostContainer
+    self.key = key
   }
 
   func dismantle() {
     MainActor.assumeIsolated {
+      ActiveHostingContext.removeMount(for: hostContainer, key: key)
       R.dismantleNSView(typedView, coordinator: coordinator)
       typedView.removeFromSuperview()
     }
@@ -143,6 +168,7 @@ private final class HostedViewBridge<R: NSViewRepresentable>: _HostedViewBackend
   let representable: R
   let environment: EnvironmentValues
   weak var hostContainer: NSView?
+  var viewKey: AnyHashable?
 
   init(representable: R, environment: EnvironmentValues, hostContainer: NSView?) {
     self.representable = representable
@@ -150,17 +176,49 @@ private final class HostedViewBridge<R: NSViewRepresentable>: _HostedViewBackend
     self.hostContainer = hostContainer
   }
 
+  @MainActor
+  private func ensureInstance(key: AnyHashable?) -> HostedMountInstance<R> {
+    let resolvedKey = key ?? viewKey
+    if let existing = ActiveHostingContext.mount(for: hostContainer, key: resolvedKey) as? HostedMountInstance<R> {
+      if let container = hostContainer, existing.typedView.superview !== container {
+        container.addSubview(existing.typedView)
+      }
+      return existing
+    }
+    let coordinator = representable.makeCoordinator()
+    let ctx = NSViewRepresentableContext<R>(coordinator: coordinator, environment: environment)
+    let view = representable.makeNSView(context: ctx)
+    if let container = hostContainer {
+      container.addSubview(view)
+    }
+    let instance = HostedMountInstance<R>(
+      typedView: view, coordinator: coordinator, hostContainer: hostContainer, key: resolvedKey
+    )
+    ActiveHostingContext.setMount(instance, for: hostContainer, key: resolvedKey)
+    return instance
+  }
+
+  func measure(key: AnyHashable, proposal: ProposedViewSize) -> SwiftUIRuntime.Size {
+    MainActor.assumeIsolated {
+      let instance = ensureInstance(key: key)
+      let ctx = NSViewRepresentableContext<R>(coordinator: instance.coordinator, environment: environment)
+      if let custom = representable.sizeThatFits(proposal, nsView: instance.typedView, context: ctx) {
+        return SwiftUIRuntime.Size(width: Double(custom.width), height: Double(custom.height))
+      }
+      let intrinsic = instance.typedView.intrinsicContentSize
+      let w = intrinsic.width >= 0 ? Double(intrinsic.width) : Double(proposal.width ?? 0)
+      let h = intrinsic.height >= 0 ? Double(intrinsic.height) : Double(proposal.height ?? 0)
+      return SwiftUIRuntime.Size(width: max(0, w), height: max(0, h))
+    }
+  }
+
   func createMount(frame: CGRect) -> (mount: any _HostedViewMount, nativeView: NativeAPI.View?) {
     MainActor.assumeIsolated {
-      let coordinator = representable.makeCoordinator()
-      let ctx = NSViewRepresentableContext<R>(coordinator: coordinator, environment: environment)
-      let view = representable.makeNSView(context: ctx)
-      view.frame = frame
-      if let container = hostContainer {
-        container.addSubview(view)
-      }
-      representable.updateNSView(view, context: ctx)
-      return (HostedMountInstance<R>(typedView: view, coordinator: coordinator), view.ownedNativeView)
+      let instance = ensureInstance(key: viewKey)
+      instance.typedView.frame = frame
+      let ctx = NSViewRepresentableContext<R>(coordinator: instance.coordinator, environment: environment)
+      representable.updateNSView(instance.typedView, context: ctx)
+      return (instance, instance.typedView.ownedNativeView)
     }
   }
 
@@ -184,20 +242,11 @@ extension NSViewRepresentable {
     let env = EnvironmentValues.current
     let host = ActiveHostingContext.currentHostingView
     let bridge = HostedViewBridge(representable: self, environment: env, hostContainer: host)
-    return _HostedViewPrimitive(adapter: bridge) { proposal in
-      MainActor.assumeIsolated {
-        let coordinator = self.makeCoordinator()
-        let ctx = NSViewRepresentableContext<Self>(coordinator: coordinator, environment: env)
-        let probe = self.makeNSView(context: ctx)
-        if let custom = self.sizeThatFits(proposal, nsView: probe, context: ctx) {
-          return SwiftUIRuntime.Size(width: Double(custom.width), height: Double(custom.height))
-        }
-        let intrinsic = probe.intrinsicContentSize
-        let w = intrinsic.width >= 0 ? Double(intrinsic.width) : Double(proposal.width ?? 0)
-        let h = intrinsic.height >= 0 ? Double(intrinsic.height) : Double(proposal.height ?? 0)
-        return SwiftUIRuntime.Size(width: max(0, w), height: max(0, h))
-      }
-    }
+    return _HostedViewPrimitive(
+      adapter: bridge,
+      bindPath: { key in bridge.viewKey = key },
+      measure: { key, proposal in bridge.measure(key: key, proposal: proposal) }
+    )
   }
 }
 
@@ -328,7 +377,9 @@ open class NSHostingView<Content: SwiftUIRuntime.View>: NSView {
   private func attachIfPossible() {
     guard renderer == nil, let win = window, let nativeWin = win.nativeWindow else { return }
     let targetView: NativeAPI.View
-    if win.contentView === self, let cv = nativeWin.contentView {
+    let isWindowRootHost = (win.contentView === self)
+      || (superview === win.contentView && superview?.ownedNativeView == nil && superview?.subviews.count == 1)
+    if isWindowRootHost, let cv = nativeWin.contentView {
       self.ownedNativeView = cv
       targetView = cv
     } else if let subNV = ensureNativeView() {
@@ -425,6 +476,7 @@ open class NSHostingView<Content: SwiftUIRuntime.View>: NSView {
   }
 
   private func teardownRenderer() {
+    ActiveHostingContext.mountsByHost.removeValue(forKey: ObjectIdentifier(self))
     renderer = nil
     backend = nil
   }
@@ -439,7 +491,6 @@ open class NSHostingView<Content: SwiftUIRuntime.View>: NSView {
     if modifiers.contains(.control) {
       // On Windows, Ctrl acts as Command for app shortcuts (Ctrl+K, Ctrl+W, Ctrl+,)
       flags.insert(.command)
-      flags.insert(.control)
     }
     if modifiers.contains(.option) { flags.insert(.option) }
     if modifiers.contains(.command) { flags.insert(.command) }
@@ -461,6 +512,14 @@ open class NSHostingView<Content: SwiftUIRuntime.View>: NSView {
         ch = "-"
       } else if value == 0xBB {
         ch = "="
+      } else if value == 0x1B {
+        ch = "\u{1B}"
+      } else if value == 0x0D {
+        ch = "\r"
+      } else if value == 0x08 {
+        ch = "\u{7F}"
+      } else if value == 0x09 {
+        ch = "\t"
       } else {
         ch = ""
       }
@@ -476,6 +535,13 @@ open class NSHostingView<Content: SwiftUIRuntime.View>: NSView {
       )
       guard NSEvent.dispatchLocalMonitors(nsEv) != nil else {
         return true // Swallowed by local monitor (e.g., Paste monitor)!
+      }
+      nsWin._eventReachedBaseSendEvent = false
+      nsWin._suppressLocalMonitorInSendEvent = true
+      nsWin.sendEvent(nsEv)
+      nsWin._suppressLocalMonitorInSendEvent = false
+      if !nsWin._eventReachedBaseSendEvent {
+        return true // Swallowed by NSWindow subclass (PalettePanel, MenuPanel, DialogPanel)!
       }
     }
     return false

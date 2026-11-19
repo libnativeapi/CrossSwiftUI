@@ -701,8 +701,18 @@ open class NSWindow: NSResponder {
     return true
   }
 
+  public var _eventReachedBaseSendEvent: Bool = false
+  public var _suppressLocalMonitorInSendEvent: Bool = false
+
   open func sendEvent(_ event: NSEvent) {
-    guard let routed = NSEvent.dispatchLocalMonitors(event) else { return }
+    _eventReachedBaseSendEvent = true
+    let routed: NSEvent
+    if _suppressLocalMonitorInSendEvent {
+      routed = event
+    } else {
+      guard let r = NSEvent.dispatchLocalMonitors(event) else { return }
+      routed = r
+    }
     switch routed.type {
     case .keyDown: firstResponder?.keyDown(with: routed)
     case .keyUp: firstResponder?.keyUp(with: routed)

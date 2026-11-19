@@ -32,16 +32,24 @@ protocol _PrimitiveView: View {
 public struct _HostedViewPrimitive: View, _PrimitiveView {
   public typealias Body = Never
   let adapter: any AnyObject
-  let measure: (ProposedViewSize) -> Size
-  package init(adapter: any AnyObject, measure: @escaping (ProposedViewSize) -> Size) {
+  let bindPath: ((AnyHashable) -> Void)?
+  let measure: (AnyHashable, ProposedViewSize) -> Size
+  package init(
+    adapter: any AnyObject,
+    bindPath: ((AnyHashable) -> Void)? = nil,
+    measure: @escaping (AnyHashable, ProposedViewSize) -> Size
+  ) {
     self.adapter = adapter
+    self.bindPath = bindPath
     self.measure = measure
   }
   public var body: Never { fatalError("_HostedViewPrimitive is primitive") }
   func _makeElement(path: ViewPath) -> Element {
+    let key = AnyHashable(path)
+    bindPath?(key)
     var el = Element(kind: .hostedView)
     el.hostedViewAdapter = adapter
-    el.hostedViewMeasure = measure
+    el.hostedViewMeasure = { proposal in measure(key, proposal) }
     return el
   }
 }
