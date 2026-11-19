@@ -773,8 +773,8 @@ internal func installAssetResolversOnce() {
   #if !os(macOS)
     bootstrapAppResources()
   #endif
-  SwiftUIRuntime.Image.assetPathResolver = { name in
-    CrossAppKit.NSImage.resolveAssetPath(named: name)
+  SwiftUIRuntime.Image.assetPathResolver = { name, bundle in
+    CrossAppKit.NSImage.resolveAssetPath(named: name, in: bundle)
   }
   CrossAppKit.NSImage.symbolLookupHandler = { symbolName in
     VectorImage.hasSymbol(symbolName)
@@ -803,8 +803,16 @@ internal func installAssetResolversOnce() {
         }
       }
       for base in bases {
-        let assets = base.appendingPathComponent("Assets.xcassets")
-        if fm.fileExists(atPath: assets.path), !searchPaths.contains(base.path) {
+        let hasCatalog: Bool = {
+          if fm.fileExists(atPath: base.appendingPathComponent("Assets.xcassets").path) {
+            return true
+          }
+          if let items = try? fm.contentsOfDirectory(atPath: base.path) {
+            return items.contains { $0.lowercased().hasSuffix(".xcassets") }
+          }
+          return false
+        }()
+        if hasCatalog, !searchPaths.contains(base.path) {
           searchPaths.append(base.path)
         }
         let xcstrings = base.appendingPathComponent("Resources/Localizable.xcstrings")

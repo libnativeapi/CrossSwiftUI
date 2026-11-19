@@ -364,7 +364,6 @@ final class CrossXcodeBuildTests: XCTestCase {
     XCTAssertEqual(buildSettings["EXECUTABLE_PATH"], "XcodeDemo/XcodeDemo.exe")
     XCTAssertEqual(buildSettings["PLATFORM_NAME"], "windows")
   }
-
   func testXcodeBuildDriverShowBuildSettingsForWasmAndHarmonyOS() throws {
     let demoProject = repositoryRoot.appendingPathComponent("Examples/XcodeDemo/XcodeDemo.xcodeproj")
     let driver = XcodeBuildDriver()
@@ -451,6 +450,96 @@ final class CrossXcodeBuildTests: XCTestCase {
     XCTAssertTrue(hostCode.contains("public static func main() {}"))
     XCTAssertTrue(hostCode.contains("@_cdecl(\"swift_mount_app\")"))
     XCTAssertTrue(hostCode.contains("let app = XcodeDemoApp()"))
+  }
+
+  func testGenericPackageDependencyAdapterPatchesImplicitAppleImportsAndUndeclaredXCAassets() throws {
+    let tmp = FileManager.default.temporaryDirectory
+      .appendingPathComponent("crossswift-pkgadapt-\(UUID().uuidString)")
+    let upstream = tmp.appendingPathComponent("IconKit")
+    let classesDir = upstream.appendingPathComponent("ios/IconKit/Classes")
+    let catalogDir = upstream.appendingPathComponent("ios/IconKit/Assets/IconKit.xcassets")
+    let sampleSet = catalogDir.appendingPathComponent("ic_sample_20_regular.imageset")
+    try FileManager.default.createDirectory(at: classesDir, withIntermediateDirectories: true)
+    try FileManager.default.createDirectory(at: sampleSet, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: tmp) }
+
+    try """
+    // swift-tools-version: 5.7
+    import PackageDescription
+    let package = Package(
+      name: "IconKit",
+      products: [
+        .library(name: "IconKit", targets: ["IconKit"]),
+      ],
+      dependencies: [],
+      targets: [
+        .target(
+          name: "IconKit",
+          dependencies: [],
+          path: "ios/IconKit"
+        ),
+      ]
+    )
+    """.write(to: upstream.appendingPathComponent("Package.swift"), atomically: true, encoding: .utf8)
+
+    try """
+    import Foundation
+    #if canImport(SwiftUI)
+    import SwiftUI
+    #endif
+    #if canImport(AppKit)
+    import AppKit
+    #endif
+    public enum SampleIcon: String {
+      case home = "ic_sample_20_regular"
+    }
+    """.write(to: classesDir.appendingPathComponent("SampleIcon.swift"), atomically: true, encoding: .utf8)
+    try "%PDF-1.4\n".write(to: sampleSet.appendingPathComponent("ic_sample_20_regular.pdf"), atomically: true, encoding: .utf8)
+
+    let inspection = PackageDependencyAdapter.inspect(packageRoot: upstream)
+    XCTAssertTrue(inspection.needsAdaptation)
+    XCTAssertEqual(inspection.targets.count, 1)
+    XCTAssertEqual(inspection.targets[0].name, "IconKit")
+    XCTAssertEqual(inspection.targets[0].importedCrossSwiftModules, ["AppKit", "SwiftUI"])
+    XCTAssertEqual(inspection.targets[0].undeclaredAssetCatalogs, ["Assets/IconKit.xcassets"])
+
+    let adaptedDir = tmp.appendingPathComponent("adapted/iconkit")
+    let adaptedURL = try XCTUnwrap(
+      PackageDependencyAdapter.adaptCheckoutIfNeeded(
+        sourceRoot: upstream,
+        outputDirectory: adaptedDir,
+        crossSwiftRoot: repositoryRoot
+      )
+    )
+
+    let patchedManifest = try String(contentsOf: adaptedURL.appendingPathComponent("Package.swift"), encoding: .utf8)
+    XCTAssertTrue(patchedManifest.contains(".package(path:"))
+    XCTAssertTrue(patchedManifest.contains(".product(name: \"SwiftUI\""))
+    XCTAssertTrue(patchedManifest.contains(".product(name: \"AppKit\""))
+    XCTAssertTrue(patchedManifest.contains(".copy(\"Assets/IconKit.xcassets\")"))
+
+    // Pure Swift packages without Apple imports or undeclared .xcassets are left untouched.
+    let purePkg = tmp.appendingPathComponent("PureSwift")
+    try FileManager.default.createDirectory(at: purePkg.appendingPathComponent("Sources/PureSwift"), withIntermediateDirectories: true)
+    try """
+    // swift-tools-version: 5.9
+    import PackageDescription
+    let package = Package(
+      name: "PureSwift",
+      targets: [.target(name: "PureSwift")]
+    )
+    """.write(to: purePkg.appendingPathComponent("Package.swift"), atomically: true, encoding: .utf8)
+    try "import Foundation\npublic let value = 1\n".write(
+      to: purePkg.appendingPathComponent("Sources/PureSwift/Pure.swift"),
+      atomically: true,
+      encoding: .utf8
+    )
+    XCTAssertFalse(PackageDependencyAdapter.inspect(packageRoot: purePkg).needsAdaptation)
+    XCTAssertNil(try PackageDependencyAdapter.adaptCheckoutIfNeeded(
+      sourceRoot: purePkg,
+      outputDirectory: tmp.appendingPathComponent("adapted/pureswift"),
+      crossSwiftRoot: repositoryRoot
+    ))
   }
 
   private func makeMinimalPNG(width: Int, height: Int) -> Data {

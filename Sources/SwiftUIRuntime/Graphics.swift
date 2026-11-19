@@ -363,7 +363,7 @@ public struct Image: View, _PrimitiveView {
   public enum Interpolation { case none, low, medium, high }
   public enum Scale: Hashable, Sendable { case small, medium, large }
 
-  nonisolated(unsafe) package static var assetPathResolver: ((String) -> String?)?
+  nonisolated(unsafe) package static var assetPathResolver: ((String, Bundle?) -> String?)?
 
   let name: String
   let bundle: Bundle?
@@ -424,13 +424,15 @@ public struct Image: View, _PrimitiveView {
       #else
         if FileManager.default.fileExists(atPath: name) {
           p.imagePath = name
-        } else if let resolved = Self.assetPathResolver?(name) {
+        } else if let resolved = Self.assetPathResolver?(name, bundle) {
           p.imagePath = resolved
         } else {
           let resources = bundle ?? .main
           p.imagePath =
-            resources.url(forResource: name, withExtension: "svg")?.path ?? resources.url(
-              forResource: name, withExtension: "png")?.path ?? name
+            resources.url(forResource: name, withExtension: "svg")?.path
+            ?? resources.url(forResource: name, withExtension: "pdf")?.path
+            ?? resources.url(forResource: name, withExtension: "png")?.path
+            ?? name
         }
       #endif
     }

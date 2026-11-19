@@ -1,7 +1,7 @@
 import CSwiftUIWindowsTestSupport
 import CrossAppKit
 import NativeAPI
-import CrossSwiftUI
+@testable import CrossSwiftUI
 import SwiftUIRuntime
 import XCTest
 
@@ -220,6 +220,54 @@ final class WindowsDrawingTests: XCTestCase {
 
     let msg = String(localized: "Found \(5) apps")
     XCTAssertEqual(msg, "Found 5 apps")
+  }
+
+  func testPDFVectorParserHandlesUncompressedAndFlateDecodePDFs() throws {
+    let rawStream = "q 1 0 0 1 0 0 cm 2 4 m 18 4 l 18 16 l 2 16 l h f Q"
+    let uncompressedPDF = """
+    %PDF-1.4
+    1 0 obj << /Type /Page /MediaBox [0 0 20 20] >> endobj
+    2 0 obj << /Length \(rawStream.utf8.count) >>
+    stream
+    \(rawStream)
+    endstream
+    endobj
+    %%EOF
+    """
+    let img = try XCTUnwrap(PDFVectorParser.parse(data: Data(uncompressedPDF.utf8)))
+    XCTAssertEqual(img.bounds, CGRect(x: 0, y: 0, width: 20, height: 20))
+    XCTAssertEqual(img.paths.count, 1)
+
+    // Verify FlateDecode using a stored (uncompressed) zlib block wrapping the same content stream.
+    let payload = Array(rawStream.utf8)
+    var zlibBytes: [UInt8] = [0x78, 0x01] // zlib header (deflate, fastest)
+    zlibBytes.append(0x01) // BFINAL=1, BTYPE=00 (stored block)
+    let len = UInt16(payload.count)
+    let nlen = ~len
+    zlibBytes.append(UInt8(len & 0xFF))
+    zlibBytes.append(UInt8((len >> 8) & 0xFF))
+    zlibBytes.append(UInt8(nlen & 0xFF))
+    zlibBytes.append(UInt8((nlen >> 8) & 0xFF))
+    zlibBytes.append(contentsOf: payload)
+    zlibBytes.append(contentsOf: [0, 0, 0, 0]) // placeholder adler32
+
+    var compressedPDF = Data("%PDF-1.4\n1 0 obj << /Type /Page /MediaBox [0 0 20 20] >> endobj\n2 0 obj << /Filter /FlateDecode /Length \(zlibBytes.count) >>\nstream\n".utf8)
+    compressedPDF.append(contentsOf: zlibBytes)
+    compressedPDF.append(Data("\nendstream\nendobj\n%%EOF\n".utf8))
+
+    let flateImg = try XCTUnwrap(PDFVectorParser.parse(data: compressedPDF))
+    XCTAssertEqual(flateImg.bounds, CGRect(x: 0, y: 0, width: 20, height: 20))
+    XCTAssertEqual(flateImg.paths.count, 1)
+
+    // Verify VectorImage.load loads .pdf files from disk.
+    let tmpPDF = FileManager.default.temporaryDirectory
+      .appendingPathComponent("crossswift-vector-\(UUID().uuidString).pdf")
+    try compressedPDF.write(to: tmpPDF)
+    defer { try? FileManager.default.removeItem(at: tmpPDF) }
+
+    let loaded = try XCTUnwrap(VectorImage.load(tmpPDF.path))
+    XCTAssertEqual(loaded.bounds, CGRect(x: 0, y: 0, width: 20, height: 20))
+    XCTAssertEqual(loaded.paths.count, 1)
   }
 }
 

@@ -998,7 +998,8 @@
         }
       }
       if node.kind == .image {
-        if (p.imagePath.hasPrefix("sf://") || p.imagePath.lowercased().hasSuffix(".svg")),
+        let lowerPath = p.imagePath.lowercased()
+        if (p.imagePath.hasPrefix("sf://") || lowerPath.hasSuffix(".svg") || lowerPath.hasSuffix(".pdf")),
           let image = VectorImage.load(p.imagePath)
         {
           let sx = r.width / image.bounds.width

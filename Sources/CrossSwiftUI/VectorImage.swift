@@ -53,6 +53,11 @@ struct VectorImage {
       return loadSymbol(String(file.dropFirst(5)))
     }
     if let cached = cache[file] { return cached }
+    if file.lowercased().hasSuffix(".pdf") {
+      guard let image = PDFVectorParser.parse(filePath: file) else { return nil }
+      cache[file] = image
+      return image
+    }
     guard let source = try? String(contentsOfFile: file, encoding: .utf8) else { return nil }
     func attributes(_ name: String) -> [String] {
       let pattern = name + "=[\"']([^\"']*)[\"']"

@@ -285,7 +285,8 @@ final class LinuxDrawing {
     let frame = node.frame
     guard frame.width > 0, frame.height > 0 else { return }
     let path = node.props.imagePath
-    if (path.hasPrefix("sf://") || path.lowercased().hasSuffix(".svg")),
+    let lowerPath = path.lowercased()
+    if (path.hasPrefix("sf://") || lowerPath.hasSuffix(".svg") || lowerPath.hasSuffix(".pdf")),
        let image = VectorImage.load(path),
        image.bounds.width > 0, image.bounds.height > 0 {
       let scale = min(frame.width / image.bounds.width, frame.height / image.bounds.height)

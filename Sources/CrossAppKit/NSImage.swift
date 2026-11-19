@@ -416,37 +416,89 @@ open class NSImage: NSObject, @unchecked Sendable {
     return file.path
   }
 
-  public static func resolveAssetPath(named name: String) -> String? {
-    var roots = resourceSearchPaths
-    roots.append(Bundle.main.bundlePath)
-    if let resPath = Bundle.main.resourcePath { roots.append(resPath) }
+  public static func resolveAssetPath(named name: String, in bundle: Bundle? = nil) -> String? {
+    var roots: [String] = []
+    func appendRoot(_ path: String?) {
+      guard let path, !path.isEmpty, !roots.contains(path) else { return }
+      roots.append(path)
+    }
+    if let bundle {
+      appendRoot(bundle.resourcePath)
+      appendRoot(bundle.bundlePath)
+    }
+    for path in resourceSearchPaths {
+      appendRoot(path)
+    }
+    appendRoot(Bundle.main.bundlePath)
+    appendRoot(Bundle.main.resourcePath)
 
+    let fm = FileManager.default
     for root in roots {
       let base = URL(fileURLWithPath: root)
-      let candidates = [
+      var candidates: [URL] = [
+        base.appendingPathComponent("\(name).imageset"),
         base.appendingPathComponent("Assets.xcassets/\(name).imageset"),
         base.appendingPathComponent("Tinycast/Assets.xcassets/\(name).imageset"),
-        base.appendingPathComponent("\(name).imageset"),
       ]
-      for imageset in candidates where FileManager.default.fileExists(atPath: imageset.path) {
-        if let files = try? FileManager.default.contentsOfDirectory(atPath: imageset.path) {
-          if let svg = files.first(where: { $0.lowercased().hasSuffix(".svg") }) {
-            return imageset.appendingPathComponent(svg).path
-          }
-          if let png = files.first(where: { $0.lowercased().hasSuffix(".png") }) {
-            return imageset.appendingPathComponent(png).path
-          }
-          if let jpg = files.first(where: {
-            let lower = $0.lowercased()
-            return lower.hasSuffix(".jpg") || lower.hasSuffix(".jpeg")
-          }) {
-            return imageset.appendingPathComponent(jpg).path
+      // Discover any *.xcassets catalog (e.g. FluentIcons.xcassets, IconAssets.xcassets)
+      // directly in `root` or `root/Resources` without enumerating inside the catalogs.
+      for container in [base, base.appendingPathComponent("Resources")] {
+        if let items = try? fm.contentsOfDirectory(atPath: container.path) {
+          for item in items where item.lowercased().hasSuffix(".xcassets") {
+            let candidate = container.appendingPathComponent(item).appendingPathComponent("\(name).imageset")
+            if !candidates.contains(candidate) {
+              candidates.append(candidate)
+            }
           }
         }
       }
-      for ext in ["svg", "png", "jpg", "ico"] {
-        let direct = base.appendingPathComponent("\(name).\(ext)")
-        if FileManager.default.fileExists(atPath: direct.path) { return direct.path }
+
+      for imageset in candidates where fm.fileExists(atPath: imageset.path) {
+        if let resolved = resolveImageInImageSet(imageset) {
+          return resolved
+        }
+      }
+      for container in [base, base.appendingPathComponent("Resources")] {
+        for ext in ["svg", "pdf", "png", "jpg", "jpeg", "ico"] {
+          let direct = container.appendingPathComponent("\(name).\(ext)")
+          if fm.fileExists(atPath: direct.path) { return direct.path }
+        }
+      }
+    }
+    return nil
+  }
+
+  private static func resolveImageInImageSet(_ imageset: URL) -> String? {
+    let fm = FileManager.default
+    let priority = [".svg", ".pdf", ".png", ".jpg", ".jpeg"]
+    func rank(_ filename: String) -> Int {
+      let lower = filename.lowercased()
+      for (idx, ext) in priority.enumerated() where lower.hasSuffix(ext) {
+        return idx
+      }
+      return priority.count
+    }
+
+    // Prefer filenames declared in Contents.json when present.
+    let contentsURL = imageset.appendingPathComponent("Contents.json")
+    if let data = try? Data(contentsOf: contentsURL),
+       let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+       let images = json["images"] as? [[String: Any]]
+    {
+      let declared = images.compactMap { entry -> String? in
+        guard let filename = entry["filename"] as? String, !filename.isEmpty else { return nil }
+        let full = imageset.appendingPathComponent(filename)
+        return fm.fileExists(atPath: full.path) ? filename : nil
+      }
+      if let best = declared.min(by: { rank($0) < rank($1) }), rank(best) < priority.count {
+        return imageset.appendingPathComponent(best).path
+      }
+    }
+
+    if let files = try? fm.contentsOfDirectory(atPath: imageset.path) {
+      let matching = files.filter { rank($0) < priority.count }
+      if let best = matching.min(by: { rank($0) < rank($1) }) {
+        return imageset.appendingPathComponent(best).path
       }
     }
     return nil
@@ -463,4 +515,13 @@ open class NSImage: NSObject, @unchecked Sendable {
       return nil
     }
   #endif
+}
+
+public extension Bundle {
+  func image(forResource name: NSImage.Name) -> NSImage? {
+    if let resolved = NSImage.resolveAssetPath(named: name, in: self) {
+      return NSImage(contentsOfFile: resolved)
+    }
+    return nil
+  }
 }

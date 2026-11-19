@@ -117,6 +117,12 @@ public final class SwiftPMBackend {
       buildRoot: buildRoot
     )
 
+    let adaptedRemotePackages = try prepareAdaptedRemotePackages(
+      project: project,
+      buildRoot: buildRoot,
+      crossSwiftRoot: crossSwiftRoot
+    )
+
     let consoleSubsystem = options.consoleSubsystem
       || (project.mainTarget.buildSettings["CROSS_SWIFTUI_CONSOLE_SUBSYSTEM"]?.uppercased() == "YES")
     let manifestText = generatePackageManifest(
@@ -126,7 +132,8 @@ public final class SwiftPMBackend {
       consoleSubsystem: consoleSubsystem,
       crossSwiftRoot: crossSwiftRoot,
       nativeAPISwiftRoot: nativeAPISwiftRoot,
-      compiledResourceURL: compiledResURL
+      compiledResourceURL: compiledResURL,
+      adaptedRemotePackages: adaptedRemotePackages
     )
     let packageSwiftURL = buildRoot.appendingPathComponent("Package.swift")
     try writeIfChanged(text: manifestText, to: packageSwiftURL)
@@ -711,6 +718,36 @@ public final class SwiftPMBackend {
     return out
   }
 
+  private func prepareAdaptedRemotePackages(
+    project: ResolvedXcodeProject,
+    buildRoot: URL,
+    crossSwiftRoot: URL
+  ) throws -> [String: URL] {
+    var adapted: [String: URL] = [:]
+    let cacheRoot = buildRoot.deletingLastPathComponent().appendingPathComponent("AdaptedPackageCache")
+    let stagingRoot = buildRoot.appendingPathComponent("AdaptedPackages")
+
+    for remote in project.remotePackages {
+      guard let checkoutDir = try? PackageDependencyAdapter.checkoutRemotePackage(
+        remote,
+        cacheRoot: cacheRoot
+      ) else {
+        continue
+      }
+      let slug = ProcessRunner.sanitizedSlug(remote.packageName)
+      let outputDir = stagingRoot.appendingPathComponent(slug.isEmpty ? remote.id : slug)
+      if let adaptedURL = try PackageDependencyAdapter.adaptCheckoutIfNeeded(
+        sourceRoot: checkoutDir,
+        outputDirectory: outputDir,
+        crossSwiftRoot: crossSwiftRoot
+      ) {
+        adapted[remote.id] = adaptedURL
+      }
+    }
+
+    return adapted
+  }
+
   public func generatePackageManifest(
     project: ResolvedXcodeProject,
     platform: TargetPlatform,
@@ -718,7 +755,8 @@ public final class SwiftPMBackend {
     consoleSubsystem: Bool,
     crossSwiftRoot: URL,
     nativeAPISwiftRoot: URL?,
-    compiledResourceURL: URL?
+    compiledResourceURL: URL?,
+    adaptedRemotePackages: [String: URL] = [:]
   ) -> String {
     let crossSwiftIdentity = crossSwiftRoot.lastPathComponent.lowercased()
     let nativeAPIIdentity = nativeAPISwiftRoot?.lastPathComponent.lowercased() ?? "swift"
@@ -747,6 +785,10 @@ public final class SwiftPMBackend {
     }
 
     for remote in project.remotePackages {
+      if let adaptedURL = adaptedRemotePackages[remote.id] {
+        packageDecls.append("    .package(path: \(swiftStringLiteral(adaptedURL.path)))")
+        continue
+      }
       let reqExpr: String
       if let pinnedVersion = remote.pinnedVersion, !pinnedVersion.isEmpty {
         reqExpr = "exact: \(swiftStringLiteral(pinnedVersion))"
@@ -767,6 +809,9 @@ public final class SwiftPMBackend {
 
     let remoteIdentityByPkgName: [String: String] = Dictionary(
       uniqueKeysWithValues: project.remotePackages.map { pkg in
+        if let adaptedURL = adaptedRemotePackages[pkg.id] {
+          return (pkg.packageName.lowercased(), adaptedURL.lastPathComponent.lowercased())
+        }
         let urlLast = pkg.repositoryURL
           .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
           .split(separator: "/").last.map(String.init) ?? pkg.packageName

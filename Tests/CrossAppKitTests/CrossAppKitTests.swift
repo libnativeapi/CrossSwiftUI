@@ -36,4 +36,44 @@ final class CrossAppKitTests: XCTestCase {
     XCTAssertEqual(scaled?.pointSize, 16)
     XCTAssertEqual(scaled?.fontDescriptor.weight, CrossAppKit.NSFont.Weight.bold)
   }
+
+  func testBundleAwareXCAassetsPDFResolution() throws {
+    let tmp = FileManager.default.temporaryDirectory
+      .appendingPathComponent("crossappkit-xcassets-\(UUID().uuidString)")
+    let imageset = tmp.appendingPathComponent("FluentIcons.xcassets/ic_fluent_home_20_regular.imageset")
+    try FileManager.default.createDirectory(at: imageset, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: tmp) }
+
+    let pdfURL = imageset.appendingPathComponent("ic_fluent_home_20_regular.pdf")
+    try "%PDF-1.4\n".write(to: pdfURL, atomically: true, encoding: .utf8)
+    let contentsJSON = """
+    {
+      "images" : [
+        {
+          "filename" : "ic_fluent_home_20_regular.pdf",
+          "idiom" : "universal"
+        }
+      ],
+      "info" : { "author" : "xcode", "version" : 1 }
+    }
+    """
+    try contentsJSON.write(
+      to: imageset.appendingPathComponent("Contents.json"),
+      atomically: true,
+      encoding: .utf8
+    )
+
+    let bundle = try XCTUnwrap(Bundle(url: tmp))
+    let resolved = CrossAppKit.NSImage.resolveAssetPath(named: "ic_fluent_home_20_regular", in: bundle)
+    XCTAssertEqual(
+      resolved.map { URL(fileURLWithPath: $0).standardizedFileURL.path },
+      pdfURL.standardizedFileURL.path
+    )
+    let nsImg = bundle.image(forResource: "ic_fluent_home_20_regular")
+    XCTAssertNotNil(nsImg)
+    XCTAssertEqual(
+      nsImg?.filePath.map { URL(fileURLWithPath: $0).standardizedFileURL.path },
+      pdfURL.standardizedFileURL.path
+    )
+  }
 }
