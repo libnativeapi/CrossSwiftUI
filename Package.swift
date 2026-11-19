@@ -296,6 +296,22 @@ if buildForDesktop {
       name: "CrossAppKitTests",
       dependencies: ["CrossAppKit"]
     ),
+    .target(
+      name: "CrossXcodeBuild",
+      dependencies: []
+    ),
+    .executableTarget(
+      name: "CrossXcodeBuildCLI",
+      dependencies: ["CrossXcodeBuild"]
+    ),
+    .testTarget(
+      name: "CrossXcodeBuildTests",
+      dependencies: ["CrossXcodeBuild"]
+    ),
+  ]
+  products += [
+    .library(name: "CrossXcodeBuild", targets: ["CrossXcodeBuild"]),
+    .executable(name: "xcodebuild", targets: ["CrossXcodeBuildCLI"]),
   ]
 }
 

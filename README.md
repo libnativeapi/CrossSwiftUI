@@ -175,21 +175,70 @@ same `CounterView` with Compose Material 3 text and buttons. See the
 [Android compatibility plan](docs/ANDROID.md) for the supported subset and
 upcoming milestones.
 
+## Build an `.xcodeproj` for Windows & Linux
+
+CrossSwiftUI provides a cross-platform **`xcodebuild`-compatible CLI**
+(`CrossXcodeBuild` / `CrossXcodeBuildCLI`) that compiles unmodified macOS
+`.xcodeproj` projects (classic groups or Xcode 16 synchronized folders) into
+self-contained, runnable Windows or Linux application directories with zero
+platform-specific configuration in the app project:
+
+```bash
+# List targets, configurations, and schemes (Apple-compatible text or JSON)
+xcodebuild -list -json -project Examples/XcodeDemo/XcodeDemo.xcodeproj
+
+# Inspect resolved build settings (supports KEY=VALUE overrides)
+xcodebuild -showBuildSettings -json \
+  -project Examples/XcodeDemo/XcodeDemo.xcodeproj \
+  -configuration Release -derivedDataPath build
+
+# Compile and stage into build/Build/Products/Release/XcodeDemo/
+xcodebuild -project Examples/XcodeDemo/XcodeDemo.xcodeproj \
+  -scheme XcodeDemo -configuration Release \
+  -derivedDataPath build CODE_SIGNING_ALLOWED=NO clean build
+```
+
+When run from source via SwiftPM (`swift run xcodebuild ...`), or installed as
+`xcodebuild` on Windows and Linux hosts, `CrossXcodeBuild`:
+
+- Parses `project.pbxproj` (plus `.xcconfig`, `Package.resolved`, and
+  `Info.plist` keys) in pure Swift with no Xcode dependency.
+- Maps imported Apple frameworks (`SwiftUI`, `AppKit`, `CryptoKit`, `Combine`,
+  `CoreGraphics`, `SQLite3`, etc.) to `CrossSwiftUI` products and omits
+  Darwin-only conditional SPM dependencies.
+- Synthesizes `Info.plist`, `GeneratedAssetSymbols.swift`, `.colorset` /
+  `.imageset` / `.xcstrings` runtime assets, multi-size Windows `AppIcon.ico`
+  + Win32 manifest/version resource (`AppResources.rc`), and Linux
+  `.desktop` + `hicolor` PNG icons.
+- Stages a self-contained runnable app directory at
+  `<CONFIGURATION_BUILD_DIR>/<ProductName>/` (defaulting to
+  `<derivedDataPath>/Build/Products/<Configuration>/<ProductName>/`), bundling
+  required Windows `.dll`s (via PE import scanning) or Linux `.so`s (via `ldd`
+  + `$ORIGIN/lib` RPATH).
+
+[`Examples/XcodeDemo`](Examples/XcodeDemo/XcodeDemo.xcodeproj) is an unmodified
+macOS Xcode project that builds both with Apple's `xcodebuild` on macOS and
+with CrossSwiftUI's `xcodebuild` on Windows and Linux.
+
 ## Repository layout
 
 ```
-Sources/SwiftUIRuntime/   view protocol, element tree, layout, diff, state
-Sources/CrossSwiftUI/     Windows and Linux drawing backends, app runner
-Sources/CrossAppKit/      cross-platform AppKit and Apple-framework shims
-Sources/SwiftUIWeb/       DOM renderer and WebAssembly app runner
-Sources/SwiftUIAndroid/   Compose host and Swift renderer integration
-Sources/CSwiftUIWindows/  generic GDI+ display list and native button bridge
-Sources/SwiftUI/          facade: `import SwiftUI`
-Examples/Counter/         the README program
-Examples/AndroidCounter/  Android Activity, APK build and smoke test
-Web/                      browser entry page
-Tests/SwiftUIRuntimeTests FakeBackend assertions for layout, diff and state
-docs/                     architecture, compatibility, divergences
+Sources/SwiftUIRuntime/      view protocol, element tree, layout, diff, state
+Sources/CrossSwiftUI/        Windows and Linux drawing backends, app runner
+Sources/CrossAppKit/         cross-platform AppKit and Apple-framework shims
+Sources/CrossXcodeBuild/     zero-config .xcodeproj parser, driver & stager
+Sources/CrossXcodeBuildCLI/  cross-platform `xcodebuild` executable
+Sources/SwiftUIWeb/          DOM renderer and WebAssembly app runner
+Sources/SwiftUIAndroid/      Compose host and Swift renderer integration
+Sources/CSwiftUIWindows/     generic GDI+ display list and native button bridge
+Sources/SwiftUI/             facade: `import SwiftUI`
+Examples/Counter/            the README program
+Examples/XcodeDemo/          unmodified macOS .xcodeproj built on Windows/Linux
+Examples/AndroidCounter/     Android Activity, APK build and smoke test
+Web/                         browser entry page
+Tests/SwiftUIRuntimeTests/   FakeBackend assertions for layout, diff and state
+Tests/CrossXcodeBuildTests/  unit tests for parser, loader & xcodebuild CLI
+docs/                        architecture, compatibility, divergences
 ```
 
 ## Design in one paragraph

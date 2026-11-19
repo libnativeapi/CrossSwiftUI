@@ -3,4 +3,7 @@
 .typecheck/
 .DS_Store
 *.xcodeproj
+!Examples/**/*.xcodeproj
+!Examples/**/*.xcodeproj/**
+build/
 DerivedData/

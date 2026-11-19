@@ -1,0 +1,380 @@
+import Foundation
+import XCTest
+
+@testable import CrossXcodeBuild
+
+final class CrossXcodeBuildTests: XCTestCase {
+  private var repositoryRoot: URL {
+    URL(fileURLWithPath: #filePath)
+      .deletingLastPathComponent()
+      .deletingLastPathComponent()
+      .deletingLastPathComponent()
+  }
+
+  func testOpenStepPlistParserHandlesCommentsEscapesAndNestedStructures() throws {
+    let source = """
+    // !$*UTF8*$!
+    {
+      archiveVersion = 1;
+      /* block comment */
+      objects = {
+        AA01 /* Main.swift */ = {
+          isa = PBXFileReference;
+          path = "Sources/My\\"App\\nFile.swift";
+          rawBytes = <0a 1b 2c>;
+          list = (
+            itemOne,
+            "itemTwo",
+          );
+        };
+      };
+      rootObject = AA01;
+    }
+    """
+    let parsed = try OpenStepPlistParser.parse(data: Data(source.utf8))
+    let root = try XCTUnwrap(parsed as? [String: Any])
+    XCTAssertEqual(root["archiveVersion"] as? String, "1")
+    XCTAssertEqual(root["rootObject"] as? String, "AA01")
+
+    let objects = try XCTUnwrap(root["objects"] as? [String: Any])
+    let entry = try XCTUnwrap(objects["AA01"] as? [String: Any])
+    XCTAssertEqual(entry["isa"] as? String, "PBXFileReference")
+    XCTAssertEqual(entry["path"] as? String, "Sources/My\"App\nFile.swift")
+    XCTAssertEqual(entry["rawBytes"] as? Data, Data([0x0A, 0x1B, 0x2C]))
+    let list = try XCTUnwrap(entry["list"] as? [String])
+    XCTAssertEqual(list, ["itemOne", "itemTwo"])
+  }
+
+  func testLoadXcodeDemoSynchronizedProjectAndInferredModules() throws {
+    let demoProject = repositoryRoot.appendingPathComponent("Examples/XcodeDemo/XcodeDemo.xcodeproj")
+    let loader = XcodeProjectLoader()
+    let resolved = try loader.load(from: demoProject, configuration: .release)
+
+    XCTAssertEqual(resolved.mainTarget.name, "XcodeDemo")
+    XCTAssertEqual(resolved.mainTarget.productName, "XcodeDemo")
+    XCTAssertEqual(resolved.mainTarget.executableName, "XcodeDemo")
+    XCTAssertEqual(resolved.mainTarget.bundleIdentifier, "dev.crossswift.xcodedemo")
+    XCTAssertEqual(resolved.mainTarget.marketingVersion, "1.2.0")
+    XCTAssertEqual(resolved.mainTarget.buildVersion, "1")
+    XCTAssertEqual(
+      resolved.mainTarget.categoryType,
+      "public.app-category.developer-tools"
+    )
+
+    let swiftNames = Set(resolved.mainTarget.swiftSources.map(\.lastPathComponent))
+    XCTAssertTrue(swiftNames.contains("XcodeDemoApp.swift"))
+    XCTAssertTrue(swiftNames.contains("ContentView.swift"))
+    XCTAssertEqual(resolved.mainTarget.assetCatalogs.map(\.lastPathComponent), ["Assets.xcassets"])
+    XCTAssertEqual(resolved.mainTarget.stringCatalogs.map(\.lastPathComponent), ["Localizable.xcstrings"])
+
+    XCTAssertTrue(resolved.inferredCrossSwiftModules.contains("SwiftUI"))
+    XCTAssertTrue(resolved.inferredCrossSwiftModules.contains("AppKit"))
+    XCTAssertTrue(resolved.inferredCrossSwiftModules.contains("CryptoKit"))
+  }
+
+  func testClassicPbxprojWithXCConfigRemotePackageAndDarwinGuardedSparkle() throws {
+    let tmp = FileManager.default.temporaryDirectory
+      .appendingPathComponent("crossswift-classic-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at: tmp, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: tmp) }
+
+    try """
+    MARKETING_VERSION = 2.4.1
+    PRODUCT_BUNDLE_IDENTIFIER = dev.example.classic
+    """.write(to: tmp.appendingPathComponent("Release.xcconfig"), atomically: true, encoding: .utf8)
+
+    let srcDir = tmp.appendingPathComponent("AppSources")
+    try FileManager.default.createDirectory(at: srcDir, withIntermediateDirectories: true)
+    try """
+    import SwiftUI
+    import SQLite3
+    #if canImport(Sparkle) && os(macOS)
+    import Sparkle
+    #endif
+
+    @main
+    struct ClassicApp: App {
+      var body: some Scene {
+        WindowGroup("Classic") { Text("Hi") }
+      }
+    }
+    """.write(to: srcDir.appendingPathComponent("AppMain.swift"), atomically: true, encoding: .utf8)
+
+    let projDir = tmp.appendingPathComponent("Classic.xcodeproj")
+    let swiftpmDir = projDir.appendingPathComponent("project.xcworkspace/xcshareddata/swiftpm")
+    try FileManager.default.createDirectory(at: swiftpmDir, withIntermediateDirectories: true)
+
+    try """
+    {
+      "pins": [
+        {
+          "identity": "sparkle",
+          "location": "https://github.com/sparkle-project/Sparkle.git",
+          "state": { "revision": "deadbeef", "version": "2.6.0" }
+        },
+        {
+          "identity": "swift-log",
+          "location": "https://github.com/apple/swift-log.git",
+          "state": { "revision": "cafe1234", "version": "1.6.1" }
+        }
+      ],
+      "version": 2
+    }
+    """.write(to: swiftpmDir.appendingPathComponent("Package.resolved"), atomically: true, encoding: .utf8)
+
+    try """
+    // !$*UTF8*$!
+    {
+      archiveVersion = 1;
+      objectVersion = 56;
+      objects = {
+        F001 = { isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Release.xcconfig; sourceTree = "<group>"; };
+        F002 = { isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppMain.swift; sourceTree = "<group>"; };
+        B001 = { isa = PBXBuildFile; fileRef = F002; };
+        G002 = { isa = PBXGroup; children = ( F002 ); path = AppSources; sourceTree = "<group>"; };
+        G001 = { isa = PBXGroup; children = ( F001, G002 ); sourceTree = "<group>"; };
+        P001 = { isa = PBXSourcesBuildPhase; files = ( B001 ); };
+        R001 = { isa = XCRemoteSwiftPackageReference; repositoryURL = "https://github.com/sparkle-project/Sparkle.git"; requirement = { kind = upToNextMajorVersion; minimumVersion = 2.6.0; }; };
+        R002 = { isa = XCRemoteSwiftPackageReference; repositoryURL = "https://github.com/apple/swift-log.git"; requirement = { kind = upToNextMajorVersion; minimumVersion = 1.6.0; }; };
+        D001 = { isa = XCSwiftPackageProductDependency; package = R001; productName = Sparkle; };
+        D002 = { isa = XCSwiftPackageProductDependency; package = R002; productName = Logging; };
+        C001 = { isa = XCBuildConfiguration; baseConfigurationReference = F001; buildSettings = { SWIFT_VERSION = 5.0; }; name = Release; };
+        C002 = { isa = XCBuildConfiguration; buildSettings = { PRODUCT_NAME = ClassicApp; }; name = Release; };
+        L001 = { isa = XCConfigurationList; buildConfigurations = ( C001 ); defaultConfigurationName = Release; };
+        L002 = { isa = XCConfigurationList; buildConfigurations = ( C002 ); defaultConfigurationName = Release; };
+        T001 = {
+          isa = PBXNativeTarget;
+          buildConfigurationList = L002;
+          buildPhases = ( P001 );
+          name = ClassicApp;
+          packageProductDependencies = ( D001, D002 );
+          productName = ClassicApp;
+          productType = "com.apple.product-type.application";
+        };
+        PRJ1 = {
+          isa = PBXProject;
+          buildConfigurationList = L001;
+          mainGroup = G001;
+          packageReferences = ( R001, R002 );
+          targets = ( T001 );
+        };
+      };
+      rootObject = PRJ1;
+    }
+    """.write(to: projDir.appendingPathComponent("project.pbxproj"), atomically: true, encoding: .utf8)
+
+    let resolved = try XcodeProjectLoader().load(from: projDir, configuration: .release)
+    XCTAssertEqual(resolved.mainTarget.bundleIdentifier, "dev.example.classic")
+    XCTAssertEqual(resolved.mainTarget.marketingVersion, "2.4.1")
+    XCTAssertEqual(resolved.mainTarget.swiftSources.map(\.lastPathComponent), ["AppMain.swift"])
+    XCTAssertTrue(resolved.inferredCrossSwiftModules.contains("SwiftUI"))
+    XCTAssertTrue(resolved.inferredCrossSwiftModules.contains("SQLite3"))
+    XCTAssertEqual(resolved.skippedDarwinOnlyProducts, ["Sparkle"])
+    XCTAssertEqual(resolved.productDependencies.map(\.productName), ["Logging"])
+    XCTAssertEqual(resolved.remotePackages.first?.pinnedVersion, "1.6.1")
+
+    let synthesizer = WorkspaceSynthesizer()
+    let nativeAPIRoot = repositoryRoot
+      .deletingLastPathComponent()
+      .appendingPathComponent("nativeapi/bindings/swift")
+    let windowsManifest = synthesizer.generatePackageManifest(
+      project: resolved,
+      platform: .windows,
+      configuration: .release,
+      consoleSubsystem: false,
+      crossSwiftRoot: repositoryRoot,
+      nativeAPISwiftRoot: nativeAPIRoot,
+      compiledResourceURL: nil
+    )
+    XCTAssertTrue(windowsManifest.contains(".product(name: \"SQLite3\""))
+    let linuxManifest = synthesizer.generatePackageManifest(
+      project: resolved,
+      platform: .linux,
+      configuration: .release,
+      consoleSubsystem: false,
+      crossSwiftRoot: repositoryRoot,
+      nativeAPISwiftRoot: nativeAPIRoot,
+      compiledResourceURL: nil
+    )
+    XCTAssertFalse(linuxManifest.contains(".product(name: \"SQLite3\""))
+  }
+
+  func testICOEncoderProducesValidMultiSizeHeaderAndPayloads() throws {
+    let png16 = makeMinimalPNG(width: 16, height: 16)
+    let png256 = makeMinimalPNG(width: 256, height: 256)
+    let dims16 = ICOEncoder.readPNGDimensions(data: png16)
+    let dims256 = ICOEncoder.readPNGDimensions(data: png256)
+    XCTAssertEqual(dims16?.width, 16)
+    XCTAssertEqual(dims256?.width, 256)
+
+    let ico = try XCTUnwrap(
+      ICOEncoder.encode(pngEntries: [
+        ICOEncoder.PNGEntry(width: 256, height: 256, data: png256),
+        ICOEncoder.PNGEntry(width: 16, height: 16, data: png16),
+      ])
+    )
+    let bytes = [UInt8](ico)
+    XCTAssertEqual(bytes[0..<6], [0, 0, 1, 0, 2, 0])
+    // Entry 0 (sorted ascending): 16x16
+    XCTAssertEqual(bytes[6], 16)
+    XCTAssertEqual(bytes[7], 16)
+    // Entry 1: 256x256 stored as 0x0 per ICO spec
+    XCTAssertEqual(bytes[22], 0)
+    XCTAssertEqual(bytes[23], 0)
+    XCTAssertEqual(bytes.count, 6 + 32 + png16.count + png256.count)
+  }
+
+  func testAssetAndIconCompilerGeneratesSymbolsInfoPlistAndWindowsRC() throws {
+    let demoProject = repositoryRoot.appendingPathComponent("Examples/XcodeDemo/XcodeDemo.xcodeproj")
+    let resolved = try XcodeProjectLoader().load(from: demoProject, configuration: .release)
+
+    let tmp = FileManager.default.temporaryDirectory
+      .appendingPathComponent("crossswift-assets-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at: tmp, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: tmp) }
+
+    let compiled = try AssetAndIconCompiler().compile(project: resolved, stagingRoot: tmp)
+    XCTAssertNotNil(compiled.windowsIconURL)
+    XCTAssertFalse(compiled.linuxIconVariants.isEmpty)
+
+    let plistData = try Data(contentsOf: compiled.infoPlistURL)
+    let plist = try XCTUnwrap(
+      try PropertyListSerialization.propertyList(from: plistData, options: [], format: nil)
+        as? [String: Any]
+    )
+    XCTAssertEqual(plist["CFBundleIdentifier"] as? String, "dev.crossswift.xcodedemo")
+    XCTAssertEqual(plist["CFBundleShortVersionString"] as? String, "1.2.0")
+    XCTAssertEqual(plist["CFBundleDisplayName"] as? String, "XcodeDemo")
+
+    let symbolsURL = try XCTUnwrap(compiled.generatedSymbolsSwiftURL)
+    let symbolsCode = try String(contentsOf: symbolsURL, encoding: .utf8)
+    XCTAssertTrue(symbolsCode.contains("struct ColorResource"))
+    XCTAssertTrue(symbolsCode.contains("struct ImageResource"))
+    XCTAssertTrue(symbolsCode.contains("static let brandAccent = ColorResource(name: \"BrandAccent\""))
+    XCTAssertTrue(symbolsCode.contains("lightRed: 0.145"))
+    XCTAssertTrue(symbolsCode.contains("darkRed: 0.31"))
+    XCTAssertTrue(symbolsCode.contains("static let heroBadge = ImageResource(name: \"HeroBadge\""))
+
+    let rcText = try String(contentsOf: XCTUnwrap(compiled.windowsResourceScriptURL), encoding: .utf8)
+    XCTAssertTrue(rcText.contains("1 ICON \"AppIcon.ico\""))
+    XCTAssertTrue(rcText.contains("1 24 \"Application.manifest\""))
+    XCTAssertTrue(rcText.contains("FILEVERSION 1,2,0,1"))
+  }
+
+  func testXcodeBuildCLIParserFlagsOverridesAndActions() throws {
+    let demoDir = repositoryRoot.appendingPathComponent("Examples/XcodeDemo")
+    let outcome = try XcodeBuildCLIParser.parse(
+      arguments: [
+        "-scheme", "XcodeDemo",
+        "-configuration", "Debug",
+        "-derivedDataPath", "build-out",
+        "-UseModernBuildSystem=YES",
+        "-skipPackagePluginValidation",
+        "CODE_SIGNING_ALLOWED=NO",
+        "CONFIGURATION_BUILD_DIR=/tmp/custom-out",
+        "MARKETING_VERSION=3.1.0",
+        "clean",
+        "build",
+      ],
+      currentDirectory: demoDir
+    )
+
+    guard case .run(let opts) = outcome else {
+      XCTFail("Expected .run outcome")
+      return
+    }
+    XCTAssertNil(opts.projectPath)
+    XCTAssertEqual(opts.schemeName, "XcodeDemo")
+    XCTAssertEqual(opts.configuration, .debug)
+    XCTAssertEqual(
+      opts.derivedDataPath?.path,
+      demoDir.appendingPathComponent("build-out").standardizedFileURL.path
+    )
+    XCTAssertEqual(opts.buildSettingOverrides["CODE_SIGNING_ALLOWED"], "NO")
+    XCTAssertEqual(opts.buildSettingOverrides["CONFIGURATION_BUILD_DIR"], "/tmp/custom-out")
+    XCTAssertEqual(opts.buildSettingOverrides["MARKETING_VERSION"], "3.1.0")
+    XCTAssertEqual(opts.mode, .actions([.clean, .build]))
+
+    let discovered = try XcodeProjectLoader.discoverProjectURL(
+      projectPath: opts.projectPath,
+      workspacePath: opts.workspacePath,
+      in: demoDir
+    )
+    XCTAssertEqual(discovered.lastPathComponent, "XcodeDemo.xcodeproj")
+  }
+
+  func testXcodeBuildDriverListJSONMatchesAppleSchema() throws {
+    let demoDir = repositoryRoot.appendingPathComponent("Examples/XcodeDemo")
+    let outcome = try XcodeBuildCLIParser.parse(
+      arguments: ["-list", "-json"],
+      currentDirectory: demoDir
+    )
+    guard case .run(let opts) = outcome else {
+      XCTFail("Expected .run outcome")
+      return
+    }
+
+    let driver = XcodeBuildDriver()
+    let jsonText = try driver.list(options: opts, currentDirectory: demoDir)
+    let json = try XCTUnwrap(
+      try JSONSerialization.jsonObject(with: Data(jsonText.utf8)) as? [String: Any]
+    )
+    let projectDict = try XCTUnwrap(json["project"] as? [String: Any])
+    XCTAssertEqual(projectDict["name"] as? String, "XcodeDemo")
+    XCTAssertEqual(projectDict["configurations"] as? [String], ["Debug", "Release"])
+    XCTAssertEqual(projectDict["targets"] as? [String], ["XcodeDemo"])
+    XCTAssertEqual(projectDict["schemes"] as? [String], ["XcodeDemo"])
+  }
+
+  func testXcodeBuildDriverShowBuildSettingsJSONAndOverrides() throws {
+    let demoProject = repositoryRoot.appendingPathComponent("Examples/XcodeDemo/XcodeDemo.xcodeproj")
+    let outcome = try XcodeBuildCLIParser.parse(
+      arguments: [
+        "-showBuildSettings",
+        "-json",
+        "-project", demoProject.path,
+        "-scheme", "XcodeDemo",
+        "-configuration", "Release",
+        "-destination", "generic/platform=Windows",
+        "MARKETING_VERSION=9.9.9",
+        "CONFIGURATION_BUILD_DIR=/tmp/custom-out",
+      ],
+      currentDirectory: repositoryRoot
+    )
+    guard case .run(let opts) = outcome else {
+      XCTFail("Expected .run outcome")
+      return
+    }
+
+    let driver = XcodeBuildDriver()
+    let jsonText = try driver.showBuildSettings(options: opts, currentDirectory: repositoryRoot)
+    let array = try XCTUnwrap(
+      try JSONSerialization.jsonObject(with: Data(jsonText.utf8)) as? [[String: Any]]
+    )
+    XCTAssertEqual(array.count, 1)
+    XCTAssertEqual(array[0]["action"] as? String, "build")
+    XCTAssertEqual(array[0]["target"] as? String, "XcodeDemo")
+
+    let buildSettings = try XCTUnwrap(array[0]["buildSettings"] as? [String: String])
+    XCTAssertEqual(buildSettings["CONFIGURATION"], "Release")
+    XCTAssertEqual(buildSettings["MARKETING_VERSION"], "9.9.9")
+    XCTAssertEqual(buildSettings["BUILT_PRODUCTS_DIR"], "/tmp/custom-out")
+    XCTAssertEqual(buildSettings["CONFIGURATION_BUILD_DIR"], "/tmp/custom-out")
+    XCTAssertEqual(buildSettings["FULL_PRODUCT_NAME"], "XcodeDemo")
+    XCTAssertEqual(buildSettings["EXECUTABLE_PATH"], "XcodeDemo/XcodeDemo.exe")
+    XCTAssertEqual(buildSettings["PLATFORM_NAME"], "windows")
+  }
+
+  private func makeMinimalPNG(width: Int, height: Int) -> Data {
+    var data = Data([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A])
+    data.append(contentsOf: [0, 0, 0, 13]) // IHDR length
+    data.append(contentsOf: [0x49, 0x48, 0x44, 0x52]) // IHDR
+    for val in [UInt32(width), UInt32(height)] {
+      var be = val.bigEndian
+      withUnsafeBytes(of: &be) { data.append(contentsOf: $0) }
+    }
+    data.append(contentsOf: [8, 6, 0, 0, 0])
+    data.append(contentsOf: [0, 0, 0, 0]) // placeholder CRC for test
+    return data
+  }
+}
