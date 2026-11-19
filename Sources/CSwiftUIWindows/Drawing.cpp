@@ -697,16 +697,107 @@ int Input(Surface *s, HWND hwnd, int64_t id, UINT msg, WPARAM wp, LPARAM lp) {
                   msg == WM_MOUSEHWHEEL ? -value : value,
                   Modifiers() | (msg == WM_MOUSEHWHEEL ? 1 : 0));
 }
+namespace {
+HWND g_print_edit = nullptr;
+COLORREF g_print_bg = CLR_INVALID;
+WNDPROC g_saved_host_proc = nullptr;
+
+LRESULT CALLBACK EditPrintColorProc(HWND wnd, UINT msg, WPARAM wp, LPARAM lp) {
+  const LRESULT base = CallWindowProcW(g_saved_host_proc, wnd, msg, wp, lp);
+  if ((msg == WM_CTLCOLOREDIT || msg == WM_CTLCOLORSTATIC) &&
+      reinterpret_cast<HWND>(lp) == g_print_edit && g_print_bg != CLR_INVALID) {
+    HDC hdc = reinterpret_cast<HDC>(wp);
+    SetBkColor(hdc, g_print_bg);
+    SetBkMode(hdc, OPAQUE);
+    return reinterpret_cast<LRESULT>(
+        GetStockObject(g_print_bg == 0 ? BLACK_BRUSH : WHITE_BRUSH));
+  }
+  return base;
+}
+
+void PaintTransparentEdit(Surface *s, HWND hwnd) {
+  RenderFrame(s);
+  PAINTSTRUCT ps{};
+  HDC screen_dc = BeginPaint(hwnd, &ps);
+  RECT cr{};
+  GetClientRect(hwnd, &cr);
+  const int w = cr.right - cr.left;
+  const int h = cr.bottom - cr.top;
+  if (w > 0 && h > 0 && s->buffer && s->buffer->pixels &&
+      s->buffer->width > 0 && s->buffer->height > 0) {
+    POINT offset = {0, 0};
+    MapWindowPoints(hwnd, s->host, &offset, 1);
+
+    Framebuffer pass_b{UINT(w), UINT(h)};
+    Framebuffer pass_w{UINT(w), UINT(h)};
+    RECT full{0, 0, w, h};
+    FillRect(pass_b.dc, &full, static_cast<HBRUSH>(GetStockObject(BLACK_BRUSH)));
+    FillRect(pass_w.dc, &full, static_cast<HBRUSH>(GetStockObject(WHITE_BRUSH)));
+
+    g_print_edit = hwnd;
+    g_saved_host_proc = reinterpret_cast<WNDPROC>(GetWindowLongPtrW(
+        s->host, GWLP_WNDPROC));
+    SetWindowLongPtrW(s->host, GWLP_WNDPROC,
+                      reinterpret_cast<LONG_PTR>(EditPrintColorProc));
+
+    g_print_bg = RGB(0, 0, 0);
+    DefSubclassProc(hwnd, WM_PRINTCLIENT, reinterpret_cast<WPARAM>(pass_b.dc),
+                    PRF_CLIENT);
+    g_print_bg = RGB(255, 255, 255);
+    DefSubclassProc(hwnd, WM_PRINTCLIENT, reinterpret_cast<WPARAM>(pass_w.dc),
+                    PRF_CLIENT);
+
+    SetWindowLongPtrW(s->host, GWLP_WNDPROC,
+                      reinterpret_cast<LONG_PTR>(g_saved_host_proc));
+    g_saved_host_proc = nullptr;
+    g_print_edit = nullptr;
+    g_print_bg = CLR_INVALID;
+
+    const int buf_w = int(s->buffer->width);
+    const int buf_h = int(s->buffer->height);
+    for (int y = 0; y < h; ++y) {
+      const int sy = max(0, min(buf_h - 1, int(offset.y) + y));
+      const uint32_t *bg_row = s->buffer->pixels + size_t(sy) * size_t(buf_w);
+      uint32_t *b_row = pass_b.pixels + size_t(y) * size_t(w);
+      const uint32_t *w_row = pass_w.pixels + size_t(y) * size_t(w);
+      for (int x = 0; x < w; ++x) {
+        const int sx = max(0, min(buf_w - 1, int(offset.x) + x));
+        const uint32_t d = bg_row[sx];
+        const uint32_t pb = b_row[x];
+        const uint32_t pw = w_row[x];
+        const int dR = (d >> 16) & 0xFF, dG = (d >> 8) & 0xFF, dB = d & 0xFF;
+        const int bR = (pb >> 16) & 0xFF, bG = (pb >> 8) & 0xFF, bB = pb & 0xFF;
+        const int wR = (pw >> 16) & 0xFF, wG = (pw >> 8) & 0xFF, wB = pw & 0xFF;
+        const int invA_R = max(0, min(255, wR - bR));
+        const int invA_G = max(0, min(255, wG - bG));
+        const int invA_B = max(0, min(255, wB - bB));
+        const uint32_t outR = uint32_t(min(255, bR + (invA_R * dR + 127) / 255));
+        const uint32_t outG = uint32_t(min(255, bG + (invA_G * dG + 127) / 255));
+        const uint32_t outB = uint32_t(min(255, bB + (invA_B * dB + 127) / 255));
+        b_row[x] = 0xFF000000u | (outR << 16) | (outG << 8) | outB;
+      }
+    }
+    BitBlt(screen_dc, 0, 0, w, h, pass_b.dc, 0, 0, SRCCOPY);
+  }
+  EndPaint(hwnd, &ps);
+}
+} // namespace
+
 LRESULT CALLBACK EditProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp, UINT_PTR,
                           DWORD_PTR data) {
   auto *s = reinterpret_cast<Surface *>(data);
   auto found = s->edits.find(hwnd);
   if (found == s->edits.end())
     return DefSubclassProc(hwnd, msg, wp, lp);
+  const bool transparent = found->second.transparent_bg;
   auto id = found->second.id;
-  if (msg == WM_ERASEBKGND) {
-    Draw(s, hwnd, reinterpret_cast<HDC>(wp));
-    return 1;
+  if (transparent) {
+    if (msg == WM_ERASEBKGND)
+      return 1;
+    if (msg == WM_PAINT) {
+      PaintTransparentEdit(s, hwnd);
+      return 0;
+    }
   }
   if (msg == WM_KEYDOWN && wp == VK_TAB) {
     sui_surface_focus_next(s, hwnd, (Modifiers() & 1) != 0);
@@ -715,7 +806,19 @@ LRESULT CALLBACK EditProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp, UINT_PTR,
   if ((msg == WM_KEYDOWN || msg == WM_SYSKEYDOWN || msg == WM_MOUSEWHEEL) &&
       Input(s, hwnd, id, msg, wp, lp))
     return 0;
-  return DefSubclassProc(hwnd, msg, wp, lp);
+  const LRESULT res = DefSubclassProc(hwnd, msg, wp, lp);
+  if (transparent &&
+      (msg == WM_CHAR || msg == WM_KEYDOWN || msg == WM_KEYUP ||
+       msg == WM_SETTEXT || msg == EM_SETSEL || msg == EM_REPLACESEL ||
+       msg == WM_PASTE || msg == WM_CUT || msg == WM_CLEAR || msg == WM_UNDO ||
+       msg == WM_HSCROLL || msg == WM_VSCROLL || msg == WM_SETFOCUS ||
+       msg == WM_KILLFOCUS || msg == WM_LBUTTONDOWN || msg == WM_LBUTTONUP ||
+       msg == WM_LBUTTONDBLCLK || (msg == WM_MOUSEMOVE && (wp & MK_LBUTTON)) ||
+       msg == WM_IME_COMPOSITION || msg == WM_IME_ENDCOMPOSITION)) {
+    RedrawWindow(hwnd, nullptr, nullptr,
+                 RDW_INVALIDATE | RDW_NOERASE | RDW_UPDATENOW);
+  }
+  return res;
 }
 LRESULT CALLBACK HostProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp, UINT_PTR,
                           DWORD_PTR data) {
@@ -729,40 +832,6 @@ LRESULT CALLBACK HostProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp, UINT_PTR,
   if (hwnd != s->host &&
       (msg == WM_COMMAND || msg == WM_CTLCOLOREDIT || msg == WM_CTLCOLORSTATIC))
     return SendMessageW(s->host, msg, wp, lp);
-  if ((msg == WM_CTLCOLOREDIT || msg == WM_CTLCOLORSTATIC) && lp) {
-    HWND child = reinterpret_cast<HWND>(lp);
-    auto found = s->edits.find(child);
-    if (found != s->edits.end()) {
-      DefSubclassProc(hwnd, msg, wp, lp);
-      RenderFrame(s);
-      if (s->buffer && s->buffer->pixels && s->buffer->width > 0 && s->buffer->height > 0) {
-        POINT offset = {0, 0};
-        MapWindowPoints(child, s->host, &offset, 1);
-        RECT cr{};
-        GetClientRect(child, &cr);
-        LONG sx = offset.x + max<LONG>(0, (cr.right - cr.left) / 2);
-        LONG sy = offset.y + max<LONG>(0, (cr.bottom - cr.top) / 2);
-        if (sx < 0) sx = 0;
-        if (sy < 0) sy = 0;
-        if (sx >= LONG(s->buffer->width)) sx = LONG(s->buffer->width) - 1;
-        if (sy >= LONG(s->buffer->height)) sy = LONG(s->buffer->height) - 1;
-        const uint32_t bgra = s->buffer->pixels[size_t(sy) * s->buffer->width + size_t(sx)];
-        const COLORREF sampled = RGB((bgra >> 16) & 0xFF, (bgra >> 8) & 0xFF, bgra & 0xFF);
-        HDC hdc = reinterpret_cast<HDC>(wp);
-        SetBkColor(hdc, sampled);
-        SetBkMode(hdc, OPAQUE);
-        auto &hook = found->second;
-        if (hook.bg_color != sampled || !hook.bg_brush) {
-          if (hook.bg_brush) DeleteObject(hook.bg_brush);
-          hook.bg_brush = CreateSolidBrush(sampled);
-          hook.bg_color = sampled;
-        }
-        return reinterpret_cast<LRESULT>(hook.bg_brush);
-      }
-      SetBkMode(reinterpret_cast<HDC>(wp), TRANSPARENT);
-      return reinterpret_cast<LRESULT>(GetStockObject(HOLLOW_BRUSH));
-    }
-  }
   if (msg == WM_DPICHANGED || msg == WM_DPICHANGED_AFTERPARENT) {
     // NativeAPI first applies the suggested bounds. Logical dimensions may
     // stay identical, but retained control frames still need the new DPI.
@@ -1742,38 +1811,8 @@ void sui_surface_end(void *h) {
   }
   s->commands.swap(s->pending);
   s->scrolls.swap(s->pending_scrolls);
-  if (!IsRectEmpty(&s->damage))
-    s->buffer_dirty = true;
-  if (!s->edits.empty()) {
-    RenderFrame(s);
-    if (s->buffer && s->buffer->pixels && s->buffer->width > 0 &&
-        s->buffer->height > 0) {
-      const double scale = (s->buffer_dpi ? s->buffer_dpi : 96) / 96.;
-      for (auto &entry : s->edits) {
-        auto &hook = entry.second;
-        if (!hook.transparent_bg)
-          continue;
-        LONG sx = LONG(std::round(hook.sample_x * scale));
-        LONG sy = LONG(std::round(hook.sample_y * scale));
-        if (sx < 0) sx = 0;
-        if (sy < 0) sy = 0;
-        if (sx >= LONG(s->buffer->width)) sx = LONG(s->buffer->width) - 1;
-        if (sy >= LONG(s->buffer->height)) sy = LONG(s->buffer->height) - 1;
-        const uint32_t bgra =
-            s->buffer->pixels[size_t(sy) * s->buffer->width + size_t(sx)];
-        const uint8_t cr = (bgra >> 16) & 0xFF;
-        const uint8_t cg = (bgra >> 8) & 0xFF;
-        const uint8_t cb = bgra & 0xFF;
-        const COLORREF sampled = RGB(cr, cg, cb);
-        if (hook.bg_color != sampled) {
-          hook.bg_color = sampled;
-          native_view_set_background_color(NativeView(s, entry.first),
-                                           {cr, cg, cb, 255});
-        }
-      }
-    }
-  }
   if (!IsRectEmpty(&s->damage)) {
+    s->buffer_dirty = true;
     std::vector<RECT> native_damage;
     auto native_area = [&](HWND hwnd) {
       if (!IsWindowVisible(hwnd) ||
