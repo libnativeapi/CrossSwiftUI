@@ -4,10 +4,37 @@ import Foundation
 /// Supports the SVG path grammar, including elliptical arcs and smooth curves.
 import SwiftUIRuntime
 
+struct VectorLayer {
+  let path: Path
+  let fill: Color?
+  let stroke: Color?
+  let strokeWidth: Double
+}
+
 struct VectorImage {
   let bounds: CGRect
-  let paths: [Path]
+  let layers: [VectorLayer]
   let strokeWidth: Double
+
+  var paths: [Path] { layers.map(\.path) }
+
+  init(bounds: CGRect, paths: [Path], strokeWidth: Double = 0) {
+    self.bounds = bounds
+    self.strokeWidth = strokeWidth
+    self.layers = paths.map { p in
+      if strokeWidth > 0 {
+        VectorLayer(path: p, fill: nil, stroke: .black, strokeWidth: strokeWidth)
+      } else {
+        VectorLayer(path: p, fill: .black, stroke: nil, strokeWidth: 0)
+      }
+    }
+  }
+
+  init(bounds: CGRect, layers: [VectorLayer], strokeWidth: Double = 0) {
+    self.bounds = bounds
+    self.layers = layers
+    self.strokeWidth = strokeWidth
+  }
   private static let lock = NSLock()
   nonisolated(unsafe) static var cache: [String: VectorImage] = [:]
   nonisolated(unsafe) static var symbolDefinitions: [String: (viewBox: CGRect, strokeWidth: Double, paths: [String])] = [:]
@@ -71,27 +98,106 @@ struct VectorImage {
       return image
     }
     guard let source = try? String(contentsOfFile: file, encoding: .utf8) else { return nil }
-    func attributes(_ name: String) -> [String] {
-      let pattern = name + "=[\"']([^\"']*)[\"']"
-      guard let regex = try? NSRegularExpression(pattern: pattern) else { return [] }
-      return regex.matches(in: source, range: NSRange(source.startIndex..., in: source)).compactMap
-      { match in
-        Range(match.range(at: 1), in: source).map { String(source[$0]) }
-      }
+    func attribute(_ name: String, in fragment: String) -> String? {
+      let pattern = "(?:^|\\s)" + name + "\\s*=\\s*[\"']([^\"']*)[\"']"
+      guard let regex = try? NSRegularExpression(pattern: pattern),
+            let match = regex.firstMatch(in: fragment, range: NSRange(fragment.startIndex..., in: fragment)),
+            let range = Range(match.range(at: 1), in: fragment)
+      else { return nil }
+      return String(fragment[range])
     }
     let box =
-      attributes("viewBox").first?.split(whereSeparator: { $0 == " " || $0 == "," }).compactMap {
+      attribute("viewBox", in: source)?.split(whereSeparator: { $0 == " " || $0 == "," }).compactMap {
         Double($0)
       } ?? []
     guard box.count == 4, box[2] > 0, box[3] > 0 else { return nil }
+
+    let svgTag: String = {
+      guard let regex = try? NSRegularExpression(pattern: "<svg\\b[^>]*>"),
+            let match = regex.firstMatch(in: source, range: NSRange(source.startIndex..., in: source)),
+            let range = Range(match.range, in: source)
+      else { return "" }
+      return String(source[range])
+    }()
+    let defaultFillAttr = attribute("fill", in: svgTag)
+
+    var layers: [VectorLayer] = []
+    if let pathRegex = try? NSRegularExpression(pattern: "<path\\b[^>]*/?>") {
+      let matches = pathRegex.matches(in: source, range: NSRange(source.startIndex..., in: source))
+      for match in matches {
+        guard let range = Range(match.range, in: source) else { continue }
+        let tag = String(source[range])
+        guard let d = attribute("d", in: tag) else { continue }
+        let fillAttr = attribute("fill", in: tag) ?? defaultFillAttr
+        let fillColor: Color?
+        if let fillAttr {
+          fillColor = parseSVGColor(fillAttr)
+        } else {
+          // SVG default fill is black when omitted.
+          fillColor = .black
+        }
+        let strokeAttr = attribute("stroke", in: tag)
+        let strokeColor = strokeAttr.flatMap(parseSVGColor)
+        let strokeW: Double
+        if strokeColor != nil {
+          strokeW = attribute("stroke-width", in: tag).flatMap(Double.init) ?? 1.0
+        } else {
+          strokeW = 0
+        }
+        layers.append(VectorLayer(
+          path: parse(d),
+          fill: fillColor,
+          stroke: strokeColor,
+          strokeWidth: strokeW
+        ))
+      }
+    }
+
     let image = VectorImage(
       bounds: CGRect(x: box[0], y: box[1], width: box[2], height: box[3]),
-      paths: attributes("(?:^|\\s)d").map { parse($0) },
-      strokeWidth: 0)
+      layers: layers,
+      strokeWidth: 0
+    )
     lock.lock()
     cache[file] = image
     lock.unlock()
     return image
+  }
+
+  private static func parseSVGColor(_ raw: String) -> Color? {
+    let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    if trimmed.isEmpty || trimmed == "none" || trimmed == "transparent" {
+      return nil
+    }
+    if trimmed == "currentcolor" || trimmed == "black" {
+      return .black
+    }
+    if trimmed == "white" {
+      return .white
+    }
+    if trimmed.hasPrefix("#") {
+      let hex = String(trimmed.dropFirst())
+      if hex.count == 3, let val = UInt32(hex, radix: 16) {
+        let r = Double((val >> 8) & 0xF) / 15.0
+        let g = Double((val >> 4) & 0xF) / 15.0
+        let b = Double(val & 0xF) / 15.0
+        return Color(red: r, green: g, blue: b)
+      }
+      if hex.count == 6, let val = UInt32(hex, radix: 16) {
+        let r = Double((val >> 16) & 0xFF) / 255.0
+        let g = Double((val >> 8) & 0xFF) / 255.0
+        let b = Double(val & 0xFF) / 255.0
+        return Color(red: r, green: g, blue: b)
+      }
+      if hex.count == 8, let val = UInt32(hex, radix: 16) {
+        let r = Double((val >> 24) & 0xFF) / 255.0
+        let g = Double((val >> 16) & 0xFF) / 255.0
+        let b = Double((val >> 8) & 0xFF) / 255.0
+        let a = Double(val & 0xFF) / 255.0
+        return Color(red: r, green: g, blue: b, opacity: a)
+      }
+    }
+    return .black
   }
 
   private static func parse(_ source: String) -> Path {

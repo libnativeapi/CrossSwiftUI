@@ -292,14 +292,24 @@ final class LinuxDrawing {
       let scale = min(frame.width / image.bounds.width, frame.height / image.bounds.height)
       let x = frame.minX + (frame.width - image.bounds.width * scale) / 2 - image.bounds.minX * scale
       let y = frame.minY + (frame.height - image.bounds.height * scale) / 2 - image.bounds.minY * scale
-      let ink = node.props.foreground ?? .black
-      let sw = image.strokeWidth > 0 ? max(1.1, image.strokeWidth * scale) : 0
-      for path in image.paths {
-        let t = path.transformed(x: x, y: y, sx: scale, sy: scale)
-        if sw > 0 {
-          shape(context, t, fill: .clear, stroke: ink, width: sw)
+      let ink = (node.props.foreground ?? .black).opacity(node.props.opacity)
+      let isTemplate = node.props.imageTemplate || path.hasPrefix("sf://")
+      for layer in image.layers {
+        let t = layer.path.transformed(x: x, y: y, sx: scale, sy: scale)
+        let fillColor: SwiftUIRuntime.Color
+        let strokeColor: SwiftUIRuntime.Color
+        let sw: Double
+        if isTemplate {
+          fillColor = layer.fill != nil ? ink : .clear
+          strokeColor = layer.stroke != nil ? ink : .clear
+          sw = layer.strokeWidth > 0 ? max(1.1, layer.strokeWidth * scale) : 0
         } else {
-          shape(context, t, fill: ink, stroke: .clear, width: 0)
+          fillColor = (layer.fill ?? .clear).opacity(node.props.opacity)
+          strokeColor = (layer.stroke ?? .clear).opacity(node.props.opacity)
+          sw = layer.strokeWidth > 0 ? max(1.0, layer.strokeWidth * scale) : 0
+        }
+        if fillColor.opacity > 0 || sw > 0 {
+          shape(context, t, fill: fillColor, stroke: strokeColor, width: sw)
         }
       }
     } else if let pixels = gdk_pixbuf_new_from_file_at_scale(path, Int32(clamping: Int(frame.width)),

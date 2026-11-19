@@ -1011,18 +1011,28 @@
           let sx = r.width / image.bounds.width
           let sy = r.height / image.bounds.height
           let scale = min(sx, sy)
-          let inkColor = p.foreground ?? .black
+          let inkColor = (p.foreground ?? .black).opacity(p.opacity)
           let weightBoost = ((p.font?.weight.value ?? 400) - 400) / 500 * 0.45
-          let sw = image.strokeWidth > 0 ? max(1.1, (image.strokeWidth + weightBoost) * scale) : 0
-          for path in image.paths {
-            let transformed = path.transformed(
+          let isTemplate = p.imageTemplate || p.imagePath.hasPrefix("sf://")
+          for layer in image.layers {
+            let transformed = layer.path.transformed(
               x: r.minX + (r.width - image.bounds.width * scale) / 2 - image.bounds.minX * scale,
               y: r.minY + (r.height - image.bounds.height * scale) / 2 - image.bounds.minY * scale,
               sx: scale, sy: scale)
-            if sw > 0 {
-              vector(transformed, fill: .clear, stroke: inkColor, width: sw)
+            let fillColor: SwiftUIRuntime.Color
+            let strokeColor: SwiftUIRuntime.Color
+            let sw: Double
+            if isTemplate {
+              fillColor = layer.fill != nil ? inkColor : .clear
+              strokeColor = layer.stroke != nil ? inkColor : .clear
+              sw = layer.strokeWidth > 0 ? max(1.1, (layer.strokeWidth + weightBoost) * scale) : 0
             } else {
-              vector(transformed, fill: inkColor)
+              fillColor = (layer.fill ?? .clear).opacity(p.opacity)
+              strokeColor = (layer.stroke ?? .clear).opacity(p.opacity)
+              sw = layer.strokeWidth > 0 ? max(1.0, layer.strokeWidth * scale) : 0
+            }
+            if fillColor.opacity > 0 || sw > 0 {
+              vector(transformed, fill: fillColor, stroke: strokeColor, width: sw)
             }
           }
         } else if !p.imagePath.isEmpty {
