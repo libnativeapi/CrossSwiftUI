@@ -117,7 +117,9 @@ public struct Color: Hashable, Sendable {
   public static let primary = Color { scheme in
     scheme == .dark ? (1, 1, 1, 1) : (0, 0, 0, 1)
   }
-  public static let secondary = Color(white: 0.35)
+  public static let secondary = Color { scheme in
+    scheme == .dark ? (0.68, 0.68, 0.72, 1) : (0.35, 0.35, 0.35, 1)
+  }
 }
 extension Color: View {
   public var body: some View { ShapeView(radius: 0, fill: self) }

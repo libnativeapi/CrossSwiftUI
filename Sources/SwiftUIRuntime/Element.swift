@@ -236,6 +236,8 @@ public struct NodeProps: Equatable {
   /// The explicit value from `.disabled(...)`, kept so environment resolution
   /// can distinguish "not set" from "set to false".
   public var disabledOverride: Bool? = nil
+  /// Optional color scheme override set by `.preferredColorScheme` / `.colorScheme`.
+  public var colorSchemeOverride: ColorScheme? = nil
   public var background: Color? = nil
   /// Effective foreground color, after environment inheritance is resolved.
   public var foreground: Color? = nil
@@ -492,15 +494,23 @@ func resolveEnvironment(
   inheritedLineSpacing: Double = 0,
   previous: Element? = nil
 ) {
-  let foreground = (element.props.foreground ?? inheritedForeground)?.resolved(in: colorScheme)
+  let effectiveScheme = element.props.colorSchemeOverride ?? colorScheme
+  let baseInheritedForeground: Color?
+  if let overrideScheme = element.props.colorSchemeOverride {
+    baseInheritedForeground = overrideScheme == .dark ? Color.primary.resolved(in: .dark) : nil
+  } else {
+    baseInheritedForeground =
+      inheritedForeground ?? (effectiveScheme == .dark ? Color.primary.resolved(in: .dark) : nil)
+  }
+  let foreground = (element.props.foreground ?? baseInheritedForeground)?.resolved(in: effectiveScheme)
   let disabled = element.props.disabledOverride ?? inheritedDisabled
 
   element.props.foreground = foreground
-  element.props.background = element.props.background?.resolved(in: colorScheme)
-  element.props.borderColor = element.props.borderColor.resolved(in: colorScheme)
+  element.props.background = element.props.background?.resolved(in: effectiveScheme)
+  element.props.borderColor = element.props.borderColor.resolved(in: effectiveScheme)
   if let grad = element.props.gradient {
     element.props.gradient = LinearGradient.Data(
-      colors: grad.colors.map { $0.resolved(in: colorScheme) },
+      colors: grad.colors.map { $0.resolved(in: effectiveScheme) },
       start: grad.start,
       end: grad.end
     )
@@ -540,7 +550,7 @@ func resolveEnvironment(
   for index in element.children.indices {
     resolveEnvironment(
       &element.children[index],
-      colorScheme: colorScheme,
+      colorScheme: effectiveScheme,
       inheritedForeground: foreground,
       inheritedDisabled: disabled,
       inheritedOpacity: element.props.opacity,

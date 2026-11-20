@@ -100,7 +100,11 @@ struct EnvironmentView<Content: View, Value>: View, _PrimitiveView {
     scoped[keyPath: keyPath] = value
     EnvironmentValues.current = scoped
     defer { EnvironmentValues.current = saved }
-    return _render(content, path: path)
+    var element = _render(content, path: path)
+    if keyPath == \EnvironmentValues.colorScheme, let scheme = value as? ColorScheme {
+      element.props.colorSchemeOverride = scheme
+    }
+    return element
   }
 }
 extension View {
