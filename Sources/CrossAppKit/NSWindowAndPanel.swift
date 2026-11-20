@@ -475,11 +475,6 @@ open class NSWindow: NSResponder {
     #if !os(macOS)
       guard let nw = nativeWindow else { return }
       let isFrameless = !styleMask.contains(.titled)
-      #if os(Linux)
-        if isFrameless {
-          nw.setTitleBarStyle(.hidden)
-        }
-      #endif
       _ = nw.setFrameless(isFrameless)
       nw.setResizable(styleMask.contains(.resizable))
       nw.setMinimizable(styleMask.contains(.miniaturizable))
@@ -903,10 +898,6 @@ open class NSWindow: NSResponder {
       }
       contentView?.layoutSubtreeIfNeeded()
       nativeWindow?.show()
-      #if os(Linux)
-        syncStyleToNative()
-        syncBackgroundToNative()
-      #endif
       if canBecomeKey { nativeWindow?.focus() }
     #endif
     becomeKey()
@@ -938,10 +929,6 @@ open class NSWindow: NSResponder {
       } else {
         nativeWindow?.show()
       }
-      #if os(Linux)
-        syncStyleToNative()
-        syncBackgroundToNative()
-      #endif
     #endif
   }
 
@@ -961,10 +948,6 @@ open class NSWindow: NSResponder {
       } else {
         nativeWindow?.showInactive()
       }
-      #if os(Linux)
-        syncStyleToNative()
-        syncBackgroundToNative()
-      #endif
     #endif
   }
 

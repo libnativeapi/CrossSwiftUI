@@ -8,16 +8,7 @@ extern "C" {
 
 void cak_free(void *ptr);
 
-// Clipboard
-uint32_t cak_clipboard_sequence_number(void);
-int cak_clipboard_clear(void);
-int cak_clipboard_has_text(void);
-int cak_clipboard_has_files(void);
-int cak_clipboard_has_image(void);
-int cak_clipboard_has_rtf(void);
-int cak_clipboard_has_html(void);
-int cak_clipboard_has_custom(const char *utf8_format);
-int cak_clipboard_is_concealed(void);
+// Clipboard (write/read payload helpers; sequence/clear/probing/concealed use NativeAPI.Clipboard)
 char *cak_clipboard_get_text(void);
 int cak_clipboard_set_text(const char *utf8_text);
 int cak_clipboard_add_text(const char *utf8_text);
@@ -72,13 +63,11 @@ void cak_font_metrics(
     double *out_leading
 );
 void cak_enable_per_monitor_dpi(void);
-int cak_is_system_dark_mode(void);
 
 // Window & FieldEditor & Cursor & Synthetic Input
 void cak_window_set_backdrop(void *hwnd, int backdrop_kind, int is_dark);
 void cak_window_set_tool_style(void *hwnd, int hide_from_taskbar, int non_activating);
 void cak_window_apply_frameless(void *hwnd, int is_frameless);
-void cak_cursor_pos(double *out_x, double *out_y);
 uint32_t cak_modifier_flags(void);
 void cak_set_cursor(int cursor_kind);
 void *cak_focused_hwnd(void);

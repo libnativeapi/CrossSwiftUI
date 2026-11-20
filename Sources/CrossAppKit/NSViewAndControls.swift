@@ -967,6 +967,12 @@ open class NSTextView: NSText {
   }
 
   public func selectedRange() -> NSRange {
+    #if !os(macOS)
+      if let editor = standaloneEditor {
+        let range = editor.selection
+        return NSRange(location: Int(range.start), length: Int(range.length))
+      }
+    #endif
     #if os(Windows)
       if isFieldEditorProxy, let hwnd = cak_focused_hwnd() {
         var start: Int32 = 0
@@ -980,6 +986,15 @@ open class NSTextView: NSText {
 
   public func setSelectedRange(_ charRange: NSRange) {
     localSelection = charRange
+    #if !os(macOS)
+      if let editor = standaloneEditor {
+        editor.setSelection(NativeAPI.TextRange(
+          start: UInt(max(0, charRange.location)),
+          length: UInt(max(0, charRange.length))
+        ))
+        return
+      }
+    #endif
     #if os(Windows)
       if isFieldEditorProxy, let hwnd = cak_focused_hwnd() {
         cak_edit_set_selection(hwnd, Int32(charRange.location), Int32(charRange.length))
@@ -988,6 +1003,14 @@ open class NSTextView: NSText {
   }
 
   public func selectAll(_ sender: Any?) {
+    #if !os(macOS)
+      if let editor = standaloneEditor {
+        let len = (editor.text as NSString).length
+        editor.setSelection(NativeAPI.TextRange(start: 0, length: UInt(len)))
+        localSelection = NSRange(location: 0, length: len)
+        return
+      }
+    #endif
     #if os(Windows)
       if isFieldEditorProxy, let hwnd = cak_focused_hwnd() {
         cak_edit_set_selection(hwnd, 0, -1)
@@ -1008,6 +1031,11 @@ open class NSTextView: NSText {
   open func scrollRangeToVisible(_ range: NSRange) {}
 
   public func hasMarkedText() -> Bool {
+    #if !os(macOS)
+      if let editor = standaloneEditor {
+        return editor.isComposing
+      }
+    #endif
     #if os(Windows)
       if isFieldEditorProxy, let hwnd = cak_focused_hwnd() {
         return cak_edit_has_ime_composition(hwnd) != 0

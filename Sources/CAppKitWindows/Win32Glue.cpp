@@ -234,10 +234,6 @@ void cak_free(void *ptr) {
   std::free(ptr);
 }
 
-uint32_t cak_clipboard_sequence_number(void) {
-  return (uint32_t)GetClipboardSequenceNumber();
-}
-
 static bool OpenClipboardRetry() {
   for (int attempt = 0; attempt < 5; ++attempt) {
     if (OpenClipboard(nullptr)) return true;
@@ -246,76 +242,14 @@ static bool OpenClipboardRetry() {
   return false;
 }
 
-int cak_clipboard_clear(void) {
-  if (!OpenClipboardRetry()) return 0;
-  BOOL ok = EmptyClipboard();
-  CloseClipboard();
-  return ok ? 1 : 0;
-}
-
-int cak_clipboard_has_text(void) {
-  return IsClipboardFormatAvailable(CF_UNICODETEXT) ? 1 : 0;
-}
-
-int cak_clipboard_has_files(void) {
-  return IsClipboardFormatAvailable(CF_HDROP) ? 1 : 0;
-}
-
-int cak_clipboard_has_image(void) {
+static bool ClipboardHasImage() {
   static UINT png_fmt = RegisterClipboardFormatW(L"PNG");
   static UINT mime_png_fmt = RegisterClipboardFormatW(L"image/png");
-  return (IsClipboardFormatAvailable(png_fmt) ||
-          IsClipboardFormatAvailable(mime_png_fmt) ||
-          IsClipboardFormatAvailable(CF_DIBV5) ||
-          IsClipboardFormatAvailable(CF_DIB) ||
-          IsClipboardFormatAvailable(CF_BITMAP))
-             ? 1
-             : 0;
-}
-
-int cak_clipboard_has_rtf(void) {
-  static UINT rtf_fmt = RegisterClipboardFormatW(L"Rich Text Format");
-  return IsClipboardFormatAvailable(rtf_fmt) ? 1 : 0;
-}
-
-int cak_clipboard_has_html(void) {
-  static UINT html_fmt = RegisterClipboardFormatW(L"HTML Format");
-  return IsClipboardFormatAvailable(html_fmt) ? 1 : 0;
-}
-
-int cak_clipboard_has_custom(const char *utf8_format) {
-  std::wstring w = ToWide(utf8_format);
-  if (w.empty()) return 0;
-  UINT fmt = RegisterClipboardFormatW(w.c_str());
-  return (fmt != 0 && IsClipboardFormatAvailable(fmt)) ? 1 : 0;
-}
-
-int cak_clipboard_is_concealed(void) {
-  static UINT fmt_exclude = RegisterClipboardFormatW(L"ExcludeClipboardContentFromMonitorProcessing");
-  static UINT fmt_viewer_ignore = RegisterClipboardFormatW(L"Clipboard Viewer Ignore");
-  static UINT fmt_concealed = RegisterClipboardFormatW(L"org.nspasteboard.ConcealedType");
-  static UINT fmt_transient = RegisterClipboardFormatW(L"org.nspasteboard.TransientType");
-  static UINT fmt_history = RegisterClipboardFormatW(L"CanIncludeInClipboardHistory");
-  if (IsClipboardFormatAvailable(fmt_exclude) ||
-      IsClipboardFormatAvailable(fmt_viewer_ignore) ||
-      IsClipboardFormatAvailable(fmt_concealed) ||
-      IsClipboardFormatAvailable(fmt_transient)) {
-    return 1;
-  }
-  if (IsClipboardFormatAvailable(fmt_history) && OpenClipboardRetry()) {
-    bool excluded = false;
-    HANDLE h = GetClipboardData(fmt_history);
-    if (h && GlobalSize(h) >= sizeof(DWORD)) {
-      const DWORD *val = static_cast<const DWORD *>(GlobalLock(h));
-      if (val) {
-        excluded = (*val == 0);
-        GlobalUnlock(h);
-      }
-    }
-    CloseClipboard();
-    if (excluded) return 1;
-  }
-  return 0;
+  return IsClipboardFormatAvailable(png_fmt) ||
+         IsClipboardFormatAvailable(mime_png_fmt) ||
+         IsClipboardFormatAvailable(CF_DIBV5) ||
+         IsClipboardFormatAvailable(CF_DIB) ||
+         IsClipboardFormatAvailable(CF_BITMAP);
 }
 
 char *cak_clipboard_get_text(void) {
@@ -491,7 +425,7 @@ static Gdiplus::Bitmap *BitmapFromHBitmapPreservingAlpha(HBITMAP hbmp) {
 
 uint8_t *cak_clipboard_get_png(size_t *out_len) {
   if (out_len) *out_len = 0;
-  if (!cak_clipboard_has_image()) return nullptr;
+  if (!ClipboardHasImage()) return nullptr;
   if (!OpenClipboardRetry()) return nullptr;
   uint8_t *result = nullptr;
   const UINT png_fmts[2] = {
@@ -1230,21 +1164,6 @@ void cak_enable_per_monitor_dpi(void) {
   SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
 }
 
-int cak_is_system_dark_mode(void) {
-  DWORD value = 1;
-  DWORD sz = sizeof(value);
-  LSTATUS st = RegGetValueW(
-      HKEY_CURRENT_USER,
-      L"Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize",
-      L"AppsUseLightTheme",
-      RRF_RT_REG_DWORD,
-      nullptr,
-      &value,
-      &sz);
-  if (st != ERROR_SUCCESS) return 1; // Tinycast baseline is Dark
-  return value == 0 ? 1 : 0;
-}
-
 void cak_window_set_backdrop(void *hwnd_ptr, int backdrop_kind, int is_dark) {
   HWND hwnd = static_cast<HWND>(hwnd_ptr);
   if (!hwnd) return;
@@ -1346,13 +1265,6 @@ void cak_window_apply_frameless(void *hwnd_ptr, int is_frameless) {
       hwnd, nullptr, 0, 0, 0, 0,
       SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOOWNERZORDER |
           SWP_NOACTIVATE | SWP_FRAMECHANGED | SWP_NOCOPYBITS);
-}
-
-void cak_cursor_pos(double *out_x, double *out_y) {
-  POINT pt{};
-  GetCursorPos(&pt);
-  if (out_x) *out_x = (double)pt.x;
-  if (out_y) *out_y = (double)pt.y;
 }
 
 uint32_t cak_modifier_flags(void) {

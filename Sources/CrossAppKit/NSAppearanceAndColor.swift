@@ -1,6 +1,7 @@
 import Foundation
 #if !os(macOS)
   import CoreGraphics
+  import NativeAPI
 #endif
 #if os(Windows)
   import CAppKitWindows
@@ -78,9 +79,9 @@ open class NSAppearance: NSObject, @unchecked Sendable {
   }
 
   public static var systemAppearance: NSAppearance {
-    #if os(Windows)
-      let dark = cak_is_system_dark_mode() != 0
-      return NSAppearance(named: dark ? .darkAqua : .aqua)!
+    #if !os(macOS)
+      let brightness = NativeAPI.Application.shared.getSystemBrightness()
+      return NSAppearance(named: brightness == .light ? .aqua : .darkAqua)!
     #else
       return NSAppearance(named: .darkAqua)!
     #endif

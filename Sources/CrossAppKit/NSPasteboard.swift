@@ -129,9 +129,13 @@ open class NSPasteboard: NSObject, @unchecked Sendable {
   }
 
   public var changeCount: Int {
-    #if os(Windows)
+    #if !os(macOS)
       if isSystemGeneral {
-        return Int(cak_clipboard_sequence_number())
+        let count = Int(NativeAPI.Clipboard.shared.getChangeCount())
+        if count > 0 { return count }
+        #if os(Windows)
+          return count
+        #endif
       }
     #endif
     return localChangeCount
@@ -140,10 +144,12 @@ open class NSPasteboard: NSObject, @unchecked Sendable {
   @discardableResult
   public func clearContents() -> Int {
     localItems.removeAll()
-    #if os(Windows)
+    #if !os(macOS)
       if isSystemGeneral {
-        _ = cak_clipboard_clear()
-        return changeCount
+        _ = NativeAPI.Clipboard.shared.clear()
+        #if os(Windows)
+          return changeCount
+        #endif
       }
     #endif
     localChangeCount += 1
@@ -435,20 +441,21 @@ open class NSPasteboard: NSObject, @unchecked Sendable {
     }
 
     private func querySystemTypes() -> [PasteboardType] {
+      let clipboard = NativeAPI.Clipboard.shared
       var out: [PasteboardType] = []
-      if cak_clipboard_is_concealed() != 0 {
+      if clipboard.isConcealed() {
         out.append(PasteboardType("org.nspasteboard.ConcealedType"))
       }
       for custom in knownCustomTypes {
-        if !out.contains(custom) && cak_clipboard_has_custom(custom.rawValue) != 0 {
+        if !out.contains(custom) && clipboard.hasFormat(custom.rawValue) {
           out.append(custom)
         }
       }
-      if cak_clipboard_has_files() != 0 { out.append(.fileURL) }
-      if cak_clipboard_has_text() != 0 { out.append(.string) }
-      if cak_clipboard_has_image() != 0 { out.append(.png) }
-      if cak_clipboard_has_rtf() != 0 { out.append(.rtf) }
-      if cak_clipboard_has_html() != 0 { out.append(.html) }
+      if clipboard.hasFilePaths() { out.append(.fileURL) }
+      if clipboard.hasText() { out.append(.string) }
+      if clipboard.hasImage() { out.append(.png) }
+      if clipboard.hasRtf() { out.append(.rtf) }
+      if clipboard.hasHtml() { out.append(.html) }
       return out
     }
 
