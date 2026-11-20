@@ -55,15 +55,18 @@ struct MetricsDashboardView: View {
           Text("24h").tag(2)
         }
         .pickerStyle(.segmented)
-        .frame(width: 180)
+        .labelsHidden()
+        .frame(width: 150)
 
         Button(isPaused ? "Resume" : "Pause") {
           isPaused.toggle()
         }
         .buttonStyle(.bordered)
+        .fixedSize()
 
         Toggle("Dark", isOn: $darkMode)
           .toggleStyle(.switch)
+          .fixedSize()
       }
       .padding(.horizontal, 24)
       .padding(.vertical, 14)

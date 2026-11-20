@@ -294,6 +294,7 @@ struct GalleryRootView: View {
       Spacer()
       Toggle("Dark", isOn: $darkMode)
         .toggleStyle(.switch)
+        .fixedSize()
     }
     .padding(.horizontal, 24)
     .padding(.vertical, 16)

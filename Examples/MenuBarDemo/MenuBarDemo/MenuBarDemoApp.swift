@@ -73,6 +73,7 @@ struct FocusPanelView: View {
         Spacer()
         Toggle("Dark", isOn: $darkMode)
           .toggleStyle(.switch)
+          .fixedSize()
       }
 
       ZStack {

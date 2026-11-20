@@ -148,22 +148,27 @@ struct KanbanBoardView: View {
 
         Toggle("Dark", isOn: $darkMode)
           .toggleStyle(.switch)
+          .fixedSize()
       }
       .padding(.horizontal, 24)
       .padding(.vertical, 14)
 
       Divider()
 
-      ScrollView(.horizontal) {
-        HStack(alignment: .top, spacing: 16) {
-          ForEach(KanbanColumn.allCases) { column in
-            laneView(for: column)
+      GeometryReader { geo in
+        ScrollView(.horizontal) {
+          HStack(alignment: .top, spacing: 16) {
+            ForEach(KanbanColumn.allCases) { column in
+              laneView(for: column, height: max(320, geo.size.height - 40))
+            }
           }
+          .padding(20)
         }
-        .padding(20)
+        .frame(width: geo.size.width, height: geo.size.height)
       }
+      .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
-    .frame(maxWidth: .infinity, maxHeight: .infinity)
+    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     .background(darkMode ? Color(red: 0.10, green: 0.10, blue: 0.12) : Color.white)
     .preferredColorScheme(darkMode ? .dark : .light)
     .sheet(isPresented: $showNewTaskSheet) {
@@ -217,7 +222,7 @@ struct KanbanBoardView: View {
     }
   }
 
-  private func laneView(for column: KanbanColumn) -> some View {
+  private func laneView(for column: KanbanColumn, height: CGFloat) -> some View {
     let items = tasksFor(column)
     return VStack(alignment: .leading, spacing: 12) {
       HStack {
@@ -243,10 +248,10 @@ struct KanbanBoardView: View {
         }
         .padding(.vertical, 2)
       }
+      .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
     .padding(14)
-    .frame(width: 260)
-    .frame(maxHeight: .infinity, alignment: .topLeading)
+    .frame(width: 260, height: height, alignment: .topLeading)
     .background(Color.gray.opacity(0.08), in: RoundedRectangle(cornerRadius: 12))
     .overlay {
       RoundedRectangle(cornerRadius: 12)

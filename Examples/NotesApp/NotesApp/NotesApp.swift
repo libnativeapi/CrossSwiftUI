@@ -220,6 +220,7 @@ struct NotesRootView: View {
               Text("Ideas").tag(NoteFolder.ideas)
             }
             .pickerStyle(.menu)
+            .labelsHidden()
 
             Toggle("Preview", isOn: $showPreview)
               .toggleStyle(.button)
