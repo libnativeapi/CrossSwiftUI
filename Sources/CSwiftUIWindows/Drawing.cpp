@@ -978,6 +978,7 @@ void RenderFrame(Surface *s) {
       }
     } else if (c.kind == 6) {
       clips.push_back(g.Save());
+      g.SetTextRenderingHint(TextRenderingHintAntiAlias);
       g.TranslateTransform(c.rect.X, c.rect.Y);
       g.RotateTransform(c.radius);
       g.ScaleTransform(c.size, c.weight);

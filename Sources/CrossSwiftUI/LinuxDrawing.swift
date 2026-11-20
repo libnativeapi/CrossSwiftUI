@@ -128,7 +128,8 @@ final class LinuxDrawing {
   }
 
   func paint(_ node: Element, in context: OpaquePointer, clip: Rect, damage: Rect,
-                    motions: [NodeID: Motion], now: TimeInterval, inheritedOpacity: Double = 1) {
+                    motions: [NodeID: Motion], now: TimeInterval, inheritedOpacity: Double = 1,
+                    isScaled: Bool = false) {
     var props = node.props
     let translation = motions[node.id]?.apply(to: &props, now: now) ?? .zero
     let frame = node.frame
@@ -213,12 +214,13 @@ final class LinuxDrawing {
         cairo_pattern_destroy(pattern)
       }
     }
+    let scaled = isScaled || props.rotation != 0 || props.scaleX != 1 || props.scaleY != 1
     if node.kind == .image { image(node, in: context) }
-    if node.kind == .text || node.kind == .button { text(node, in: context) }
+    if node.kind == .text || node.kind == .button { text(node, in: context, isScaled: scaled) }
     for child in Self.orderedChildren(node) {
       paint(child, in: context, clip: props.clipped ? area : clip, damage: transformed ? clip : damage,
             motions: motions, now: now,
-            inheritedOpacity: node.props.opacity)
+            inheritedOpacity: node.props.opacity, isScaled: scaled)
     }
     if node.kind == .scroll, props.showsScrollIndicators, let content = node.children.first {
       let color = (props.foreground ?? .gray).opacity(0.28)
@@ -263,7 +265,7 @@ final class LinuxDrawing {
     return layout
   }
 
-  private func text(_ node: Element, in context: OpaquePointer) {
+  private func text(_ node: Element, in context: OpaquePointer, isScaled: Bool) {
     let props = node.props
     let frame = node.frame
     let key = TextKey(text: props.renderedText ?? props.text, font: props.font ?? .body,
@@ -278,7 +280,12 @@ final class LinuxDrawing {
     } else {
       cairo_move_to(context, frame.minX, frame.minY)
     }
-    pango_cairo_show_layout(context, layout)
+    if isScaled {
+      pango_cairo_layout_path(context, layout)
+      cairo_fill(context)
+    } else {
+      pango_cairo_show_layout(context, layout)
+    }
   }
 
   private func image(_ node: Element, in context: OpaquePointer) {
