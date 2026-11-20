@@ -93,7 +93,10 @@ struct NavigationAndTabsGalleryView: View {
 // MARK: - 16. Popover, ContextMenu, Alert, Sheet & ConfirmationDialog
 
 struct PresentationGalleryView: View {
-  @State private var showPopover = false
+  @State private var showTopPopover = false
+  @State private var showBottomPopover = false
+  @State private var showLeadingPopover = false
+  @State private var showTrailingPopover = false
   @State private var showAlert = false
   @State private var showDestructiveAlert = false
   @State private var showSheet = false
@@ -102,34 +105,22 @@ struct PresentationGalleryView: View {
 
   var body: some View {
     VStack(alignment: .leading, spacing: 20) {
-      GallerySection("Popover, Alert, Sheet & ConfirmationDialog", subtitle: "Desktop modal and anchored presentation primitives.") {
+      GallerySection("Popover (4 Arrow Edges)", subtitle: "macOS-style anchored popover bubbles with automatic edge flipping.") {
+        HStack(spacing: 12) {
+          popoverButton("Arrow Top", edge: .top, isPresented: $showTopPopover)
+          popoverButton("Arrow Bottom", edge: .bottom, isPresented: $showBottomPopover)
+          popoverButton("Arrow Leading", edge: .leading, isPresented: $showLeadingPopover)
+          popoverButton("Arrow Trailing", edge: .trailing, isPresented: $showTrailingPopover)
+        }
+      }
+
+      GallerySection("Alert, Sheet & ConfirmationDialog", subtitle: "Desktop modal presentation primitives.") {
         VStack(alignment: .leading, spacing: 12) {
           HStack(spacing: 12) {
-            Button("Show Popover") {
-              showPopover.toggle()
-            }
-            .buttonStyle(.borderedProminent)
-            .popover(isPresented: $showPopover) {
-              VStack(alignment: .leading, spacing: 10) {
-                Text("Anchored Popover")
-                  .font(.system(size: 14, weight: .bold))
-                Text("Click outside or press Escape to dismiss.")
-                  .font(.system(size: 12))
-                  .foregroundStyle(.secondary)
-                Button("Done") {
-                  showPopover = false
-                  lastEvent = "Popover dismissed via button"
-                }
-                .buttonStyle(.bordered)
-              }
-              .padding(16)
-              .frame(width: 240)
-            }
-
             Button("Info Alert") {
               showAlert = true
             }
-            .buttonStyle(.bordered)
+            .buttonStyle(.borderedProminent)
 
             Button("Destructive Alert", role: .destructive) {
               showDestructiveAlert = true
@@ -223,6 +214,29 @@ struct PresentationGalleryView: View {
           Button("Remove", role: .destructive) { lastEvent = "ContextMenu: Remove" }
         }
       }
+    }
+  }
+
+  private func popoverButton(_ title: String, edge: Edge, isPresented: Binding<Bool>) -> some View {
+    Button(title) {
+      isPresented.wrappedValue.toggle()
+    }
+    .buttonStyle(.bordered)
+    .popover(isPresented: isPresented, arrowEdge: edge) {
+      VStack(alignment: .leading, spacing: 10) {
+        Text(title)
+          .font(.system(size: 14, weight: .bold))
+        Text("Anchored popover bubble with pointer beak. Click outside or press Escape to dismiss.")
+          .font(.system(size: 12))
+          .foregroundStyle(.secondary)
+        Button("Done") {
+          isPresented.wrappedValue = false
+          lastEvent = "\(title) dismissed"
+        }
+        .buttonStyle(.borderedProminent)
+      }
+      .padding(16)
+      .frame(width: 240)
     }
   }
 }

@@ -30,6 +30,14 @@ enum GalleryItem: String, CaseIterable, Identifiable, Hashable {
   case gradientsAndMaterials
   case gesturesAndAnimation
 
+  // Advanced & System
+  case customLayout
+  case toolbarAndSearch
+  case keyboardAndFocus
+  case stateAndStorage
+  case lifecycleAndTask
+  case richTextAndLinks
+
   var id: String { rawValue }
 
   var title: String {
@@ -53,6 +61,12 @@ enum GalleryItem: String, CaseIterable, Identifiable, Hashable {
     case .shapesAndCanvas: return "Shapes, Path & Canvas"
     case .gradientsAndMaterials: return "Gradients, Materials & Effects"
     case .gesturesAndAnimation: return "Gestures & Animation"
+    case .customLayout: return "Custom Layout (FlowLayout)"
+    case .toolbarAndSearch: return "Toolbar & Search"
+    case .keyboardAndFocus: return "Keyboard & Focus"
+    case .stateAndStorage: return "State & Persistent Storage"
+    case .lifecycleAndTask: return "Lifecycle & Async Tasks"
+    case .richTextAndLinks: return "AttributedString & OpenURL"
     }
   }
 
@@ -77,6 +91,12 @@ enum GalleryItem: String, CaseIterable, Identifiable, Hashable {
     case .shapesAndCanvas: return "Shapes & Canvas"
     case .gradientsAndMaterials: return "Gradients & Effects"
     case .gesturesAndAnimation: return "Gestures & Animation"
+    case .customLayout: return "Custom Layout"
+    case .toolbarAndSearch: return "Toolbar & Search"
+    case .keyboardAndFocus: return "Keyboard & Focus"
+    case .stateAndStorage: return "State & Storage"
+    case .lifecycleAndTask: return "Lifecycle & Task"
+    case .richTextAndLinks: return "Rich Text & Links"
     }
   }
 
@@ -97,10 +117,16 @@ enum GalleryItem: String, CaseIterable, Identifiable, Hashable {
     case .listAndForm: return "Selectable List with sections and desktop-styled Form with grouped controls."
     case .adaptiveAndGeometry: return "GeometryReader metrics, ViewThatFits responsive fallback, and TimelineView."
     case .navigationAndTabs: return "NavigationStack push/pop navigation and TabView tab switching."
-    case .presentation: return "Popover, right-click contextMenu, alert, sheet, and confirmationDialog."
+    case .presentation: return "4-edge Popover, right-click contextMenu, alert, sheet, and confirmationDialog."
     case .shapesAndCanvas: return "Built-in shapes, trim, custom Path geometry, and Canvas vector rendering."
     case .gradientsAndMaterials: return "Linear, radial, and angular gradients, translucent materials, shadows, and clipping."
     case .gesturesAndAnimation: return "Tap, hover, and drag gestures paired with animated transforms."
+    case .customLayout: return "SwiftUI Layout protocol implementing a wrapping FlowLayout tag cloud."
+    case .toolbarAndSearch: return "ToolbarItemGroup actions combined with live search filtering and empty states."
+    case .keyboardAndFocus: return "onKeyPress arrow/return/escape handling, @FocusState, and keyboard shortcuts."
+    case .stateAndStorage: return "@StateObject, @EnvironmentObject shared state, and UserDefaults persistence."
+    case .lifecycleAndTask: return "Cancellable .task(id:) async work alongside onAppear and onDisappear logs."
+    case .richTextAndLinks: return "Text(AttributedString) with inline links intercepted via OpenURLAction."
     }
   }
 
@@ -125,6 +151,12 @@ enum GalleryItem: String, CaseIterable, Identifiable, Hashable {
     case .shapesAndCanvas: return "paintbrush.fill"
     case .gradientsAndMaterials: return "sparkles"
     case .gesturesAndAnimation: return "hand.tap"
+    case .customLayout: return "square.2.layers.3d"
+    case .toolbarAndSearch: return "magnifyingglass"
+    case .keyboardAndFocus: return "keyboard"
+    case .stateAndStorage: return "internaldrive"
+    case .lifecycleAndTask: return "clock.arrow.circlepath"
+    case .richTextAndLinks: return "link"
     }
   }
 
@@ -149,12 +181,19 @@ enum GalleryItem: String, CaseIterable, Identifiable, Hashable {
     case .shapesAndCanvas: return .orange
     case .gradientsAndMaterials: return .indigo
     case .gesturesAndAnimation: return .purple
+    case .customLayout: return .teal
+    case .toolbarAndSearch: return .blue
+    case .keyboardAndFocus: return .orange
+    case .stateAndStorage: return .indigo
+    case .lifecycleAndTask: return .green
+    case .richTextAndLinks: return .cyan
     }
   }
 }
 
 struct GalleryRootView: View {
   @State private var selection: GalleryItem? = .buttons
+  @State private var darkMode = false
 
   var body: some View {
     NavigationSplitView {
@@ -192,6 +231,15 @@ struct GalleryRootView: View {
           sidebarRow(.gradientsAndMaterials)
           sidebarRow(.gesturesAndAnimation)
         }
+
+        Section("Advanced & System") {
+          sidebarRow(.customLayout)
+          sidebarRow(.toolbarAndSearch)
+          sidebarRow(.keyboardAndFocus)
+          sidebarRow(.stateAndStorage)
+          sidebarRow(.lifecycleAndTask)
+          sidebarRow(.richTextAndLinks)
+        }
       }
       .listStyle(.sidebar)
     } detail: {
@@ -207,6 +255,7 @@ struct GalleryRootView: View {
       }
       .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
+    .preferredColorScheme(darkMode ? .dark : .light)
   }
 
   private func sidebarRow(_ item: GalleryItem) -> some View {
@@ -243,6 +292,8 @@ struct GalleryRootView: View {
           .foregroundStyle(.secondary)
       }
       Spacer()
+      Toggle("Dark", isOn: $darkMode)
+        .toggleStyle(.switch)
     }
     .padding(.horizontal, 24)
     .padding(.vertical, 16)
@@ -270,6 +321,12 @@ struct GalleryRootView: View {
     case .shapesAndCanvas: ShapesAndCanvasGalleryView()
     case .gradientsAndMaterials: GradientsAndMaterialsGalleryView()
     case .gesturesAndAnimation: GesturesAndAnimationGalleryView()
+    case .customLayout: CustomLayoutGalleryView()
+    case .toolbarAndSearch: ToolbarAndSearchGalleryView()
+    case .keyboardAndFocus: KeyboardAndFocusGalleryView()
+    case .stateAndStorage: StateAndStorageGalleryView()
+    case .lifecycleAndTask: LifecycleAndTaskGalleryView()
+    case .richTextAndLinks: RichTextAndLinksGalleryView()
     }
   }
 }
