@@ -390,4 +390,83 @@ final class ControlsAndContainersTests: XCTestCase {
     )
     XCTAssertEqual(renderer.tree?.frame.size, Size(width: 750, height: 475))
   }
+
+  @MainActor
+  func testNavigationStackPushAndBackAndTabViewSelection() {
+    struct NavDemo: View {
+      var body: some View {
+        NavigationStack {
+          NavigationLink("Open Detail") {
+            Text("Detail Body")
+              .navigationTitle("Detail Page")
+          }
+          .navigationTitle("Root Page")
+        }
+      }
+    }
+
+    let backend = FakeBackend()
+    let renderer = Renderer(
+      backend: backend,
+      root: AnyView(NavDemo()),
+      size: Size(width: 390, height: 800)
+    )
+    renderer.mount()
+
+    func findSemantic(_ kind: String, in el: Element?) -> Element? {
+      guard let el else { return nil }
+      if el.props.semanticControl?.kind == kind { return el }
+      for c in el.children { if let f = findSemantic(kind, in: c) { return f } }
+      return nil
+    }
+    func findTapNode(in el: Element?) -> Element? {
+      guard let el else { return nil }
+      if el.kind == .styledButton || el.kind == .button { return el }
+      for c in el.children { if let f = findTapNode(in: c) { return f } }
+      return nil
+    }
+
+    let initialBar = findSemantic("navBar", in: renderer.tree)
+    XCTAssertEqual(initialBar?.props.semanticControl?.title, "Root Page")
+    XCTAssertEqual(initialBar?.props.semanticControl?.canGoBack, false)
+
+    if let linkBtn = findTapNode(in: renderer.tree) {
+      renderer.performTap(linkBtn.id)
+    }
+    let pushedBar = findSemantic("navBar", in: renderer.tree)
+    XCTAssertEqual(pushedBar?.props.semanticControl?.canGoBack, true)
+    XCTAssertEqual(pushedBar?.props.semanticControl?.title, "Detail Page")
+
+    if let barID = pushedBar?.id {
+      renderer.performBackInput(barID)
+    }
+    let poppedBar = findSemantic("navBar", in: renderer.tree)
+    XCTAssertEqual(poppedBar?.props.semanticControl?.canGoBack, false)
+
+    struct TabDemo: View {
+      @State var tab = 0
+      var body: some View {
+        TabView(selection: $tab) {
+          Text("Home Content").tabItem { Label("Home", systemImage: "house") }.tag(0)
+          Text("Search Content").tabItem { Label("Search", systemImage: "magnifyingglass") }.tag(1)
+        }
+      }
+    }
+
+    let tabRenderer = Renderer(
+      backend: FakeBackend(),
+      root: AnyView(TabDemo()),
+      size: Size(width: 390, height: 800)
+    )
+    tabRenderer.mount()
+    let tabBar = findSemantic("tabBar", in: tabRenderer.tree)
+    XCTAssertEqual(tabBar?.props.semanticControl?.items, ["Home", "Search"])
+    XCTAssertEqual(tabBar?.props.semanticControl?.intValue, 0)
+
+    if let tabBarID = tabBar?.id {
+      tabRenderer.performIntInput(tabBarID, value: 1)
+    }
+    let updatedTabBar = findSemantic("tabBar", in: tabRenderer.tree)
+    XCTAssertEqual(updatedTabBar?.props.semanticControl?.intValue, 1)
+  }
 }

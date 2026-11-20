@@ -40,8 +40,9 @@ final class HarmonyBackend: RenderBackend {
                            Int32(fontWeight(font) / 100 - 1), &width, &height)
       }
     }
-    let size = measured ? Size(width: width / pixelsPerPoint, height: height / pixelsPerPoint)
-      : Size(width: Double(text.count) * font.size / 2, height: font.size)
+    let size = measured
+      ? Size(width: (width / pixelsPerPoint).rounded(.up) + 3, height: (height / pixelsPerPoint).rounded(.up))
+      : Size(width: Double(text.count) * font.size * 0.6 + 3, height: font.size)
     if textSizes.count >= 8192 { textSizes.removeAll(keepingCapacity: true) }
     textSizes[key] = size
     return size
@@ -67,6 +68,12 @@ final class HarmonyBackend: RenderBackend {
     let tree = snapshot(root)
     guard let data = try? JSONEncoder().encode(tree) else { return }
     String(decoding: data, as: UTF8.self).withCString { update(context, $0) }
+  }
+
+  private struct AlertActionNode: Encodable {
+    var title: String
+    var role: String
+    var enabled: Bool
   }
 
   private struct Node: Encodable {
@@ -101,6 +108,20 @@ final class HarmonyBackend: RenderBackend {
     var selected: Bool
     var enabled: Bool
     var hitTesting: Bool
+    var gradientColors: [UInt32]?
+    var boolValue: Bool
+    var doubleValue: Double
+    var minValue: Double
+    var maxValue: Double
+    var stepValue: Double
+    var intValue: Int
+    var items: [String]?
+    var title: String?
+    var subtitle: String?
+    var styleName: String?
+    var canGoBack: Bool
+    var tint: UInt32?
+    var alertActions: [AlertActionNode]?
     var children: [Node]
   }
 
@@ -123,22 +144,68 @@ final class HarmonyBackend: RenderBackend {
         }
       }
     }
+    let sem = props.semanticControl
+    let nativeSemanticKinds: Set<String> = [
+      "switch", "checkbox", "slider", "segmented", "stepper",
+      "progressLinear", "progressCircular", "button",
+      "navBar", "tabBar", "alert", "menu", "divider",
+    ]
     let kind: String
     var path = ""
-    switch element.kind {
-    case .text: kind = "text"
-    case .button, .styledButton: kind = "button"
-    case .textField: kind = "editor"
-    case .image: kind = "image"
-    case .scroll: kind = "scroll"
-    case .path, .shape:
-      if let builder = element.pathBuilder {
-        path = commands(builder(localFrame))
-      } else if element.kind == .path {
-        path = commands(props.path)
+    var resolvedBorder = color(props.borderColor)
+    var resolvedBorderWidth = number(props.borderWidth)
+    var resolvedBg = color(props.background)
+    var resolvedGradient: [UInt32]? = nil
+    var includeChildren = true
+
+    if let sem, sem.kind == "navStack" {
+      kind = "navStack"
+      includeChildren = true
+    } else if let sem, nativeSemanticKinds.contains(sem.kind) {
+      kind = sem.kind == "button" ? "semanticButton" : sem.kind
+      includeChildren = false
+    } else {
+      switch element.kind {
+      case .text: kind = "text"
+      case .button, .styledButton: kind = "button"
+      case .textField: kind = "editor"
+      case .gradient:
+        kind = "gradient"
+        if let grad = props.gradient {
+          resolvedGradient = grad.colors.compactMap { color($0) }
+        }
+      case .image:
+        if props.imagePath.hasPrefix("sf://"), let vec = VectorImage.load(props.imagePath), !vec.layers.isEmpty {
+          let vbW = max(0.001, vec.bounds.width)
+          let vbH = max(0.001, vec.bounds.height)
+          let scale = min(frame.width / vbW, frame.height / vbH)
+          let tx = (frame.width - vbW * scale) / 2 - vec.bounds.minX * scale
+          let ty = (frame.height - vbH * scale) / 2 - vec.bounds.minY * scale
+          path = vec.layers.map { scaledCommands($0.path, scale: scale, tx: tx, ty: ty) }.joined(separator: " ")
+          let tintCol = color(props.foreground) ?? 0xFF000000
+          if vec.layers.first?.stroke != nil {
+            resolvedBorder = tintCol
+            resolvedBorderWidth = max(1.0, (vec.layers.first?.strokeWidth ?? 2.0) * scale)
+            resolvedBg = nil
+          } else {
+            resolvedBg = tintCol
+            resolvedBorder = nil
+            resolvedBorderWidth = 0
+          }
+          kind = path.isEmpty ? "image" : "path"
+        } else {
+          kind = "image"
+        }
+      case .scroll: kind = "scroll"
+      case .path, .shape:
+        if let builder = element.pathBuilder {
+          path = commands(builder(localFrame))
+        } else if element.kind == .path {
+          path = commands(props.path)
+        }
+        kind = path.isEmpty ? "group" : "path"
+      default: kind = "group"
       }
-      kind = path.isEmpty ? "group" : "path"
-    default: kind = "group"
     }
     return Node(
       id: element.id.rawValue, kind: kind,
@@ -154,8 +221,8 @@ final class HarmonyBackend: RenderBackend {
       rotation: number(props.rotation), scaleX: number(props.scaleX), scaleY: number(props.scaleY),
       dash: props.dash.map(number),
       foreground: color(props.foreground),
-      background: color(props.background), border: color(props.borderColor),
-      borderWidth: number(props.borderWidth),
+      background: resolvedBg, border: resolvedBorder,
+      borderWidth: resolvedBorderWidth,
       radius: number(min(props.cornerRadius, frame.width / 2, frame.height / 2)),
       opacity: number(props.opacity), clip: props.clipped,
       scrollIndicators: props.showsScrollIndicators,
@@ -163,7 +230,56 @@ final class HarmonyBackend: RenderBackend {
         ? (props.scrollAxes.contains(.vertical) ? "both" : "horizontal") : "vertical",
       selected: AccessibilityTraits(rawValue: props.accessibilityTraits).contains(.isSelected),
       enabled: props.enabled, hitTesting: props.hitTesting,
-      children: children.filter { $0.props.visible }.map(snapshot))
+      gradientColors: resolvedGradient,
+      boolValue: sem?.boolValue ?? false,
+      doubleValue: number(sem?.doubleValue ?? 0),
+      minValue: number(sem?.minValue ?? 0),
+      maxValue: number(sem?.maxValue ?? 1),
+      stepValue: number(sem?.stepValue ?? 0),
+      intValue: sem?.intValue ?? 0,
+      items: sem.flatMap { $0.items.isEmpty ? nil : $0.items },
+      title: sem.flatMap { $0.title.isEmpty ? nil : $0.title },
+      subtitle: sem.flatMap { $0.subtitle.isEmpty ? nil : $0.subtitle },
+      styleName: sem.flatMap { $0.styleName.isEmpty ? nil : $0.styleName },
+      canGoBack: sem?.canGoBack ?? false,
+      tint: sem?.tint.flatMap { c in
+        let encoded = color(c)
+        return encoded == 0xFF0000FF ? nil : encoded
+      },
+      alertActions: sem.flatMap { s in
+        s.alertActions.isEmpty
+          ? nil
+          : s.alertActions.map { AlertActionNode(title: $0.title, role: $0.role, enabled: $0.enabled) }
+      },
+      children: includeChildren ? children.filter { $0.props.visible }.map(snapshot) : [])
+  }
+
+  private func scaledCommands(_ path: Path, scale: Double, tx: Double, ty: Double) -> String {
+    var parts: [String] = []
+    var index = 0
+    while index < path.commands.count {
+      let command: String, points: Int
+      switch path.commands[index] {
+      case 0: (command, points) = ("M", 2)
+      case 1: (command, points) = ("L", 2)
+      case 2: (command, points) = ("C", 6)
+      case 3: (command, points) = ("Z", 0)
+      default: return ""
+      }
+      let end = index + 1 + points
+      guard end <= path.commands.count else { return "" }
+      var values: [Double] = []
+      values.reserveCapacity(points)
+      for i in 0..<points {
+        let raw = path.commands[index + 1 + i]
+        let transformed = (i % 2 == 0 ? raw * scale + tx : raw * scale + ty) * pixelsPerPoint
+        guard transformed.isFinite else { return "" }
+        values.append(transformed)
+      }
+      parts.append(command + values.map { String($0) }.joined(separator: " "))
+      index = end
+    }
+    return parts.joined(separator: " ")
   }
 
   private func buttonLabel(_ element: Element) -> String {

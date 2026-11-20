@@ -23,3 +23,14 @@ static inline jlong swiftui_android_measure_text(
   (*env)->DeleteLocalRef(env, family);
   return measured;
 }
+
+static inline const char *swiftui_android_get_utf8(JNIEnv *env, jstring str) {
+  if (!str) return NULL;
+  return (*env)->GetStringUTFChars(env, str, NULL);
+}
+
+static inline void swiftui_android_release_utf8(JNIEnv *env, jstring str, const char *chars) {
+  if (str && chars) {
+    (*env)->ReleaseStringUTFChars(env, str, chars);
+  }
+}

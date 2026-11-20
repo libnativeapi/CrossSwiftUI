@@ -760,7 +760,15 @@ private struct SheetPresentation<Content: View, SheetContent: View>: View, _Prim
           RoundedRectangle(cornerRadius: 12)
             .strokeBorder(scheme == .dark ? Color.white.opacity(0.14) : Color.black.opacity(0.12), lineWidth: 1)
         }
-      children.append(_render(wrapped, path: path.appending(index: 1)))
+      var sheetEl = _render(wrapped, path: path.appending(index: 1))
+      sheetEl.props.semanticControl = SemanticControl(kind: "sheet")
+      sheetEl.dismissPresentation = {
+        if isPresented.wrappedValue {
+          isPresented.wrappedValue = false
+          onDismiss?()
+        }
+      }
+      children.append(sheetEl)
     }
     var element = Element(kind: .presentation, children: children)
     element.presentationCentered = true

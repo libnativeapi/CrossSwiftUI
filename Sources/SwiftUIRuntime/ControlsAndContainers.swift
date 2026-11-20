@@ -216,14 +216,25 @@ public struct DefaultButtonStyle: ButtonStyle {
 public struct BorderedButtonStyle: ButtonStyle {
   public init() {}
   public func makeBody(configuration: Configuration) -> some View {
-    let isPressed = configuration.isPressed
+    let isEnabled = EnvironmentValues.current.isEnabled
+    let isPressed = isEnabled && configuration.isPressed
+    #if os(Android) || CROSS_SWIFTUI_HARMONY
+    let hPad: CGFloat = 18
+    let vPad: CGFloat = 10
+    let labelFont: Font = .body.weight(.medium)
+    #else
+    let hPad: CGFloat = 10
+    let vPad: CGFloat = 5
+    let labelFont: Font = .callout
+    #endif
     return configuration.label
-      .font(.callout)
-      .padding(.horizontal, 10)
-      .padding(.vertical, 5)
+      .font(labelFont)
+      .opacity(isEnabled ? 1.0 : 0.42)
+      .padding(.horizontal, hPad)
+      .padding(.vertical, vPad)
       .background(
         Color { scheme in
-          let alpha = isPressed ? 0.18 : 0.09
+          let alpha = !isEnabled ? 0.04 : (isPressed ? 0.18 : 0.09)
           return scheme == .dark ? (1, 1, 1, alpha) : (0, 0, 0, alpha)
         },
         in: RoundedRectangle(cornerRadius: 6)
@@ -231,7 +242,10 @@ public struct BorderedButtonStyle: ButtonStyle {
       .overlay {
         RoundedRectangle(cornerRadius: 6)
           .strokeBorder(
-            Color { scheme in scheme == .dark ? (1, 1, 1, 0.14) : (0, 0, 0, 0.12) },
+            Color { scheme in
+              let alpha = !isEnabled ? 0.08 : (scheme == .dark ? 0.14 : 0.12)
+              return scheme == .dark ? (1, 1, 1, alpha) : (0, 0, 0, alpha)
+            },
             lineWidth: 1
           )
       }
@@ -241,13 +255,30 @@ public struct BorderedButtonStyle: ButtonStyle {
 public struct BorderedProminentButtonStyle: ButtonStyle {
   public init() {}
   public func makeBody(configuration: Configuration) -> some View {
-    configuration.label
-      .font(.callout.weight(.medium))
-      .foregroundStyle(.white)
-      .padding(.horizontal, 12)
-      .padding(.vertical, 5)
+    let isEnabled = EnvironmentValues.current.isEnabled
+    let isPressed = isEnabled && configuration.isPressed
+    #if os(Android) || CROSS_SWIFTUI_HARMONY
+    let hPad: CGFloat = 20
+    let vPad: CGFloat = 10
+    let labelFont: Font = .body.weight(.semibold)
+    #else
+    let hPad: CGFloat = 12
+    let vPad: CGFloat = 5
+    let labelFont: Font = .callout.weight(.medium)
+    #endif
+    return configuration.label
+      .font(labelFont)
+      .foregroundStyle(
+        isEnabled
+          ? Color.white
+          : Color { scheme in scheme == .dark ? (1, 1, 1, 0.42) : (0, 0, 0, 0.38) }
+      )
+      .padding(.horizontal, hPad)
+      .padding(.vertical, vPad)
       .background(
-        Color.accentColor.opacity(configuration.isPressed ? 0.80 : 1.0),
+        isEnabled
+          ? Color.accentColor.opacity(isPressed ? 0.80 : 1.0)
+          : Color { scheme in scheme == .dark ? (1, 1, 1, 0.14) : (0, 0, 0, 0.10) },
         in: RoundedRectangle(cornerRadius: 6)
       )
   }
@@ -256,17 +287,29 @@ public struct BorderedProminentButtonStyle: ButtonStyle {
 public struct BorderlessButtonStyle: ButtonStyle {
   public init() {}
   public func makeBody(configuration: Configuration) -> some View {
-    configuration.label
-      .opacity(configuration.isPressed ? 0.65 : 1.0)
+    let isEnabled = EnvironmentValues.current.isEnabled
+    let alpha = !isEnabled ? 0.40 : (configuration.isPressed ? 0.65 : 1.0)
+    #if os(Android) || CROSS_SWIFTUI_HARMONY
+    return configuration.label
+      .font(.body.weight(.medium))
+      .padding(.horizontal, 16)
+      .padding(.vertical, 8)
+      .opacity(alpha)
+    #else
+    return configuration.label
+      .opacity(alpha)
+    #endif
   }
 }
 
 public struct LinkButtonStyle: ButtonStyle {
   public init() {}
   public func makeBody(configuration: Configuration) -> some View {
-    configuration.label
-      .foregroundStyle(.tint)
-      .opacity(configuration.isPressed ? 0.70 : 1.0)
+    let isEnabled = EnvironmentValues.current.isEnabled
+    let alpha = !isEnabled ? 0.40 : (configuration.isPressed ? 0.70 : 1.0)
+    return configuration.label
+      .foregroundStyle(isEnabled ? Color.accentColor : Color.secondary)
+      .opacity(alpha)
   }
 }
 
@@ -354,6 +397,36 @@ public struct LabeledContent<Label: View, Content: View>: View {
   }
 }
 
+// MARK: - Semantic Control Wrapper
+
+private struct SemanticControlWrapper<Content: View>: View, _PrimitiveView {
+  typealias Body = Never
+  let semantic: SemanticControl
+  let content: Content
+  var boolAction: ((Bool) -> Void)? = nil
+  var doubleAction: ((Double, Bool) -> Void)? = nil
+  var intAction: ((Int) -> Void)? = nil
+  var incrementAction: (() -> Void)? = nil
+  var decrementAction: (() -> Void)? = nil
+  var backAction: (() -> Void)? = nil
+  var tapAction: (() -> Void)? = nil
+
+  var body: Never { fatalError("SemanticControlWrapper is primitive") }
+
+  func _makeElement(path: ViewPath) -> Element {
+    var element = _render(content, path: path)
+    element.props.semanticControl = semantic
+    if let boolAction { element.semanticBoolAction = boolAction }
+    if let doubleAction { element.semanticDoubleAction = doubleAction }
+    if let intAction { element.semanticIntAction = intAction }
+    if let incrementAction { element.semanticIncrementAction = incrementAction }
+    if let decrementAction { element.semanticDecrementAction = decrementAction }
+    if let backAction { element.semanticBackAction = backAction }
+    if let tapAction { element.action = tapAction }
+    return element
+  }
+}
+
 // MARK: - Toggle & ToggleStyle
 
 public struct ToggleStyleConfiguration {
@@ -380,26 +453,47 @@ public struct SwitchToggleStyle: ToggleStyle {
 
   public func makeBody(configuration: Configuration) -> some View {
     @Environment(\.labelsHidden) var labelsHidden
-    let pill = Button {
-      withAnimation(.easeOut(duration: 0.14)) {
-        configuration.isOn.toggle()
+    #if os(Android) || CROSS_SWIFTUI_HARMONY
+    let trackWidth: CGFloat = 64
+    let trackHeight: CGFloat = 34
+    let thumbSize: CGFloat = 24
+    #else
+    let trackWidth: CGFloat = 34
+    let trackHeight: CGFloat = 20
+    let thumbSize: CGFloat = 16
+    #endif
+    let pill = SemanticControlWrapper(
+      semantic: SemanticControl(
+        kind: "switch",
+        boolValue: configuration.isOn,
+        tint: tint
+      ),
+      content: Button {
+        withAnimation(.easeOut(duration: 0.14)) {
+          configuration.isOn.toggle()
+        }
+      } label: {
+        ZStack(alignment: configuration.isOn ? .trailing : .leading) {
+          Capsule()
+            .fill(
+              configuration.isOn
+                ? (tint ?? Color.accentColor)
+                : Color { scheme in scheme == .dark ? (1, 1, 1, 0.18) : (0, 0, 0, 0.16) }
+            )
+            .frame(width: trackWidth, height: trackHeight)
+          Circle()
+            .fill(Color.white)
+            .frame(width: thumbSize, height: thumbSize)
+            .padding(.horizontal, 2)
+        }
       }
-    } label: {
-      ZStack(alignment: configuration.isOn ? .trailing : .leading) {
-        Capsule()
-          .fill(
-            configuration.isOn
-              ? (tint ?? Color.accentColor)
-              : Color { scheme in scheme == .dark ? (1, 1, 1, 0.18) : (0, 0, 0, 0.16) }
-          )
-          .frame(width: 34, height: 20)
-        Circle()
-          .fill(Color.white)
-          .frame(width: 16, height: 16)
-          .padding(.horizontal, 2)
+      .buttonStyle(.plain),
+      boolAction: { newValue in
+        withAnimation(.easeOut(duration: 0.14)) {
+          configuration.isOn = newValue
+        }
       }
-    }
-    .buttonStyle(.plain)
+    )
 
     return Group {
       if labelsHidden {
@@ -422,34 +516,49 @@ public struct CheckboxToggleStyle: ToggleStyle {
   public init() {}
   public func makeBody(configuration: Configuration) -> some View {
     @Environment(\.labelsHidden) var labelsHidden
-    let box = Button {
-      configuration.isOn.toggle()
-    } label: {
-      ZStack {
-        RoundedRectangle(cornerRadius: 4)
-          .fill(
-            configuration.isOn
-              ? Color.accentColor
-              : Color { scheme in scheme == .dark ? (1, 1, 1, 0.08) : (0, 0, 0, 0.06) }
-          )
-          .frame(width: 16, height: 16)
-          .overlay {
-            RoundedRectangle(cornerRadius: 4)
-              .strokeBorder(
-                configuration.isOn
-                  ? Color.clear
-                  : Color { scheme in scheme == .dark ? (1, 1, 1, 0.24) : (0, 0, 0, 0.24) },
-                lineWidth: 1
-              )
+    #if os(Android) || CROSS_SWIFTUI_HARMONY
+    let boxSize: CGFloat = 28
+    #else
+    let boxSize: CGFloat = 16
+    #endif
+    let box = SemanticControlWrapper(
+      semantic: SemanticControl(
+        kind: "checkbox",
+        boolValue: configuration.isOn,
+        tint: EnvironmentValues.current.tint
+      ),
+      content: Button {
+        configuration.isOn.toggle()
+      } label: {
+        ZStack {
+          RoundedRectangle(cornerRadius: 4)
+            .fill(
+              configuration.isOn
+                ? Color.accentColor
+                : Color { scheme in scheme == .dark ? (1, 1, 1, 0.08) : (0, 0, 0, 0.06) }
+            )
+            .frame(width: boxSize, height: boxSize)
+            .overlay {
+              RoundedRectangle(cornerRadius: 4)
+                .strokeBorder(
+                  configuration.isOn
+                    ? Color.clear
+                    : Color { scheme in scheme == .dark ? (1, 1, 1, 0.24) : (0, 0, 0, 0.24) },
+                  lineWidth: 1
+                )
+            }
+          if configuration.isOn {
+            Image(systemName: "checkmark")
+              .font(.system(size: 10, weight: .bold))
+              .foregroundStyle(.white)
           }
-        if configuration.isOn {
-          Image(systemName: "checkmark")
-            .font(.system(size: 10, weight: .bold))
-            .foregroundStyle(.white)
         }
       }
-    }
-    .buttonStyle(.plain)
+      .buttonStyle(.plain),
+      boolAction: { newValue in
+        configuration.isOn = newValue
+      }
+    )
 
     return Group {
       if labelsHidden {
@@ -469,6 +578,23 @@ public struct CheckboxToggleStyle: ToggleStyle {
 public struct ButtonToggleStyle: ToggleStyle {
   public init() {}
   public func makeBody(configuration: Configuration) -> some View {
+    #if os(Android) || CROSS_SWIFTUI_HARMONY
+    if configuration.isOn {
+      Button {
+        configuration.isOn.toggle()
+      } label: {
+        configuration.label
+      }
+      .buttonStyle(.borderedProminent)
+    } else {
+      Button {
+        configuration.isOn.toggle()
+      } label: {
+        configuration.label
+      }
+      .buttonStyle(.bordered)
+    }
+    #else
     Button {
       configuration.isOn.toggle()
     } label: {
@@ -481,6 +607,7 @@ public struct ButtonToggleStyle: ToggleStyle {
         )
     }
     .buttonStyle(.plain)
+    #endif
   }
 }
 
@@ -662,32 +789,54 @@ public struct Picker<Label: View, SelectionValue: Hashable, Content: View>: View
     let control = Group {
       switch style.kind {
       case .segmented:
-        HStack(spacing: 2) {
-          ForEach(Array(options.enumerated()), id: \.offset) { _, opt in
-            let isSelected = opt.tag == currentKey
-            Button {
-              if let typed = opt.tag.base as? SelectionValue {
-                selection.wrappedValue = typed
+        let selectedIdx = options.firstIndex(where: { $0.tag == currentKey }) ?? 0
+        #if os(Android) || CROSS_SWIFTUI_HARMONY
+        let segMinHeight: CGFloat = 40
+        #else
+        let segMinHeight: CGFloat = 24
+        #endif
+        SemanticControlWrapper(
+          semantic: SemanticControl(
+            kind: "segmented",
+            intValue: selectedIdx,
+            items: options.map(\.title),
+            tint: EnvironmentValues.current.tint
+          ),
+          content: HStack(spacing: 2) {
+            ForEach(Array(options.enumerated()), id: \.offset) { _, opt in
+              let isSelected = opt.tag == currentKey
+              Button {
+                if let typed = opt.tag.base as? SelectionValue {
+                  selection.wrappedValue = typed
+                }
+              } label: {
+                Text(verbatim: opt.title)
+                  .font(.callout.weight(isSelected ? .medium : .regular))
+                  .padding(.horizontal, 10)
+                  .padding(.vertical, 4)
+                  .frame(maxWidth: .infinity, minHeight: segMinHeight - 4)
+                  .background(
+                    isSelected
+                      ? Color { s in s == .dark ? (1, 1, 1, 0.16) : (1, 1, 1, 0.92) }
+                      : Color.clear,
+                    in: RoundedRectangle(cornerRadius: 5)
+                  )
               }
-            } label: {
-              Text(verbatim: opt.title)
-                .font(.callout.weight(isSelected ? .medium : .regular))
-                .padding(.horizontal, 10)
-                .padding(.vertical, 4)
-                .background(
-                  isSelected
-                    ? Color { s in s == .dark ? (1, 1, 1, 0.16) : (1, 1, 1, 0.92) }
-                    : Color.clear,
-                  in: RoundedRectangle(cornerRadius: 5)
-                )
+              .buttonStyle(.plain)
             }
-            .buttonStyle(.plain)
           }
-        }
-        .padding(2)
-        .background(
-          Color { s in s == .dark ? (1, 1, 1, 0.07) : (0, 0, 0, 0.06) },
-          in: RoundedRectangle(cornerRadius: 7)
+          .padding(2)
+          .frame(minHeight: segMinHeight)
+          .background(
+            Color { s in s == .dark ? (1, 1, 1, 0.07) : (0, 0, 0, 0.06) },
+            in: RoundedRectangle(cornerRadius: 7)
+          ),
+          intAction: { idx in
+            guard idx >= 0, idx < options.count else { return }
+            if let typed = options[idx].tag.base as? SelectionValue {
+              selection.wrappedValue = typed
+            }
+          }
         )
 
       case .inline, .radioGroup:
@@ -716,72 +865,96 @@ public struct Picker<Label: View, SelectionValue: Hashable, Content: View>: View
         }
 
       case .menu:
-        Button {
-          menuExpanded.toggle()
-        } label: {
-          HStack(spacing: 6) {
-            Text(verbatim: selectedTitle)
-              .font(.callout)
-              .lineLimit(1)
-            Image(systemName: "chevron.down")
-              .font(.system(size: 10, weight: .semibold))
-              .foregroundStyle(.secondary)
-          }
-          .padding(.horizontal, 10)
-          .padding(.vertical, 5)
-          .background(
-            Color { s in s == .dark ? (1, 1, 1, 0.08) : (0, 0, 0, 0.06) },
-            in: RoundedRectangle(cornerRadius: 6)
-          )
-          .overlay {
-            RoundedRectangle(cornerRadius: 6)
-              .strokeBorder(
-                Color { s in s == .dark ? (1, 1, 1, 0.14) : (0, 0, 0, 0.12) },
-                lineWidth: 1
-              )
-          }
-        }
-        .buttonStyle(.plain)
-        .popover(isPresented: $menuExpanded, arrowEdge: .top) {
-          VStack(alignment: .leading, spacing: 2) {
-            ForEach(Array(options.enumerated()), id: \.offset) { _, opt in
-              let isSelected = opt.tag == currentKey
-              Button {
-                if let typed = opt.tag.base as? SelectionValue {
-                  selection.wrappedValue = typed
-                }
-                menuExpanded = false
-              } label: {
-                HStack(spacing: 8) {
-                  Image(systemName: "checkmark")
-                    .font(.system(size: 11, weight: .semibold))
-                    .opacity(isSelected ? 1 : 0)
-                  Text(verbatim: opt.title)
-                    .font(.callout)
-                    .lineLimit(1)
-                  Spacer(minLength: 12)
-                }
-                .padding(.horizontal, 8)
-                .padding(.vertical, 5)
-                .background(
-                  isSelected ? Color.accentColor.opacity(0.20) : Color.clear,
-                  in: RoundedRectangle(cornerRadius: 5)
+        let selectedIdx = options.firstIndex(where: { $0.tag == currentKey }) ?? 0
+        #if os(Android) || CROSS_SWIFTUI_HARMONY
+        let menuMinHeight: CGFloat = 38
+        #else
+        let menuMinHeight: CGFloat = 24
+        #endif
+        SemanticControlWrapper(
+          semantic: SemanticControl(
+            kind: "menu",
+            intValue: selectedIdx,
+            items: options.map(\.title),
+            title: selectedTitle,
+            tint: EnvironmentValues.current.tint
+          ),
+          content: Button {
+            menuExpanded.toggle()
+          } label: {
+            HStack(spacing: 6) {
+              Text(verbatim: selectedTitle)
+                .font(.callout)
+                .lineLimit(1)
+              Image(systemName: "chevron.down")
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundStyle(.secondary)
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 6)
+            .frame(minHeight: menuMinHeight)
+            .background(
+              Color { s in s == .dark ? (1, 1, 1, 0.08) : (0, 0, 0, 0.06) },
+              in: RoundedRectangle(cornerRadius: 6)
+            )
+            .overlay {
+              RoundedRectangle(cornerRadius: 6)
+                .strokeBorder(
+                  Color { s in s == .dark ? (1, 1, 1, 0.14) : (0, 0, 0, 0.12) },
+                  lineWidth: 1
                 )
-              }
-              .buttonStyle(.plain)
             }
           }
-          .padding(6)
-          .frame(minWidth: 160)
-          .background(
-            Color { s in s == .dark ? (0.16, 0.16, 0.18, 0.98) : (0.98, 0.98, 0.99, 0.98) },
-            in: RoundedRectangle(cornerRadius: 8)
-          )
-          .overlay {
-            RoundedRectangle(cornerRadius: 8)
-              .strokeBorder(Color { s in s == .dark ? (1, 1, 1, 0.14) : (0, 0, 0, 0.12) }, lineWidth: 1)
+          .buttonStyle(.plain)
+          ._menuPopover(isPresented: $menuExpanded, arrowEdge: .top) {
+            VStack(alignment: .leading, spacing: 2) {
+              ForEach(Array(options.enumerated()), id: \.offset) { _, opt in
+                let isSelected = opt.tag == currentKey
+                Button {
+                  if let typed = opt.tag.base as? SelectionValue {
+                    selection.wrappedValue = typed
+                  }
+                  menuExpanded = false
+                } label: {
+                  HStack(spacing: 8) {
+                    Image(systemName: "checkmark")
+                      .font(.system(size: 11, weight: .semibold))
+                      .opacity(isSelected ? 1 : 0)
+                    Text(verbatim: opt.title)
+                      .font(.callout)
+                      .lineLimit(1)
+                    Spacer(minLength: 12)
+                  }
+                  .padding(.horizontal, 8)
+                  .padding(.vertical, 5)
+                  .background(
+                    isSelected ? Color.accentColor.opacity(0.20) : Color.clear,
+                    in: RoundedRectangle(cornerRadius: 5)
+                  )
+                }
+                .buttonStyle(.plain)
+              }
+            }
+            .padding(6)
+            .fixedSize(horizontal: true, vertical: false)
+            .frame(minWidth: 160, maxWidth: 280, alignment: .leading)
+            .background(
+              Color { s in s == .dark ? (0.16, 0.16, 0.18, 0.98) : (0.98, 0.98, 0.99, 0.98) },
+              in: RoundedRectangle(cornerRadius: 8)
+            )
+            .overlay {
+              RoundedRectangle(cornerRadius: 8)
+                .strokeBorder(Color { s in s == .dark ? (1, 1, 1, 0.14) : (0, 0, 0, 0.12) }, lineWidth: 1)
+            }
+            .shadow(color: .black.opacity(0.16), radius: 12, x: 0, y: 4)
+          },
+          intAction: { idx in
+            guard idx >= 0, idx < options.count else { return }
+            if let typed = options[idx].tag.base as? SelectionValue {
+              selection.wrappedValue = typed
+            }
           }
-        }
+        )
       }
     }
 
@@ -863,9 +1036,21 @@ public struct Slider<Label: View, ValueLabel: View>: View {
   public var body: some View {
     let span = max(1e-9, bounds.upperBound - bounds.lowerBound)
     let fraction = min(1, max(0, (value.wrappedValue - bounds.lowerBound) / span))
-    let trackControl = HStack(spacing: 8) {
-      minLabel
-      GeometryReader { geo in
+    #if os(Android) || CROSS_SWIFTUI_HARMONY
+    let sliderHeight: CGFloat = 40
+    #else
+    let sliderHeight: CGFloat = 20
+    #endif
+    let sliderBar = SemanticControlWrapper(
+      semantic: SemanticControl(
+        kind: "slider",
+        doubleValue: value.wrappedValue,
+        minValue: bounds.lowerBound,
+        maxValue: bounds.upperBound,
+        stepValue: step ?? 0,
+        tint: EnvironmentValues.current.tint
+      ),
+      content: GeometryReader { geo in
         let w = max(1, geo.size.width)
         ZStack(alignment: .leading) {
           Capsule()
@@ -880,7 +1065,7 @@ public struct Slider<Label: View, ValueLabel: View>: View {
             .overlay { Circle().strokeBorder(Color.black.opacity(0.20), lineWidth: 1) }
             .offset(x: max(0, min(w - 14, w * CGFloat(fraction) - 7)))
         }
-        .frame(height: 20)
+        .frame(height: sliderHeight)
         .gesture(
           DragGesture(minimumDistance: 0)
             .onChanged { drag in
@@ -897,7 +1082,20 @@ public struct Slider<Label: View, ValueLabel: View>: View {
             }
         )
       }
-      .frame(minWidth: 120, idealWidth: 160, maxHeight: 20)
+      .frame(minWidth: 120, idealWidth: 160, minHeight: sliderHeight, maxHeight: sliderHeight),
+      doubleAction: { newValue, ended in
+        onEditingChanged(!ended)
+        var raw = newValue
+        if let step, step > 0 {
+          raw = bounds.lowerBound + ((raw - bounds.lowerBound) / step).rounded() * step
+        }
+        value.wrappedValue = min(bounds.upperBound, max(bounds.lowerBound, raw))
+        if ended { onEditingChanged(false) }
+      }
+    )
+    let trackControl = HStack(spacing: 8) {
+      minLabel
+      sliderBar
       maxLabel
     }
 
@@ -959,16 +1157,32 @@ public struct Stepper<Label: View>: View {
   }
 
   public var body: some View {
-    let buttons = HStack(spacing: 2) {
-      Button { onDecrement?() } label: {
-        Image(systemName: "minus").font(.system(size: 11, weight: .semibold)).frame(width: 22, height: 22)
+    #if os(Android) || CROSS_SWIFTUI_HARMONY
+    let stepW: CGFloat = 100
+    let stepH: CGFloat = 36
+    #else
+    let stepW: CGFloat = 48
+    let stepH: CGFloat = 24
+    #endif
+    let buttons = SemanticControlWrapper(
+      semantic: SemanticControl(
+        kind: "stepper",
+        tint: EnvironmentValues.current.tint
+      ),
+      content: HStack(spacing: 2) {
+        Button { onDecrement?() } label: {
+          Image(systemName: "minus").font(.system(size: 11, weight: .semibold)).frame(width: 22, height: 22)
+        }
+        .buttonStyle(.bordered)
+        Button { onIncrement?() } label: {
+          Image(systemName: "plus").font(.system(size: 11, weight: .semibold)).frame(width: 22, height: 22)
+        }
+        .buttonStyle(.bordered)
       }
-      .buttonStyle(.bordered)
-      Button { onIncrement?() } label: {
-        Image(systemName: "plus").font(.system(size: 11, weight: .semibold)).frame(width: 22, height: 22)
-      }
-      .buttonStyle(.bordered)
-    }
+      .frame(minWidth: stepW, minHeight: stepH),
+      incrementAction: onIncrement,
+      decrementAction: onDecrement
+    )
 
     if labelsHidden {
       buttons
@@ -1065,13 +1279,14 @@ public struct Menu<Label: View, Content: View>: View {
       }
     }
     .buttonStyle(.bordered)
-    .popover(isPresented: $isExpanded, arrowEdge: .top) {
+    ._menuPopover(isPresented: $isExpanded, arrowEdge: .top) {
       VStack(alignment: .leading, spacing: 4) {
         content
           .buttonStyle(.plain)
       }
       .padding(8)
-      .frame(minWidth: 160)
+      .fixedSize(horizontal: true, vertical: false)
+      .frame(minWidth: 160, maxWidth: 280, alignment: .leading)
       .background(
         Color { s in s == .dark ? (0.16, 0.16, 0.18, 0.98) : (0.98, 0.98, 0.99, 0.98) },
         in: RoundedRectangle(cornerRadius: 8)
@@ -1080,6 +1295,7 @@ public struct Menu<Label: View, Content: View>: View {
         RoundedRectangle(cornerRadius: 8)
           .strokeBorder(Color { s in s == .dark ? (1, 1, 1, 0.14) : (0, 0, 0, 0.12) }, lineWidth: 1)
       }
+      .shadow(color: .black.opacity(0.16), radius: 12, x: 0, y: 4)
     }
   }
 }
@@ -1182,18 +1398,33 @@ private struct GroupedSectionRows<Content: View>: View, _PrimitiveView {
     guard !raw.isEmpty else { return Element(kind: .empty) }
     let sepColor = SeparatorShapeStyle()._resolvePrimaryColor(in: EnvironmentValues.current)
     var interspersed: [Element] = []
+    #if os(Android) || CROSS_SWIFTUI_HARMONY
+    let rowInsets = EdgeInsets(top: 12, leading: 16, bottom: 12, trailing: 16)
+    #else
+    let rowInsets = EdgeInsets(top: 10, leading: 12, bottom: 10, trailing: 12)
+    #endif
     for (idx, item) in raw.enumerated() {
       if idx > 0 {
         var sp = NodeProps()
         sp.background = sepColor
         sp.frameHeight = 1
         sp.fillWidth = true
-        interspersed.append(Element(kind: .shape, props: sp))
+        sp.semanticControl = SemanticControl(kind: "divider")
+        let sepLine = Element(kind: .shape, props: sp)
+        #if os(Android) || CROSS_SWIFTUI_HARMONY
+        var sepWrap = NodeProps()
+        sepWrap.padding = EdgeInsets(top: 0, leading: 16, bottom: 0, trailing: 0)
+        sepWrap.fillWidth = true
+        interspersed.append(Element(kind: .padding, props: sepWrap, children: [sepLine]))
+        #else
+        interspersed.append(sepLine)
+        #endif
       }
       var rowWrap = NodeProps()
-      rowWrap.padding = EdgeInsets(top: 10, leading: 12, bottom: 10, trailing: 12)
+      rowWrap.padding = rowInsets
       rowWrap.fillWidth = true
       rowWrap.alignment = .leading
+      rowWrap.semanticControl = SemanticControl(kind: "listItem")
       interspersed.append(Element(kind: .padding, props: rowWrap, children: [item]))
     }
     var vp = NodeProps()
@@ -1222,6 +1453,28 @@ public struct Section<Parent: View, Content: View, Footer: View>: View {
 
   public var body: some View {
     if inGroupedForm {
+      #if os(Android) || CROSS_SWIFTUI_HARMONY
+      VStack(alignment: .leading, spacing: 8) {
+        if Parent.self != EmptyView.self {
+          header
+            .font(.system(size: 14, weight: .semibold))
+            .foregroundStyle(.secondary)
+            .padding(.horizontal, 16)
+        }
+        GroupedSectionRows(content: content)
+          .background(
+            Color { s in s == .dark ? (0.11, 0.11, 0.12, 1) : (1, 1, 1, 1) },
+            in: RoundedRectangle(cornerRadius: 26)
+          )
+        if Footer.self != EmptyView.self {
+          footer
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .padding(.horizontal, 16)
+        }
+      }
+      .frame(maxWidth: .infinity, alignment: .leading)
+      #else
       VStack(alignment: .leading, spacing: 6) {
         if Parent.self != EmptyView.self {
           header
@@ -1248,6 +1501,7 @@ public struct Section<Parent: View, Content: View, Footer: View>: View {
         }
       }
       .frame(maxWidth: .infinity, alignment: .leading)
+      #endif
     } else {
       VStack(alignment: .leading, spacing: 4) {
         if Parent.self != EmptyView.self {
@@ -1316,6 +1570,8 @@ public struct ListStyle: Sendable {
   public static let automatic = ListStyle()
   public static let plain = ListStyle()
   public static let inset = ListStyle()
+  public static let insetGrouped = ListStyle()
+  public static let grouped = ListStyle()
   public static let sidebar = ListStyle()
   public static let bordered = ListStyle()
 }
@@ -1369,7 +1625,11 @@ private struct SelectableListBody<SelectionValue: Hashable, Content: View>: View
     }
     decorate(&root)
     var vp = NodeProps()
+    #if os(Android) || CROSS_SWIFTUI_HARMONY
+    vp.spacing = 20
+    #else
     vp.spacing = 2
+    #endif
     vp.horizontalAlignment = .leading
     vp.fillWidth = true
     return Element(kind: .container(.vertical), props: vp, children: flattenChildren(root))
@@ -1410,12 +1670,23 @@ public struct List<SelectionValue: Hashable, Content: View>: View {
   }
 
   public var body: some View {
+    #if os(Android) || CROSS_SWIFTUI_HARMONY
+    ScrollView(.vertical) {
+      SelectableListBody(selection: selection, content: content)
+        .padding(.horizontal, 16)
+        .padding(.vertical, 12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .environment(\.inGroupedForm, true)
+    }
+    .background(Color { s in s == .dark ? (0, 0, 0, 1) : (0.949, 0.949, 0.969, 1) })
+    #else
     ScrollView(.vertical) {
       SelectableListBody(selection: selection, content: content)
         .padding(8)
         .frame(maxWidth: .infinity, alignment: .leading)
         .environment(\.inGroupedForm, false)
     }
+    #endif
   }
 }
 
@@ -1479,39 +1750,202 @@ public struct NavigationSplitView<Sidebar: View, Content: View, Detail: View>: V
         }
       Divider()
       if Content.self != EmptyView.self {
-        content.frame(maxHeight: .infinity)
+        content
+          .frame(maxHeight: .infinity)
+          .background(Color { s in s == .dark ? (0.10, 0.10, 0.12, 1.0) : (1.0, 1.0, 1.0, 1.0) })
         Divider()
       }
       detail
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Color { s in s == .dark ? (0.10, 0.10, 0.12, 1.0) : (1.0, 1.0, 1.0, 1.0) })
     }
+  }
+}
+
+private struct _NavigationEntry: Identifiable {
+  let id: Int
+  let title: String
+  let view: AnyView
+}
+
+private struct _NavigationActions: Sendable {
+  let push: (@MainActor @Sendable (String, AnyView) -> Void)?
+  let pop: (@MainActor @Sendable () -> Void)?
+  let popToRoot: (@MainActor @Sendable () -> Void)?
+}
+
+private enum _NavigationActionsKey: EnvironmentKey {
+  static let defaultValue = _NavigationActions(push: nil, pop: nil, popToRoot: nil)
+}
+
+extension EnvironmentValues {
+  fileprivate var _navigationActions: _NavigationActions {
+    get { self[_NavigationActionsKey.self] }
+    set { self[_NavigationActionsKey.self] = newValue }
+  }
+}
+
+private struct _NavigationTitlePreferenceKey: PreferenceKey {
+  static let defaultValue: String? = nil
+  static func reduce(value: inout String?, nextValue: () -> String?) {
+    if let next = nextValue() { value = next }
   }
 }
 
 public struct NavigationStack<Data, Root: View>: View {
   let root: Root
+  @State private var entries: [_NavigationEntry] = []
+  @State private var nextID: Int = 1
+  @State private var rootTitle: String = ""
+  @State private var detailTitle: String = ""
+
   public init(@ViewBuilder root: () -> Root) where Data == Never {
     self.root = root()
   }
   public init(path: Binding<Data>, @ViewBuilder root: () -> Root) {
     self.root = root()
   }
-  public var body: some View { root }
+
+  public var body: some View {
+    let actions = _NavigationActions(
+      push: { title, dest in
+        let id = nextID
+        nextID += 1
+        detailTitle = title
+        entries.append(_NavigationEntry(id: id, title: title, view: dest))
+      },
+      pop: {
+        if !entries.isEmpty {
+          entries.removeLast()
+          detailTitle = entries.last?.title ?? ""
+        }
+      },
+      popToRoot: {
+        entries.removeAll()
+        detailTitle = ""
+      }
+    )
+    let activeTitle = entries.isEmpty
+      ? rootTitle
+      : (detailTitle.isEmpty ? (entries.last?.title ?? "") : detailTitle)
+    let backTitle = entries.count <= 1
+      ? (rootTitle.isEmpty ? "Back" : rootTitle)
+      : entries[entries.count - 2].title
+
+    let pageKey = entries.last.map { String($0.id) } ?? "0"
+
+    SemanticControlWrapper(
+      semantic: SemanticControl(
+        kind: "navStack",
+        intValue: entries.count,
+        subtitle: pageKey,
+        canGoBack: !entries.isEmpty
+      ),
+      content: VStack(spacing: 0) {
+        if !activeTitle.isEmpty || !entries.isEmpty {
+          SemanticControlWrapper(
+            semantic: SemanticControl(
+              kind: "navBar",
+              title: activeTitle,
+              subtitle: backTitle,
+              canGoBack: !entries.isEmpty
+            ),
+            content: HStack(spacing: 8) {
+              if !entries.isEmpty {
+                Button {
+                  actions.pop?()
+                } label: {
+                  HStack(spacing: 4) {
+                    Image(systemName: "chevron.left")
+                    Text(verbatim: backTitle)
+                  }
+                  .foregroundStyle(Color.accentColor)
+                }
+                .buttonStyle(.plain)
+              }
+              Spacer()
+              Text(verbatim: activeTitle)
+                .font(.headline)
+              Spacer()
+              if !entries.isEmpty {
+                Color.clear.frame(width: 44, height: 1)
+              }
+            }
+            .padding(.horizontal, 16)
+            .frame(maxWidth: .infinity, minHeight: 56, maxHeight: 56)
+            .background(Color { s in s == .dark ? (0.11, 0.11, 0.12, 1) : (0.97, 0.97, 0.98, 1) }),
+            backAction: { actions.pop?() }
+          )
+          #if !(os(Android) || CROSS_SWIFTUI_HARMONY)
+          Divider()
+          #endif
+        }
+
+        Group {
+          if let top = entries.last {
+            top.view
+              .onPreferenceChange(_NavigationTitlePreferenceKey.self) { title in
+                if let title, !title.isEmpty { detailTitle = title }
+              }
+          } else {
+            root
+              .onPreferenceChange(_NavigationTitlePreferenceKey.self) { title in
+                if let title, !title.isEmpty { rootTitle = title }
+              }
+          }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .environment(\._navigationActions, actions)
+      }
+      .frame(maxWidth: .infinity, maxHeight: .infinity),
+      backAction: { actions.pop?() }
+    )
+    .frame(maxWidth: .infinity, maxHeight: .infinity)
+  }
 }
 
 public struct NavigationLink<Label: View, Destination: View>: View {
   let label: Label
   let destination: Destination
+  let fallbackTitle: String
+  @Environment(\._navigationActions) private var navActions
+
   public init(@ViewBuilder destination: () -> Destination, @ViewBuilder label: () -> Label) {
     self.destination = destination()
     self.label = label()
+    self.fallbackTitle = ""
   }
   public init(_ titleKey: LocalizedStringKey, @ViewBuilder destination: () -> Destination)
   where Label == Text {
     self.destination = destination()
     self.label = Text(titleKey)
+    self.fallbackTitle = titleKey.resolved()
   }
-  public var body: some View { label }
+  @_disfavoredOverload
+  public init<S: StringProtocol>(_ title: S, @ViewBuilder destination: () -> Destination)
+  where Label == Text {
+    let str = String(title)
+    self.destination = destination()
+    self.label = Text(verbatim: str)
+    self.fallbackTitle = str
+  }
+
+  public var body: some View {
+    Button {
+      navActions.push?(fallbackTitle, AnyView(destination))
+    } label: {
+      HStack(spacing: 8) {
+        label
+        Spacer(minLength: 8)
+        Image(systemName: "chevron.right")
+          .font(.system(size: 12, weight: .semibold))
+          .foregroundStyle(.secondary)
+      }
+      .frame(maxWidth: .infinity, alignment: .leading)
+      .contentShape(Rectangle())
+    }
+    .buttonStyle(.plain)
+  }
 }
 
 public struct ToolbarItemPlacement: Equatable, Sendable {
@@ -1577,10 +2011,16 @@ extension View {
     preference(key: SidebarColumnWidthPreferenceKey.self, value: ideal)
   }
 
-  public func navigationTitle(_ titleKey: LocalizedStringKey) -> some View { self }
+  public func navigationTitle(_ titleKey: LocalizedStringKey) -> some View {
+    preference(key: _NavigationTitlePreferenceKey.self, value: titleKey.resolved())
+  }
   @_disfavoredOverload
-  public func navigationTitle<S: StringProtocol>(_ title: S) -> some View { self }
-  public func navigationTitle(_ title: Text) -> some View { self }
+  public func navigationTitle<S: StringProtocol>(_ title: S) -> some View {
+    preference(key: _NavigationTitlePreferenceKey.self, value: String(title))
+  }
+  public func navigationTitle(_ title: Text) -> some View {
+    preference(key: _NavigationTitlePreferenceKey.self, value: title.content)
+  }
   public func navigationSubtitle(_ subtitleKey: LocalizedStringKey) -> some View { self }
   @_disfavoredOverload
   public func navigationSubtitle<S: StringProtocol>(_ subtitle: S) -> some View { self }
@@ -1699,6 +2139,27 @@ extension View {
   }
 }
 
+private struct SpinningProgressIndicator: View {
+  let tint: Color
+  @State private var spinning = false
+
+  var body: some View {
+    ZStack {
+      Circle()
+        .stroke(Color.primary.opacity(0.14), lineWidth: 2.2)
+      Circle()
+        .trim(from: 0.0, to: 0.72)
+        .stroke(tint, style: StrokeStyle(lineWidth: 2.2, lineCap: .round))
+        .rotationEffect(.degrees(spinning ? 360 : 0))
+        .animation(.linear(duration: 0.9).repeatForever(autoreverses: false), value: spinning)
+    }
+    .frame(width: 18, height: 18)
+    .onAppear {
+      spinning = true
+    }
+  }
+}
+
 public struct ProgressView<Label: View, CurrentValueLabel: View>: View {
   let fraction: Double?
   let label: Label
@@ -1766,24 +2227,37 @@ public struct ProgressView<Label: View, CurrentValueLabel: View>: View {
   }
 
   public var body: some View {
+    let resolvedTint = EnvironmentValues.current.tint
     if let fraction, style.kind != .circular {
       VStack(alignment: .leading, spacing: 4) {
         if Label.self != EmptyView.self { label }
-        GeometryReader { geo in
-          ZStack(alignment: .leading) {
-            Capsule().fill(Color.primary.opacity(0.14)).frame(height: 6)
-            Capsule().fill(Color.accentColor).frame(width: geo.size.width * CGFloat(fraction), height: 6)
+        SemanticControlWrapper(
+          semantic: SemanticControl(
+            kind: "progressLinear",
+            doubleValue: fraction,
+            tint: EnvironmentValues.current.tint,
+            isIndeterminate: false
+          ),
+          content: GeometryReader { geo in
+            ZStack(alignment: .leading) {
+              Capsule().fill(Color.primary.opacity(0.14)).frame(height: 6)
+              Capsule().fill(resolvedTint).frame(width: geo.size.width * CGFloat(fraction), height: 6)
+            }
           }
-        }
-        .frame(height: 6)
+          .frame(height: 6)
+        )
         if CurrentValueLabel.self != EmptyView.self { currentValueLabel }
       }
     } else {
-      HStack(spacing: 6) {
-        Circle()
-          .trim(from: 0.15, to: 0.85)
-          .stroke(Color.secondary, lineWidth: 2)
-          .frame(width: 14, height: 14)
+      HStack(spacing: 8) {
+        SemanticControlWrapper(
+          semantic: SemanticControl(
+            kind: "progressCircular",
+            tint: EnvironmentValues.current.tint,
+            isIndeterminate: true
+          ),
+          content: SpinningProgressIndicator(tint: resolvedTint)
+        )
         if Label.self != EmptyView.self { label }
       }
     }
@@ -1922,5 +2396,172 @@ public struct LazyHGrid<Content: View>: View {
   }
   public var body: some View {
     HStack { content }
+  }
+}
+
+// MARK: - TabView & tabItem
+
+private struct _TabItemDescriptor {
+  let title: String
+  let systemImage: String
+  let tag: AnyHashable?
+  let content: AnyView
+}
+
+private struct _TabItemModifierView<Content: View, Label: View>: View, _PrimitiveView {
+  typealias Body = Never
+  let content: Content
+  let label: Label
+
+  var body: Never { fatalError("_TabItemModifierView is primitive") }
+
+  func _makeElement(path: ViewPath) -> Element {
+    let labelEl = _render(label, path: path.appending(index: 1))
+    func findText(_ el: Element) -> String {
+      if el.kind == .text, !el.props.text.isEmpty { return el.props.text }
+      for c in el.children {
+        let t = findText(c)
+        if !t.isEmpty { return t }
+      }
+      return ""
+    }
+    func findSymbol(_ el: Element) -> String {
+      if el.kind == .image, el.props.imagePath.hasPrefix("sf://") {
+        return String(el.props.imagePath.dropFirst(5))
+      }
+      for c in el.children {
+        let s = findSymbol(c)
+        if !s.isEmpty { return s }
+      }
+      return ""
+    }
+    var el = _render(content, path: path.appending(index: 0))
+    el.tabItemTitle = findText(labelEl)
+    el.tabItemIcon = findSymbol(labelEl)
+    el.tabItemContent = AnyView(content)
+    return el
+  }
+}
+
+extension View {
+  public func tabItem<V: View>(@ViewBuilder _ label: () -> V) -> some View {
+    _TabItemModifierView(content: self, label: label())
+  }
+}
+
+@MainActor
+private func _extractTabItems<C: View>(from content: C) -> [_TabItemDescriptor] {
+  let tree = _render(content, path: ViewPath())
+  var results: [_TabItemDescriptor] = []
+  func walk(_ el: Element) {
+    if let tabContent = el.tabItemContent {
+      results.append(
+        _TabItemDescriptor(
+          title: el.tabItemTitle ?? "",
+          systemImage: el.tabItemIcon ?? "",
+          tag: el.tagValue ?? el.explicitID,
+          content: tabContent
+        )
+      )
+      return
+    }
+    for c in el.children { walk(c) }
+  }
+  walk(tree)
+  return results
+}
+
+public struct TabView<SelectionValue: Hashable, Content: View>: View {
+  let selection: Binding<SelectionValue>?
+  let content: Content
+  @State private var fallbackIndex: Int = 0
+
+  public init(selection: Binding<SelectionValue>?, @ViewBuilder content: () -> Content) {
+    self.selection = selection
+    self.content = content()
+  }
+
+  public init(@ViewBuilder content: () -> Content) where SelectionValue == Int {
+    self.selection = nil
+    self.content = content()
+  }
+
+  public var body: some View {
+    let tabs = _extractTabItems(from: content)
+    let activeIndex: Int = {
+      if let selection {
+        let key = AnyHashable(selection.wrappedValue)
+        if let idx = tabs.firstIndex(where: { $0.tag == key }) { return idx }
+        if let intVal = selection.wrappedValue as? Int, intVal >= 0, intVal < tabs.count {
+          return intVal
+        }
+      }
+      return min(max(0, fallbackIndex), max(0, tabs.count - 1))
+    }()
+
+    VStack(spacing: 0) {
+      Group {
+        if !tabs.isEmpty {
+          tabs[activeIndex].content
+        } else {
+          content
+        }
+      }
+      .frame(maxWidth: .infinity, maxHeight: .infinity)
+
+      if !tabs.isEmpty {
+        #if !(os(Android) || CROSS_SWIFTUI_HARMONY)
+        Divider()
+        #endif
+        SemanticControlWrapper(
+          semantic: SemanticControl(
+            kind: "tabBar",
+            intValue: activeIndex,
+            items: tabs.map(\.title),
+            itemIcons: tabs.map(\.systemImage),
+            tint: EnvironmentValues.current.tint
+          ),
+          content: HStack(spacing: 0) {
+            ForEach(Array(tabs.enumerated()), id: \.offset) { idx, tab in
+              let isSelected = idx == activeIndex
+              Button {
+                if let selection, let tag = tab.tag?.base as? SelectionValue {
+                  selection.wrappedValue = tag
+                } else if let selection, let intTag = idx as? SelectionValue {
+                  selection.wrappedValue = intTag
+                } else {
+                  fallbackIndex = idx
+                }
+              } label: {
+                VStack(spacing: 3) {
+                  if !tab.systemImage.isEmpty {
+                    Image(systemName: tab.systemImage)
+                      .font(.system(size: 18))
+                  }
+                  Text(verbatim: tab.title)
+                    .font(.caption)
+                }
+                .foregroundStyle(isSelected ? Color.accentColor : Color.secondary)
+                .frame(maxWidth: .infinity, minHeight: 56)
+              }
+              .buttonStyle(.plain)
+            }
+          }
+          .frame(maxWidth: .infinity, minHeight: 72, maxHeight: 72)
+          .background(Color { s in s == .dark ? (0.11, 0.11, 0.12, 1) : (0.97, 0.97, 0.98, 1) }),
+          intAction: { idx in
+            guard idx >= 0, idx < tabs.count else { return }
+            if let selection, let tag = tabs[idx].tag?.base as? SelectionValue {
+              selection.wrappedValue = tag
+            } else if let selection, let intTag = idx as? SelectionValue {
+              selection.wrappedValue = intTag
+            } else {
+              fallbackIndex = idx
+            }
+          }
+        )
+      }
+    }
+    .frame(maxWidth: .infinity, maxHeight: .infinity)
   }
 }

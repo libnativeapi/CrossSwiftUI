@@ -373,7 +373,11 @@ public struct LayoutEngine {
     case .textField:
       size = textSize(p.text.isEmpty ? " " : p.text, p.font)
       size.width = offer.width.map { Double($0) } ?? max(80, size.width)
+      #if os(Android) || CROSS_SWIFTUI_HARMONY
+      size.height = max(size.height + 28, 56)
+      #else
       if textMeasurer == nil { size.height = max(size.height, 20) }
+      #endif
       if p.multiline { size.height *= 3 }
     case .image:
       if let iw = p.idealWidth, let ih = p.idealHeight {
@@ -405,13 +409,19 @@ public struct LayoutEngine {
     case .geometry: size = Size(width: offer.width ?? 10, height: offer.height ?? 10)
     case .grid:
       let columns = gridColumns(e, proposal: offer)
-      let heights = e.children.map { row in
-        row.children.enumerated().map { i, cell in
-          measure(cell, ProposedViewSize(width: columns[i], height: nil)).height
-        }.max() ?? 0
+      let totalWidth =
+        columns.reduce(0, +) + Double(max(0, columns.count - 1)) * p.padding.leading
+      let heights = e.children.map { row -> Double in
+        if row.kind == .container(.horizontal) && !row.children.isEmpty {
+          return row.children.enumerated().map { i, cell in
+            let colW = i < columns.count ? columns[i] : nil
+            return measure(cell, ProposedViewSize(width: colW.map { CGFloat($0) }, height: nil)).height
+          }.max() ?? 0
+        }
+        return measure(row, ProposedViewSize(width: totalWidth > 0 ? CGFloat(totalWidth) : offer.width, height: nil)).height
       }
       size = Size(
-        width: columns.reduce(0, +) + Double(max(0, columns.count - 1)) * p.padding.leading,
+        width: totalWidth,
         height: heights.reduce(0, +) + Double(max(0, heights.count - 1)) * p.spacing)
     case .customLayout:
       if let layout = e.layout {
@@ -480,18 +490,31 @@ public struct LayoutEngine {
       height: size.height.isFinite ? max(0, size.height) : 0)
   }
   private func gridColumns(_ e: Element, proposal: ProposedViewSize) -> [Double] {
-    let count = e.children.map { $0.children.count }.max() ?? 0
+    let rows = e.children.filter { $0.kind == .container(.horizontal) && !$0.children.isEmpty }
+    let count = rows.map { $0.children.count }.max() ?? 0
     guard count > 0 else { return [] }
-    let available = proposal.width.map {
-      max(0, Double($0) - Double(count - 1) * e.props.padding.leading) / Double(count)
-    }
-    return (0..<count).map { i in
-      e.children.compactMap { row -> Double? in
+    let ideal: [Double] = (0..<count).map { i in
+      rows.compactMap { row -> Double? in
         guard i < row.children.count else { return nil }
-        return measure(
-          row.children[i], ProposedViewSize(width: available.map { CGFloat($0) }, height: nil)
-        ).width
+        return measure(row.children[i], ProposedViewSize(width: nil, height: nil)).width
       }.max() ?? 0
+    }
+    guard let proposedWidth = proposal.width else { return ideal }
+    let spacingTotal = Double(max(0, count - 1)) * e.props.padding.leading
+    let budget = max(0, Double(proposedWidth) - spacingTotal)
+    let totalIdeal = ideal.reduce(0, +)
+    if totalIdeal <= budget + 0.5 || totalIdeal <= 0 {
+      return ideal
+    }
+    let scale = budget / totalIdeal
+    let allotted = ideal.map { $0 * scale }
+    return (0..<count).map { i in
+      let limit = allotted[i]
+      let measured = rows.compactMap { row -> Double? in
+        guard i < row.children.count else { return nil }
+        return measure(row.children[i], ProposedViewSize(width: CGFloat(limit), height: nil)).width
+      }.max() ?? 0
+      return min(limit, measured)
     }
   }
   private func fills(_ e: Element, horizontal: Bool) -> Bool {
@@ -703,6 +726,9 @@ public struct LayoutEngine {
     case .grid:
       let columns = gridColumns(
         e, proposal: ProposedViewSize(width: rect.width, height: rect.height))
+      let totalWidth =
+        columns.reduce(0, +) + Double(max(0, columns.count - 1)) * e.props.padding.leading
+      let spanWidth = max(rect.width, totalWidth)
       var y = rect.minY
       for row in e.children.indices {
         // Grid places row children directly, bypassing place(row). Their
@@ -710,20 +736,32 @@ public struct LayoutEngine {
         // Reconcile the row so rebuilt GeometryReader content receives keys
         // and mounted IDs instead of retaining placeholder IDs.
         e.children[row].reusesLayout = false
-        let height =
-          e.children[row].children.enumerated().map { i, cell in
-            measure(cell, ProposedViewSize(width: columns[i], height: nil)).height
-          }.max() ?? 0
-        e.children[row].frame = Rect(x: rect.minX, y: y, width: rect.width, height: height)
-        var x = rect.minX
-        for col in e.children[row].children.indices {
+        if e.children[row].kind == .container(.horizontal) && !e.children[row].children.isEmpty {
+          let height =
+            e.children[row].children.enumerated().map { i, cell in
+              let colW = i < columns.count ? columns[i] : nil
+              return measure(cell, ProposedViewSize(width: colW.map { CGFloat($0) }, height: nil)).height
+            }.max() ?? 0
+          e.children[row].frame = Rect(x: rect.minX, y: y, width: spanWidth, height: height)
+          var x = rect.minX
+          for col in e.children[row].children.indices {
+            let colW = col < columns.count ? columns[col] : 0
+            place(
+              &e.children[row].children[col],
+              in: Rect(x: x, y: y, width: colW, height: height))
+            x += colW + e.props.padding.leading
+          }
+          e.children[row].updateOverflow()
+          y += height + e.props.spacing
+        } else {
+          let rowHeight = measure(
+            e.children[row], ProposedViewSize(width: CGFloat(spanWidth), height: nil)
+          ).height
           place(
-            &e.children[row].children[col],
-            in: Rect(x: x, y: y, width: columns[col], height: height))
-          x += columns[col] + e.props.padding.leading
+            &e.children[row],
+            in: Rect(x: rect.minX, y: y, width: spanWidth, height: rowHeight))
+          y += rowHeight + e.props.spacing
         }
-        e.children[row].updateOverflow()
-        y += height + e.props.spacing
       }
     case .customLayout:
       if let layout = e.layout {

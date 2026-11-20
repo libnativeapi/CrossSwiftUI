@@ -289,6 +289,73 @@ import Foundation
     node.action?()
   }
 
+  /// Invokes the boolean change handler for a semantic toggle/switch control.
+  public func performBoolInput(_ id: NodeID, value: Bool) {
+    transactionDepth += 1
+    defer { finishTransaction() }
+    guard let node = find(id, in: tree), node.props.enabled, node.props.visible else { return }
+    node.semanticBoolAction?(value)
+  }
+
+  /// Invokes the floating-point change handler for a semantic slider control.
+  public func performDoubleInput(_ id: NodeID, value: Double, ended: Bool) {
+    transactionDepth += 1
+    defer { finishTransaction() }
+    guard let node = find(id, in: tree), node.props.enabled, node.props.visible else { return }
+    node.semanticDoubleAction?(value, ended)
+  }
+
+  /// Invokes the indexed selection handler for a semantic segmented control, tab bar, or alert action.
+  public func performIntInput(_ id: NodeID, value: Int) {
+    transactionDepth += 1
+    defer { finishTransaction() }
+    guard let node = find(id, in: tree), node.props.visible else { return }
+    if node.props.semanticControl?.kind == "alert" {
+      if value >= 0, value < node.semanticAlertActions.count {
+        node.semanticAlertActions[value]()
+      }
+      node.dismissPresentation?()
+      return
+    }
+    guard node.props.enabled else { return }
+    node.semanticIntAction?(value)
+  }
+
+  /// Invokes the increment/decrement handler for a semantic stepper control.
+  public func performStepInput(_ id: NodeID, delta: Int) {
+    transactionDepth += 1
+    defer { finishTransaction() }
+    guard let node = find(id, in: tree), node.props.enabled, node.props.visible else { return }
+    if delta >= 0 {
+      node.semanticIncrementAction?()
+    } else {
+      node.semanticDecrementAction?()
+    }
+  }
+
+  /// Invokes the navigation back handler for a semantic navigation bar.
+  public func performBackInput(_ id: NodeID) {
+    transactionDepth += 1
+    defer { finishTransaction() }
+    guard let node = find(id, in: tree), node.props.visible else { return }
+    node.semanticBackAction?()
+  }
+
+  /// Dismisses any currently presented modal/alert presentation.
+  public func dismissActivePresentation() {
+    transactionDepth += 1
+    defer { finishTransaction() }
+    func findDismiss(_ node: Element?) -> (() -> Void)? {
+      guard let node else { return nil }
+      if let dismiss = node.dismissPresentation { return dismiss }
+      for child in node.children.reversed() {
+        if let dismiss = findDismiss(child) { return dismiss }
+      }
+      return nil
+    }
+    findDismiss(tree)?()
+  }
+
   public enum Interaction {
     case hover(Bool)
     case focus(Bool)
@@ -450,23 +517,34 @@ import Foundation
       node.doubleTapAction?()
       return true
     }
-    if event == 5, let node = chain.first(where: { $0.scrollAction != nil }) {
-      var offset = unpublishedOffsets[node.id] ?? node.props.scrollOffset
-      if modifiers.contains(.shift) || !node.props.scrollAxes.contains(.vertical) {
-        offset.x -= Double(value) * 0.4
-      } else {
-        offset.y -= Double(value) * 0.4
+    if event == 5 {
+      for node in chain where node.scrollAction != nil {
+        let current = unpublishedOffsets[node.id] ?? node.props.scrollOffset
+        var offset = current
+        if modifiers.contains(.shift) || !node.props.scrollAxes.contains(.vertical) {
+          if node.props.scrollAxes.contains(.horizontal) {
+            offset.x -= Double(value) * 0.4
+          }
+        } else if node.props.scrollAxes.contains(.vertical) {
+          offset.y -= Double(value) * 0.4
+        }
+        let insets = node.props.scrollContentInsets
+        if let content = node.children.first {
+          let minX = -insets.leading
+          let maxX = max(minX, content.frame.width + insets.trailing - node.frame.width)
+          let minY = -insets.top
+          let maxY = max(minY, content.frame.height + insets.bottom - node.frame.height)
+          offset.x = max(minX, min(offset.x, maxX))
+          offset.y = max(minY, min(offset.y, maxY))
+        }
+        if offset != current {
+          hoverPending = true
+          hoverPoint = backend.pointerLocation(fallback: point)
+          scroll(node, to: offset)
+          return true
+        }
       }
-      if let content = node.children.first {
-        offset.x = max(0, min(offset.x, content.frame.width - node.frame.width))
-        offset.y = max(0, min(offset.y, content.frame.height - node.frame.height))
-      }
-      if offset != (unpublishedOffsets[node.id] ?? node.props.scrollOffset) {
-        hoverPending = true
-        hoverPoint = backend.pointerLocation(fallback: point)
-        scroll(node, to: offset)
-      }
-      return true
+      return chain.contains(where: { $0.scrollAction != nil })
     }
     if event == 6 {
       let special: [Int: KeyEquivalent] = [
@@ -564,6 +642,13 @@ import Foundation
       }
       return false
     }
+    if event == 5 {
+      if node.scrollAction != nil {
+        result.append(node)
+        return true
+      }
+      return false
+    }
     // Layout-only containers, especially an empty overlay, do not occlude
     // interactive content underneath them.
     let interactive =
@@ -572,7 +657,8 @@ import Foundation
       || node.focusAction != nil || node.props.focusable
     let painted: Bool
     switch node.kind {
-    case .text, .shape, .path, .image, .gradient, .button, .styledButton, .textField: painted = true
+    case .text, .image, .gradient, .button, .styledButton, .textField: painted = true
+    case .shape, .path: painted = (node.props.background?.opacity ?? 0) > 0
     default: painted = (node.props.background?.opacity ?? 0) > 0
     }
     // Decorative canvas ink (a card's stroked overlay, for example) has no

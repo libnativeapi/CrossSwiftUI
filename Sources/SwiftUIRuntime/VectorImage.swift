@@ -2,13 +2,13 @@ import Foundation
 
 /// SVG path geometry for bundled template images. Parsing is cached by URL.
 /// Supports the SVG path grammar, including elliptical arcs and smooth curves.
-package struct VectorLayer {
-  package let path: Path
-  package let fill: Color?
-  package let stroke: Color?
-  package let strokeWidth: Double
+public struct VectorLayer {
+  public let path: Path
+  public let fill: Color?
+  public let stroke: Color?
+  public let strokeWidth: Double
 
-  package init(path: Path, fill: Color?, stroke: Color?, strokeWidth: Double) {
+  public init(path: Path, fill: Color?, stroke: Color?, strokeWidth: Double) {
     self.path = path
     self.fill = fill
     self.stroke = stroke
@@ -16,12 +16,12 @@ package struct VectorLayer {
   }
 }
 
-package struct VectorImage {
-  package let bounds: CGRect
-  package let layers: [VectorLayer]
-  package let strokeWidth: Double
+public struct VectorImage {
+  public let bounds: CGRect
+  public let layers: [VectorLayer]
+  public let strokeWidth: Double
 
-  package var paths: [Path] { layers.map(\.path) }
+  public var paths: [Path] { layers.map(\.path) }
 
   package init(bounds: CGRect, paths: [Path], strokeWidth: Double = 0) {
     self.bounds = bounds
@@ -85,7 +85,7 @@ package struct VectorImage {
     return img
   }
 
-  package static func load(_ file: String) -> VectorImage? {
+  public static func load(_ file: String) -> VectorImage? {
     if file.hasPrefix("sf://") {
       return loadSymbol(String(file.dropFirst(5)))
     }

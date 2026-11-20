@@ -98,6 +98,76 @@ public enum ElementKind: Hashable, CustomStringConvertible {
 
   public var description: String { identityName }
 }
+public struct SemanticControl: Equatable {
+  public struct AlertActionItem: Equatable {
+    public var title: String
+    public var role: String // "default", "cancel", "destructive"
+    public var enabled: Bool
+
+    public init(title: String, role: String = "default", enabled: Bool = true) {
+      self.title = title
+      self.role = role
+      self.enabled = enabled
+    }
+  }
+
+  public var kind: String
+  public var boolValue: Bool = false
+  public var doubleValue: Double = 0
+  public var minValue: Double = 0
+  public var maxValue: Double = 1
+  public var stepValue: Double = 0
+  public var intValue: Int = 0
+  public var items: [String] = []
+  public var itemIcons: [String] = []
+  public var title: String = ""
+  public var subtitle: String = ""
+  public var styleName: String = ""
+  public var tint: Color? = nil
+  public var canGoBack: Bool = false
+  public var isIndeterminate: Bool = false
+  public var disabledIndices: [Int] = []
+  public var alertActions: [AlertActionItem] = []
+
+  public init(
+    kind: String,
+    boolValue: Bool = false,
+    doubleValue: Double = 0,
+    minValue: Double = 0,
+    maxValue: Double = 1,
+    stepValue: Double = 0,
+    intValue: Int = 0,
+    items: [String] = [],
+    itemIcons: [String] = [],
+    title: String = "",
+    subtitle: String = "",
+    styleName: String = "",
+    tint: Color? = nil,
+    canGoBack: Bool = false,
+    isIndeterminate: Bool = false,
+    disabledIndices: [Int] = [],
+    alertActions: [AlertActionItem] = []
+  ) {
+    self.kind = kind
+    self.boolValue = boolValue
+    self.doubleValue = doubleValue
+    self.minValue = minValue
+    self.maxValue = maxValue
+    self.stepValue = stepValue
+    self.intValue = intValue
+    self.items = items
+    self.itemIcons = itemIcons
+    self.title = title
+    self.subtitle = subtitle
+    self.styleName = styleName
+    self.tint = tint
+    self.canGoBack = canGoBack
+    self.isIndeterminate = isIndeterminate
+    self.disabledIndices = disabledIndices
+    self.alertActions = alertActions
+  }
+}
+
 public struct NodeProps: Equatable {
   public var text: String = ""
   public var renderedText: String? = nil
@@ -177,6 +247,8 @@ public struct NodeProps: Equatable {
   public var verticalAlignment: VerticalAlignment = .center
   /// Main-axis share for `Spacer`; 0 means fixed.
   public var flex: Double = 0
+  /// Optional semantic control metadata used by native platform hosts (e.g. Android Compose).
+  public var semanticControl: SemanticControl? = nil
 
   public init() {}
 }
@@ -243,8 +315,20 @@ public struct Element {
   var presentationCentered = false
   var presentationPoint: CGPoint? = nil
   var presentationEdge: Edge? = nil
+  var presentationPopoverChrome = false
+  var presentationColorScheme: ColorScheme = .light
   var dismissPresentation: (() -> Void)? = nil
   var pressedAction: ((Bool) -> Void)? = nil
+  package var semanticBoolAction: ((Bool) -> Void)? = nil
+  package var semanticDoubleAction: ((Double, Bool) -> Void)? = nil
+  package var semanticIntAction: ((Int) -> Void)? = nil
+  package var semanticIncrementAction: (() -> Void)? = nil
+  package var semanticDecrementAction: (() -> Void)? = nil
+  package var semanticBackAction: (() -> Void)? = nil
+  package var semanticAlertActions: [() -> Void] = []
+  package var tabItemTitle: String? = nil
+  package var tabItemIcon: String? = nil
+  package var tabItemContent: AnyView? = nil
 
   package init(
     id: NodeID = NodeID(rawValue: 0),

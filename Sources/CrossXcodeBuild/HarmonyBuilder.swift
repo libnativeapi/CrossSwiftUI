@@ -175,12 +175,28 @@ public enum HarmonyBuilder {
     public func swiftAppEvent(_ id: Int, _ event: Int32, _ text: UnsafePointer<CChar>?) {
       guard let renderer = _harmonyAppRenderer else { return }
       let nodeID = NodeID(rawValue: id)
+      let payload = text.map(String.init(cString:)) ?? ""
       switch event {
       case 1: renderer.performTap(nodeID)
       case 2, 3: renderer.interact(nodeID, .hover(event == 2))
       case 4, 5: renderer.interact(nodeID, .pressed(event == 4))
-      case 7: renderer.input(id: nodeID, event: 7, text: text.map(String.init(cString:)) ?? "")
+      case 7: renderer.input(id: nodeID, event: 7, text: payload)
       case 8, 9: renderer.interact(nodeID, .focus(event == 8))
+      case 10: renderer.performBoolInput(nodeID, value: payload == "1" || payload == "true")
+      case 11:
+        if let v = Double(payload) {
+          renderer.performDoubleInput(nodeID, value: v, ended: true)
+        }
+      case 12:
+        if let idx = Int(payload) {
+          renderer.performIntInput(nodeID, value: idx)
+        }
+      case 13:
+        if let delta = Int(payload) {
+          renderer.performStepInput(nodeID, delta: delta)
+        }
+      case 14: renderer.performBackInput(nodeID)
+      case 15: renderer.dismissActivePresentation()
       default: break
       }
     }
@@ -239,6 +255,15 @@ public enum HarmonyBuilder {
         exitCode: nativeRes.exitCode,
         output: nativeRes.stdout
       )
+    }
+
+    let obsLibSrc = sdkURL.appendingPathComponent("usr/lib/swift_static/linux-static/libswiftObservation.a")
+    let obsLibDst = runtimeDir.appendingPathComponent("libswiftObservation.a")
+    if fm.fileExists(atPath: obsLibSrc.path) {
+      if fm.fileExists(atPath: obsLibDst.path) {
+        try? fm.removeItem(at: obsLibDst)
+      }
+      try fm.copyItem(at: obsLibSrc, to: obsLibDst)
     }
 
     let swiftcTool = try locateHarmonySwiftc()
@@ -430,6 +455,11 @@ public enum HarmonyBuilder {
     if fm.fileExists(atPath: chosenIcon.path) {
       try fm.copyItem(at: chosenIcon, to: appScopeMediaDir.appendingPathComponent("icon.png"))
       try fm.copyItem(at: chosenIcon, to: entryMediaDir.appendingPathComponent("icon.png"))
+    } else if let placeholderPNG = Data(
+      base64Encoded: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
+    ) {
+      try placeholderPNG.write(to: appScopeMediaDir.appendingPathComponent("icon.png"))
+      try placeholderPNG.write(to: entryMediaDir.appendingPathComponent("icon.png"))
     }
 
     try writeText(
@@ -571,7 +601,7 @@ public enum HarmonyBuilder {
           "name": "entry",
           "type": "entry",
           "mainElement": "EntryAbility",
-          "deviceTypes": ["2in1"],
+          "deviceTypes": ["phone", "tablet", "2in1"],
           "deliveryWithInstall": true,
           "installationFree": false,
           "pages": "$profile:main_pages",
@@ -638,6 +668,9 @@ public enum HarmonyBuilder {
       target_compile_features(\(nativeLibName) PRIVATE cxx_std_17)
       target_link_options(\(nativeLibName) PRIVATE -Wl,--no-undefined -Wl,--exclude-libs,ALL)
       nativeapi_target_link_swift_ohos(\(nativeLibName) "${SWIFT_INPUTS}")
+      if(EXISTS "${SWIFT_INPUTS}/libswiftObservation.a")
+        target_link_libraries(\(nativeLibName) PRIVATE "${SWIFT_INPUTS}/libswiftObservation.a")
+      endif()
       target_link_libraries(\(nativeLibName) PRIVATE
         libace_napi.z.so
         ace_ndk.z
