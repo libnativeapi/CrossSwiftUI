@@ -5,6 +5,7 @@ public enum TargetPlatform: String, CaseIterable, Codable, Hashable, Sendable {
   case linux
   case wasm
   case harmonyos
+  case android
 
   public static var currentHost: TargetPlatform? {
     #if os(Windows)
@@ -22,7 +23,7 @@ public enum TargetPlatform: String, CaseIterable, Codable, Hashable, Sendable {
       return Self.currentHost == .windows
     case .linux:
       return Self.currentHost == .linux
-    case .wasm, .harmonyos:
+    case .wasm, .harmonyos, .android:
       #if os(macOS) || os(Linux)
         return true
       #else

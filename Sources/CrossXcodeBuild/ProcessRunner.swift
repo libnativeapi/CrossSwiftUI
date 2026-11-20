@@ -46,6 +46,7 @@ public enum ProcessRunner {
       env[k] = v
     }
     process.environment = env
+    process.standardInput = FileHandle.nullDevice
 
     if let logFile {
       _ = FileManager.default.createFile(atPath: logFile.path, contents: nil)

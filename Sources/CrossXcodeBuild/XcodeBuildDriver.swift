@@ -21,7 +21,7 @@ public enum XcodeBuildDriverError: Error, LocalizedError {
       if let requested {
         return "Cannot build target platform '\(requested.rawValue)' on this host; run on a \(requested.rawValue) host."
       }
-      return "CrossSwiftUI xcodebuild builds Windows/Linux targets natively and cross-compiles Wasm/HarmonyOS targets from macOS or Linux (pass -destination generic/platform=Wasm or generic/platform=HarmonyOS)."
+      return "CrossSwiftUI xcodebuild builds Windows/Linux targets natively and cross-compiles Wasm/HarmonyOS/Android targets from macOS or Linux (pass -destination generic/platform=Wasm, HarmonyOS, or Android)."
     case .unsupportedConfiguration(let raw):
       return "Unsupported build configuration '\(raw)' (expected Debug or Release)."
     }
@@ -30,7 +30,7 @@ public enum XcodeBuildDriverError: Error, LocalizedError {
 
 public enum XcodeBuildCLIParser {
   public static let usageText = """
-  CrossSwiftUI xcodebuild — compile unmodified macOS .xcodeproj apps for Windows, Linux, Wasm & HarmonyOS
+  CrossSwiftUI xcodebuild — compile unmodified macOS .xcodeproj apps for Windows, Linux, Wasm, HarmonyOS & Android
 
   Usage:
     xcodebuild [-project <name.xcodeproj>] [-scheme <name>] [-target <name>]
@@ -50,8 +50,8 @@ public enum XcodeBuildCLIParser {
     -alltargets               Build all targets
     -configuration <cfg>      Use the specified build configuration (Debug or Release)
     -derivedDataPath <dir>    Directory for build products and intermediates (default: ./build)
-    -destination <spec>       Target platform specifier (e.g. generic/platform=Windows|Linux|Wasm|HarmonyOS)
-    -sdk <sdk>                Target SDK hint (windows, linux, wasm/web/wasi, harmonyos/ohos)
+    -destination <spec>       Target platform specifier (e.g. generic/platform=Windows|Linux|Wasm|HarmonyOS|Android)
+    -sdk <sdk>                Target SDK hint (windows, linux, wasm/web/wasi, harmonyos/ohos, android)
     -arch <arch>              Optional architecture hint
     -xcconfig <file>          Load build settings overrides from .xcconfig file
     -list                     List targets, build configurations, and schemes
@@ -242,6 +242,7 @@ public final class XcodeBuildDriver {
     if hints.contains("windows") { return .windows }
     if hints.contains("wasm") || hints.contains("wasi") || hints.contains("web") { return .wasm }
     if hints.contains("harmony") || hints.contains("ohos") { return .harmonyos }
+    if hints.contains("android") { return .android }
     if hints.contains("linux") { return .linux }
     return TargetPlatform.currentHost
   }
@@ -282,6 +283,16 @@ public final class XcodeBuildDriver {
     case .harmonyos:
       executablePath = "\(productName)/runtime/\(executableName).o"
       archName = "arm64-v8a"
+    case .android:
+      executablePath = "\(productName)/\(productName).apk"
+      let rawABIs = settings["ANDROID_ABIS"]
+        ?? ProcessRunner.environmentValue("ANDROID_ABIS")
+        ?? "arm64-v8a"
+      archName = rawABIs
+        .split(whereSeparator: { $0 == "," || $0 == " " })
+        .map(String.init)
+        .filter { !$0.isEmpty }
+        .joined(separator: " ")
     case nil:
       executablePath = "\(productName)/\(executableName)"
       archName = TargetArchitecture.currentHost == .arm64 ? "arm64" : "x86_64"

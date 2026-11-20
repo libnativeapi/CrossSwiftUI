@@ -11,6 +11,7 @@ public struct BuiltTargetArtifacts: Sendable {
   public let crossSwiftRoot: URL
   public let wasmPackageDirectory: URL?
   public let harmonyArtifacts: HarmonyBuildArtifacts?
+  public let androidArtifacts: AndroidBuildArtifacts?
   public let adaptedRemotePackageDirectories: [URL]
 
   public init(
@@ -24,6 +25,7 @@ public struct BuiltTargetArtifacts: Sendable {
     crossSwiftRoot: URL,
     wasmPackageDirectory: URL?,
     harmonyArtifacts: HarmonyBuildArtifacts?,
+    androidArtifacts: AndroidBuildArtifacts? = nil,
     adaptedRemotePackageDirectories: [URL] = []
   ) {
     self.targetPlatform = targetPlatform
@@ -36,6 +38,7 @@ public struct BuiltTargetArtifacts: Sendable {
     self.crossSwiftRoot = crossSwiftRoot
     self.wasmPackageDirectory = wasmPackageDirectory
     self.harmonyArtifacts = harmonyArtifacts
+    self.androidArtifacts = androidArtifacts
     self.adaptedRemotePackageDirectories = adaptedRemotePackageDirectories
   }
 }
@@ -73,7 +76,7 @@ public final class SwiftPMBackend {
     let fm = FileManager.default
     let crossSwiftRoot = try Self.resolveCrossSwiftRoot(explicit: options.crossSwiftPath)
     let nativeAPISwiftRoot: URL?
-    if platform == .wasm {
+    if platform == .wasm || platform == .android {
       nativeAPISwiftRoot = nil
     } else {
       nativeAPISwiftRoot = try Self.resolveNativeAPISwiftRoot(
@@ -166,6 +169,34 @@ public final class SwiftPMBackend {
     )
     let packageSwiftURL = buildRoot.appendingPathComponent("Package.swift")
     try writeIfChanged(text: manifestText, to: packageSwiftURL)
+
+    if platform == .android {
+      let android = try AndroidBuilder.build(
+        project: project,
+        configuration: configuration,
+        buildRoot: buildRoot,
+        scratchDir: scratchDir,
+        crossSwiftRoot: crossSwiftRoot
+      )
+      let firstAbi = android.abis.first ?? "arm64-v8a"
+      let primarySO = android.jniLibsDirectory
+        .appendingPathComponent("\(firstAbi)/lib\(android.libraryName).so")
+      let swiftExe = (try? locateSwiftExecutable()) ?? URL(fileURLWithPath: "/usr/bin/swift")
+      return BuiltTargetArtifacts(
+        targetPlatform: .android,
+        architecture: firstAbi == "x86_64" ? .x64 : .arm64,
+        executableURL: primarySO,
+        buildDirectory: buildRoot,
+        scratchDirectory: scratchDir,
+        compiledAssets: compiledAssets,
+        swiftExecutableURL: swiftExe,
+        crossSwiftRoot: crossSwiftRoot,
+        wasmPackageDirectory: nil,
+        harmonyArtifacts: nil,
+        androidArtifacts: android,
+        adaptedRemotePackageDirectories: Array(adaptedPackages.remote.values)
+      )
+    }
 
     if platform == .wasm {
       let (swiftTool, prefixArgs, wasmSDK) = try resolveWasmToolchainAndSDK(
@@ -812,7 +843,7 @@ public final class SwiftPMBackend {
     var adaptedLocal: [String: URL] = [:]
     let cacheRoot = buildRoot.deletingLastPathComponent().appendingPathComponent("AdaptedPackageCache")
     let stagingRoot = buildRoot.appendingPathComponent("AdaptedPackages")
-    let allowedModules: Set<String> = platform == .wasm
+    let allowedModules: Set<String> = (platform == .wasm || platform == .android)
       ? ["SwiftUI", "SwiftUIRuntime"]
       : PackageDependencyAdapter.crossSwiftProvidedModules
 
@@ -836,7 +867,7 @@ public final class SwiftPMBackend {
         crossSwiftRoot: crossSwiftRoot,
         consumerReferences: consumerRefs,
         allowedCrossSwiftModules: allowedModules,
-        useWasmBundleShim: platform == .wasm
+        useWasmBundleShim: platform == .wasm || platform == .android
       ) {
         adaptedRemote[remote.id] = adaptedURL
         remoteOverrides[remote.repositoryURL.lowercased()] = adaptedURL
@@ -860,7 +891,7 @@ public final class SwiftPMBackend {
         crossSwiftRoot: crossSwiftRoot,
         consumerReferences: consumerRefs,
         allowedCrossSwiftModules: allowedModules,
-        useWasmBundleShim: platform == .wasm,
+        useWasmBundleShim: platform == .wasm || platform == .android,
         adaptedRemoteOverrides: remoteOverrides,
         resolveRelativePaths: true
       ) {
@@ -895,7 +926,7 @@ public final class SwiftPMBackend {
       )
     }
 
-    let needsDirectNativeAPI = platform != .wasm
+    let needsDirectNativeAPI = platform != .wasm && platform != .android
       && nativeAPISwiftRoot != nil
       && project.allTargets.contains {
         $0.importedModules.contains("NativeAPI") || $0.importedModules.contains("CNativeAPI")
@@ -981,7 +1012,7 @@ public final class SwiftPMBackend {
       }
 
       for mod in project.inferredCrossSwiftModules {
-        if platform == .wasm && mod != "SwiftUI" && mod != "SwiftUIRuntime" { continue }
+        if (platform == .wasm || platform == .android) && mod != "SwiftUI" && mod != "SwiftUIRuntime" { continue }
         if mod == "SQLite3" && platform != .windows && platform != .linux { continue }
         if target.importedModules.contains(mod)
           || (isMain && mod == "SwiftUI" && project.inferredCrossSwiftModules.contains("SwiftUI"))
@@ -999,7 +1030,7 @@ public final class SwiftPMBackend {
       if platform == .wasm && target.importedModules.contains("JavaScriptKit") {
         addDep(".product(name: \"JavaScriptKit\", package: \"javascriptkit\")")
       }
-      if platform != .wasm && nativeAPISwiftRoot != nil {
+      if platform != .wasm && platform != .android && nativeAPISwiftRoot != nil {
         if target.importedModules.contains("NativeAPI") {
           addDep(".product(name: \"NativeAPI\", package: \(swiftStringLiteral(nativeAPIIdentity)))")
         }
@@ -1066,7 +1097,7 @@ public final class SwiftPMBackend {
         }
       }
 
-      let declType = isMain ? ".executableTarget" : ".target"
+      let declType = (isMain && platform != .android) ? ".executableTarget" : ".target"
       let targetEntryName = isMain ? target.executableName : target.name
       let pathLine = isMain && target.executableName != target.name
         ? ",\n      path: \(swiftStringLiteral("Sources/\(target.name)"))"
@@ -1089,6 +1120,9 @@ public final class SwiftPMBackend {
 
     let execName = project.mainTarget.executableName
     let toolsVersion = usesSwift6Tools ? "6.0" : "5.9"
+    let productDecl = platform == .android
+      ? ".library(name: \(swiftStringLiteral(execName)), type: .dynamic, targets: [\(swiftStringLiteral(execName))])"
+      : ".executable(name: \(swiftStringLiteral(execName)), targets: [\(swiftStringLiteral(execName))])"
     return """
     // swift-tools-version: \(toolsVersion)
     import PackageDescription
@@ -1097,7 +1131,7 @@ public final class SwiftPMBackend {
       name: \(swiftStringLiteral(project.projectName)),
       platforms: [.macOS(.v14)],
       products: [
-        .executable(name: \(swiftStringLiteral(execName)), targets: [\(swiftStringLiteral(execName))])
+        \(productDecl)
       ],
       dependencies: [
     \(packageDecls.joined(separator: ",\n"))

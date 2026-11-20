@@ -578,7 +578,7 @@ public enum PackageDependencyAdapter {
 
       if useWasmBundleShim && (!target.undeclaredAssetCatalogs.isEmpty || !target.largeAssetCatalogs.isEmpty) {
         let shimSource = """
-        #if os(WASI)
+        #if os(WASI) || os(Android)
         import Foundation
 
         extension Foundation.Bundle {

@@ -452,6 +452,68 @@ final class CrossXcodeBuildTests: XCTestCase {
     XCTAssertTrue(hostCode.contains("let app = XcodeDemoApp()"))
   }
 
+  func testAndroidBuilderPackageSanitizationHostRenderingAndManifest() throws {
+    XCTAssertEqual(
+      AndroidBuilder.sanitizedAndroidPackageName(from: "dev.cross-swift.XcodeDemo"),
+      "dev.cross_swift.xcodedemo"
+    )
+    XCTAssertEqual(
+      AndroidBuilder.jniMangledName("dev.cross_swift.xcodedemo"),
+      "dev_cross_1swift_xcodedemo"
+    )
+
+    let hostSwift = AndroidBuilder.renderAndroidAppHostSwift(
+      appTypeName: "XcodeDemoApp",
+      androidPackageName: "dev.crossswift.xcodedemo"
+    )
+    XCTAssertTrue(hostSwift.contains("extension App {"))
+    XCTAssertTrue(hostSwift.contains("@_cdecl(\"Java_dev_crossswift_xcodedemo_MainActivity_nativeCreate\")"))
+    XCTAssertTrue(hostSwift.contains("AndroidHost.retain(root: rootView)"))
+
+    let demoProject = repositoryRoot.appendingPathComponent("Examples/XcodeDemo/XcodeDemo.xcodeproj")
+    let loader = XcodeProjectLoader()
+    let resolved = try loader.load(from: demoProject, configuration: .release)
+
+    let backend = SwiftPMBackend()
+    let manifest = backend.generatePackageManifest(
+      project: resolved,
+      platform: .android,
+      configuration: .release,
+      consoleSubsystem: false,
+      crossSwiftRoot: repositoryRoot,
+      nativeAPISwiftRoot: nil,
+      compiledResourceURL: nil
+    )
+    XCTAssertTrue(manifest.contains(".library(name: \"XcodeDemo\", type: .dynamic, targets: [\"XcodeDemo\"])"))
+    XCTAssertTrue(manifest.contains(".product(name: \"SwiftUI\", package: \"crossswift\")"))
+    XCTAssertFalse(manifest.contains(".executableTarget("))
+    XCTAssertFalse(manifest.contains(".product(name: \"AppKit\""))
+
+    let driver = XcodeBuildDriver()
+    let androidOutcome = try XcodeBuildCLIParser.parse(
+      arguments: [
+        "-showBuildSettings", "-json",
+        "-project", demoProject.path,
+        "-scheme", "XcodeDemo",
+        "-configuration", "Release",
+        "-destination", "generic/platform=Android",
+      ],
+      currentDirectory: repositoryRoot
+    )
+    guard case .run(let androidOpts) = androidOutcome else {
+      XCTFail("Expected .run outcome for Android")
+      return
+    }
+    let androidJSON = try driver.showBuildSettings(options: androidOpts, currentDirectory: repositoryRoot)
+    let androidArray = try XCTUnwrap(
+      try JSONSerialization.jsonObject(with: Data(androidJSON.utf8)) as? [[String: Any]]
+    )
+    let androidSettings = try XCTUnwrap(androidArray.first?["buildSettings"] as? [String: String])
+    XCTAssertEqual(androidSettings["PLATFORM_NAME"], "android")
+    XCTAssertEqual(androidSettings["ARCHS"], "arm64-v8a")
+    XCTAssertEqual(androidSettings["EXECUTABLE_PATH"], "XcodeDemo/XcodeDemo.apk")
+  }
+
   func testGenericPackageDependencyAdapterPatchesImplicitAppleImportsAndUndeclaredXCAassets() throws {
     let tmp = FileManager.default.temporaryDirectory
       .appendingPathComponent("crossswift-pkgadapt-\(UUID().uuidString)")

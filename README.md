@@ -208,6 +208,12 @@ xcodebuild -project Examples/XcodeDemo/XcodeDemo.xcodeproj \
   -scheme XcodeDemo -configuration Release \
   -destination generic/platform=HarmonyOS \
   -derivedDataPath build clean build
+
+# Cross-compile and package an Android APK from macOS or Linux (requires Swift Android SDK + NDK + JDK 17)
+xcodebuild -project Examples/XcodeDemo/XcodeDemo.xcodeproj \
+  -scheme XcodeDemo -configuration Release \
+  -destination generic/platform=Android \
+  -derivedDataPath build clean build
 ```
 
 When run from source via SwiftPM (`swift run xcodebuild ...`), or installed as
@@ -239,6 +245,11 @@ When run from source via SwiftPM (`swift run xcodebuild ...`), or installed as
     `rawfile/Resources/`). When DevEco Studio is installed (`DEVECO_STUDIO_HOME`
     or `/Applications/DevEco-Studio.app/Contents`), `ohpm` + `hvigorw` are
     invoked automatically to produce the `.hap`.
+  - **Android** (`-destination generic/platform=Android` or `-sdk android`):
+    self-contained Gradle Android project (`app/`, `gradlew`, `jniLibs/<abi>/lib<Product>.so`,
+    `libc++_shared.so`, `assets/Resources/`, Jetpack Compose `MainActivity.kt`)
+    plus the assembled `<ProductName>.apk` (pass `ANDROID_ABIS=arm64-v8a,x86_64`
+    for multi-ABI builds).
 
 [`Examples/XcodeDemo`](Examples/XcodeDemo/XcodeDemo.xcodeproj) is an unmodified
 macOS Xcode project that builds with Apple's `xcodebuild` on macOS and with

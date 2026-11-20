@@ -346,6 +346,21 @@ public final class ApplicationStager {
       )
       exeDestURL = hapURL ?? appDir.appendingPathComponent("runtime/\(target.executableName).o")
       resourcesDestURL = appDir.appendingPathComponent("entry/src/main/resources/rawfile/Resources")
+    case .android:
+      guard let android = built.androidArtifacts else {
+        throw BuildBackendError.binaryMissing(built.executableURL.path)
+      }
+      let apkURL = try AndroidBuilder.stageProject(
+        project: project,
+        androidArtifacts: android,
+        compiledAssets: built.compiledAssets,
+        crossSwiftRoot: built.crossSwiftRoot,
+        destinationDir: appDir
+      )
+      let firstAbi = android.abis.first ?? "arm64-v8a"
+      exeDestURL = apkURL
+        ?? appDir.appendingPathComponent("app/src/main/jniLibs/\(firstAbi)/lib\(android.libraryName).so")
+      resourcesDestURL = appDir.appendingPathComponent("app/src/main/assets/Resources")
     }
 
     return StagedApplication(
