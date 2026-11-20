@@ -5,5 +5,7 @@
 *.xcodeproj
 !Examples/**/*.xcodeproj
 !Examples/**/*.xcodeproj/**
+xcuserdata/
+project.xcworkspace/
 build/
 DerivedData/
