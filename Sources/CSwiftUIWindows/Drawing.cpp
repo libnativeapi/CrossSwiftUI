@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <commctrl.h>
+#include <dwmapi.h>
 #include <windowsx.h>
 using std::max;
 using std::min;
@@ -3240,5 +3241,15 @@ uint8_t *sui_offscreen_finish_png(void *canvas, int *out_len) {
 
 void sui_free_bytes(void *ptr) {
   std::free(ptr);
+}
+
+void sui_window_set_dark_mode(void *window, int dark) {
+  HWND hwnd = static_cast<HWND>(window);
+  if (!hwnd || !IsWindow(hwnd)) return;
+  BOOL value = dark ? TRUE : FALSE;
+  DwmSetWindowAttribute(hwnd, 20 /* DWMWA_USE_IMMERSIVE_DARK_MODE */, &value, sizeof(value));
+  SetWindowPos(hwnd, nullptr, 0, 0, 0, 0,
+               SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
+  RedrawWindow(hwnd, nullptr, nullptr, RDW_FRAME | RDW_INVALIDATE);
 }
 }

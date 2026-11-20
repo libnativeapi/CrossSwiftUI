@@ -43,6 +43,7 @@
     }
     private var edits: [NodeID: RetainedEdit] = [:]
     private var root: Element?
+    private var appliedDarkMode: Bool? = nil
     private final class NativeShadowMask {
       let handle: UnsafeMutableRawPointer
       init?(_ mask: ShadowMask) {
@@ -344,8 +345,25 @@
         if let value = lastTimings[name] { sui_surface_trace_duration(surface, Int32(stage + 10), value) }
       }
     }
+    private func findColorSchemeOverride(_ node: Element) -> ColorScheme? {
+      if let scheme = node.props.colorSchemeOverride { return scheme }
+      for child in node.children {
+        if let scheme = findColorSchemeOverride(child) { return scheme }
+      }
+      return nil
+    }
+
     public func didRender(_ root: Element) {
       guard let surface else { return }
+      if let scheme = findColorSchemeOverride(root) {
+        let isDark = (scheme == .dark)
+        if appliedDarkMode != isDark {
+          appliedDarkMode = isDark
+          if let native = window?.nativeObject {
+            sui_window_set_dark_mode(native, isDark ? 1 : 0)
+          }
+        }
+      }
       fullPublicationCount += 1
       let started = Date.timeIntervalSinceReferenceDate
       let now = Date.timeIntervalSinceReferenceDate

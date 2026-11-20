@@ -22,6 +22,7 @@ public final class LinuxDrawingBackend: RenderBackend {
   private let surface: Widget
   private let drawing = LinuxDrawing()
   private var root: Element?
+  private var appliedDarkMode: Bool? = nil
   private var canvasImage: OpaquePointer?
   private var canvasSize: (width: Int32, height: Int32, scale: Int32)?
   private var canvasDamage: Rect?
@@ -171,7 +172,31 @@ public final class LinuxDrawingBackend: RenderBackend {
   public func perform(_ commands: [RenderCommand]) {}
   public var needsRenderCommands: Bool { false }
 
+  private func findColorSchemeOverride(_ node: Element) -> ColorScheme? {
+    if let scheme = node.props.colorSchemeOverride { return scheme }
+    for child in node.children {
+      if let scheme = findColorSchemeOverride(child) { return scheme }
+    }
+    return nil
+  }
+
+  private func syncWindowAppearance(_ root: Element) {
+    guard let scheme = findColorSchemeOverride(root) else { return }
+    let isDark = (scheme == .dark)
+    guard appliedDarkMode != isDark else { return }
+    appliedDarkMode = isDark
+    if let settings = gtk_settings_get_default() {
+      var val = GValue()
+      g_value_init(&val, g_type_from_name("gboolean"))
+      g_value_set_boolean(&val, isDark ? 1 : 0)
+      g_object_set_property(UnsafeMutableRawPointer(settings).assumingMemoryBound(to: GObject.self),
+                            "gtk-application-prefer-dark-theme", &val)
+      g_value_unset(&val)
+    }
+  }
+
   public func didRender(_ root: Element) {
+    syncWindowAppearance(root)
     preparePublication(root)
     publish(root)
   }
@@ -268,7 +293,9 @@ public final class LinuxDrawingBackend: RenderBackend {
     var live = Set<NodeID>()
     var liveButtons = Set<NodeID>()
     var focus: NodeID?
-    updateControls(root, clip: root.frame, background: .white, allowed: true, focus: &focus, modal: modal,
+    let defaultBg: SwiftUIRuntime.Color =
+      appliedDarkMode == true ? SwiftUIRuntime.Color(red: 0.11, green: 0.11, blue: 0.13) : .white
+    updateControls(root, clip: root.frame, background: defaultBg, allowed: true, focus: &focus, modal: modal,
                    inModal: false, accessibilityLabel: "", refreshContent: damage == nil,
                    live: &live, liveButtons: &liveButtons)
     for id in controls.keys.filter({ !live.contains($0) }) { controls.removeValue(forKey: id) }

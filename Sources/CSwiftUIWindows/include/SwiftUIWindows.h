@@ -124,6 +124,7 @@ void sui_offscreen_text(void *canvas, double x, double y, double width,
                         uint32_t color);
 uint8_t *sui_offscreen_finish_png(void *canvas, int *out_len);
 void sui_free_bytes(void *ptr);
+void sui_window_set_dark_mode(void *window, int dark);
 #ifdef __cplusplus
 }
 #endif
