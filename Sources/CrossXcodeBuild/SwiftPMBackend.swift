@@ -144,7 +144,7 @@ public final class SwiftPMBackend {
       buildRoot: buildRoot
     )
 
-    let adaptedRemotePackages = try prepareAdaptedRemotePackages(
+    let adaptedPackages = try prepareAdaptedPackages(
       project: project,
       platform: platform,
       buildRoot: buildRoot,
@@ -161,7 +161,8 @@ public final class SwiftPMBackend {
       crossSwiftRoot: crossSwiftRoot,
       nativeAPISwiftRoot: nativeAPISwiftRoot,
       compiledResourceURL: compiledResURL,
-      adaptedRemotePackages: adaptedRemotePackages
+      adaptedRemotePackages: adaptedPackages.remote,
+      adaptedLocalPackages: adaptedPackages.local
     )
     let packageSwiftURL = buildRoot.appendingPathComponent("Package.swift")
     try writeIfChanged(text: manifestText, to: packageSwiftURL)
@@ -181,11 +182,18 @@ public final class SwiftPMBackend {
         "-c", configuration.swiftPMFlag,
       ]
       let logURL = buildRoot.appendingPathComponent("swift-wasm-build.log")
+      var wasmEnv: [String: String] = ["CROSS_SWIFTUI_WEB": "1"]
+      if let resolvedNativeAPI = try? Self.resolveNativeAPISwiftRoot(
+        explicit: options.nativeAPISwiftPath,
+        crossSwiftRoot: crossSwiftRoot
+      ) {
+        wasmEnv["NATIVEAPI_SWIFT_PATH"] = resolvedNativeAPI.path
+      }
       let buildResult = try ProcessRunner.run(
         executable: swiftTool,
         arguments: jsArgs,
         workingDirectory: buildRoot,
-        environmentOverrides: ["CROSS_SWIFTUI_WEB": "1"],
+        environmentOverrides: wasmEnv,
         logFile: logURL
       )
       if buildResult.exitCode != 0 {
@@ -212,7 +220,7 @@ public final class SwiftPMBackend {
         crossSwiftRoot: crossSwiftRoot,
         wasmPackageDirectory: wasmPkgDir,
         harmonyArtifacts: nil,
-        adaptedRemotePackageDirectories: Array(adaptedRemotePackages.values)
+        adaptedRemotePackageDirectories: Array(adaptedPackages.remote.values) + Array(adaptedPackages.local.values)
       )
     }
 
@@ -794,23 +802,25 @@ public final class SwiftPMBackend {
     return out
   }
 
-  private func prepareAdaptedRemotePackages(
+  private func prepareAdaptedPackages(
     project: ResolvedXcodeProject,
     platform: TargetPlatform,
     buildRoot: URL,
     crossSwiftRoot: URL
-  ) throws -> [String: URL] {
-    var adapted: [String: URL] = [:]
+  ) throws -> (remote: [String: URL], local: [String: URL]) {
+    var adaptedRemote: [String: URL] = [:]
+    var adaptedLocal: [String: URL] = [:]
     let cacheRoot = buildRoot.deletingLastPathComponent().appendingPathComponent("AdaptedPackageCache")
     let stagingRoot = buildRoot.appendingPathComponent("AdaptedPackages")
     let allowedModules: Set<String> = platform == .wasm
       ? ["SwiftUI", "SwiftUIRuntime"]
       : PackageDependencyAdapter.crossSwiftProvidedModules
 
-    let consumerRefs = project.remotePackages.isEmpty
+    let consumerRefs = (project.remotePackages.isEmpty && project.localPackages.isEmpty)
       ? nil
       : PackageDependencyAdapter.ConsumerReferences.scan(project: project)
 
+    var remoteOverrides: [String: URL] = [:]
     for remote in project.remotePackages {
       guard let checkoutDir = try? PackageDependencyAdapter.checkoutRemotePackage(
         remote,
@@ -828,11 +838,37 @@ public final class SwiftPMBackend {
         allowedCrossSwiftModules: allowedModules,
         useWasmBundleShim: platform == .wasm
       ) {
-        adapted[remote.id] = adaptedURL
+        adaptedRemote[remote.id] = adaptedURL
+        remoteOverrides[remote.repositoryURL.lowercased()] = adaptedURL
+        remoteOverrides[remote.packageName.lowercased()] = adaptedURL
+        let urlLast = remote.repositoryURL
+          .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+          .split(separator: "/").last.map(String.init) ?? ""
+        let urlSlug = (urlLast.hasSuffix(".git") ? String(urlLast.dropLast(4)) : urlLast).lowercased()
+        if !urlSlug.isEmpty {
+          remoteOverrides[urlSlug] = adaptedURL
+        }
       }
     }
 
-    return adapted
+    for local in project.localPackages {
+      let slug = ProcessRunner.sanitizedSlug(local.name)
+      let outputDir = stagingRoot.appendingPathComponent(slug.isEmpty ? local.id : slug)
+      if let adaptedURL = try PackageDependencyAdapter.adaptCheckoutIfNeeded(
+        sourceRoot: local.path,
+        outputDirectory: outputDir,
+        crossSwiftRoot: crossSwiftRoot,
+        consumerReferences: consumerRefs,
+        allowedCrossSwiftModules: allowedModules,
+        useWasmBundleShim: platform == .wasm,
+        adaptedRemoteOverrides: remoteOverrides,
+        resolveRelativePaths: true
+      ) {
+        adaptedLocal[local.id] = adaptedURL
+      }
+    }
+
+    return (remote: adaptedRemote, local: adaptedLocal)
   }
 
   public func generatePackageManifest(
@@ -843,7 +879,8 @@ public final class SwiftPMBackend {
     crossSwiftRoot: URL,
     nativeAPISwiftRoot: URL?,
     compiledResourceURL: URL?,
-    adaptedRemotePackages: [String: URL] = [:]
+    adaptedRemotePackages: [String: URL] = [:],
+    adaptedLocalPackages: [String: URL] = [:]
   ) -> String {
     let crossSwiftIdentity = crossSwiftRoot.lastPathComponent.lowercased()
     let nativeAPIIdentity = nativeAPISwiftRoot?.lastPathComponent.lowercased() ?? "swift"
@@ -868,7 +905,8 @@ public final class SwiftPMBackend {
     }
 
     for local in project.localPackages {
-      packageDecls.append("    .package(path: \(swiftStringLiteral(local.path.path)))")
+      let localPath = (adaptedLocalPackages[local.id] ?? local.path).path
+      packageDecls.append("    .package(path: \(swiftStringLiteral(localPath)))")
     }
 
     for remote in project.remotePackages {
@@ -907,8 +945,9 @@ public final class SwiftPMBackend {
       }
     )
     let localIdentityByPkgName: [String: String] = Dictionary(
-      uniqueKeysWithValues: project.localPackages.map {
-        ($0.name.lowercased(), $0.path.lastPathComponent.lowercased())
+      uniqueKeysWithValues: project.localPackages.map { pkg in
+        let resolvedURL = adaptedLocalPackages[pkg.id] ?? pkg.path
+        return (pkg.name.lowercased(), resolvedURL.lastPathComponent.lowercased())
       }
     )
 
@@ -956,6 +995,9 @@ public final class SwiftPMBackend {
           || target.importedModules.contains("CrossFoundation"))
       {
         addDep(".product(name: \"CrossFoundation\", package: \(swiftStringLiteral(crossSwiftIdentity)))")
+      }
+      if platform == .wasm && target.importedModules.contains("JavaScriptKit") {
+        addDep(".product(name: \"JavaScriptKit\", package: \"javascriptkit\")")
       }
       if platform != .wasm && nativeAPISwiftRoot != nil {
         if target.importedModules.contains("NativeAPI") {

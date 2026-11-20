@@ -124,6 +124,25 @@ public enum PackageDependencyAdapter {
     public let undeclaredAssetCatalogs: [String]
     public let largeAssetCatalogs: [String]
     public let hasObjCAttributes: Bool
+    public let importsJavaScriptKit: Bool
+
+    public init(
+      name: String,
+      relativePath: String,
+      importedCrossSwiftModules: [String],
+      undeclaredAssetCatalogs: [String],
+      largeAssetCatalogs: [String],
+      hasObjCAttributes: Bool,
+      importsJavaScriptKit: Bool = false
+    ) {
+      self.name = name
+      self.relativePath = relativePath
+      self.importedCrossSwiftModules = importedCrossSwiftModules
+      self.undeclaredAssetCatalogs = undeclaredAssetCatalogs
+      self.largeAssetCatalogs = largeAssetCatalogs
+      self.hasObjCAttributes = hasObjCAttributes
+      self.importsJavaScriptKit = importsJavaScriptKit
+    }
   }
 
   public struct InspectionResult: Equatable, Sendable {
@@ -134,6 +153,7 @@ public enum PackageDependencyAdapter {
           || !$0.undeclaredAssetCatalogs.isEmpty
           || !$0.largeAssetCatalogs.isEmpty
           || $0.hasObjCAttributes
+          || $0.importsJavaScriptKit
       }
     }
   }
@@ -142,7 +162,8 @@ public enum PackageDependencyAdapter {
   /// targets need CrossSwiftUI module dependencies or undeclared `.xcassets` resources.
   public static func inspect(
     packageRoot: URL,
-    allowedCrossSwiftModules: Set<String> = crossSwiftProvidedModules
+    allowedCrossSwiftModules: Set<String> = crossSwiftProvidedModules,
+    includeJavaScriptKit: Bool = false
   ) -> InspectionResult {
     let manifestURL = packageRoot.appendingPathComponent("Package.swift")
     guard let manifest = try? String(contentsOf: manifestURL, encoding: .utf8) else {
@@ -167,6 +188,7 @@ public enum PackageDependencyAdapter {
       let crossSwiftImports = imports
         .filter { allowedCrossSwiftModules.contains($0) }
         .sorted()
+      let importsJSKit = includeJavaScriptKit && imports.contains("JavaScriptKit")
 
       let allCatalogs = findAssetCatalogs(in: targetDir)
         .filter { relCatalog in
@@ -194,7 +216,8 @@ public enum PackageDependencyAdapter {
         importedCrossSwiftModules: crossSwiftImports,
         undeclaredAssetCatalogs: smallCatalogs,
         largeAssetCatalogs: largeCatalogs,
-        hasObjCAttributes: hasObjC
+        hasObjCAttributes: hasObjC,
+        importsJavaScriptKit: importsJSKit
       ))
     }
 
@@ -213,25 +236,44 @@ public enum PackageDependencyAdapter {
     inspection: InspectionResult,
     crossSwiftRoot: URL,
     prunedLargeCatalogs: Set<String> = [],
-    useWasmBundleShim: Bool = false
+    useWasmBundleShim: Bool = false,
+    adaptedRemoteOverrides: [String: URL] = [:],
+    sourceRoot: URL? = nil
   ) -> String {
-    guard inspection.needsAdaptation else { return manifest }
+    var updated = rewritePackageDependencies(
+      manifest,
+      adaptedRemoteOverrides: adaptedRemoteOverrides,
+      sourceRoot: sourceRoot
+    )
+    let didRewriteDeps = updated != manifest
+    guard inspection.needsAdaptation || didRewriteDeps else { return manifest }
 
     let crossSwiftIdentity = crossSwiftRoot.lastPathComponent.lowercased()
     let crossSwiftPkgDecl = ".package(path: \(swiftStringLiteral(crossSwiftRoot.path)))"
-    var updated = manifest
 
-    // 1. Ensure top-level `dependencies: [...]` includes CrossSwiftUI.
-    updated = injectTopLevelPackageDependency(updated, packageDecl: crossSwiftPkgDecl)
+    // 1. Ensure top-level `dependencies: [...]` includes CrossSwiftUI (and JavaScriptKit on Wasm if needed).
+    if inspection.targets.contains(where: { !$0.importedCrossSwiftModules.isEmpty }) {
+      updated = injectTopLevelPackageDependency(updated, packageDecl: crossSwiftPkgDecl)
+    }
+    if inspection.targets.contains(where: { $0.importsJavaScriptKit }) && !updated.contains("JavaScriptKit") {
+      updated = injectTopLevelPackageDependency(
+        updated,
+        packageDecl: ".package(url: \"https://github.com/swiftwasm/JavaScriptKit.git\", exact: \"0.63.0\")"
+      )
+    }
 
     // 2. For each target needing modules or resources, patch its `.target(...)` block.
     for target in inspection.targets
       where !target.importedCrossSwiftModules.isEmpty
+        || target.importsJavaScriptKit
         || !target.undeclaredAssetCatalogs.isEmpty
         || !target.largeAssetCatalogs.isEmpty
     {
-      let productDeps = target.importedCrossSwiftModules.map { mod in
+      var productDeps = target.importedCrossSwiftModules.map { mod in
         ".product(name: \(swiftStringLiteral(mod)), package: \(swiftStringLiteral(crossSwiftIdentity)))"
+      }
+      if target.importsJavaScriptKit {
+        productDeps.append(".product(name: \"JavaScriptKit\", package: \"javascriptkit\")")
       }
       var excludeDecls: [String] = []
       var resourceDecls: [String] = []
@@ -272,6 +314,120 @@ public enum PackageDependencyAdapter {
     return updated
   }
 
+  /// Rewrites `.package(url: ...)` declarations matching `adaptedRemoteOverrides` to local
+  /// `.package(path: ...)` declarations, and resolves relative `.package(path: "...")`
+  /// literals against `sourceRoot` so adapted local packages stay valid from staging dirs.
+  private static func rewritePackageDependencies(
+    _ manifest: String,
+    adaptedRemoteOverrides: [String: URL],
+    sourceRoot: URL?
+  ) -> String {
+    guard !adaptedRemoteOverrides.isEmpty || sourceRoot != nil else { return manifest }
+    let chars = Array(manifest)
+    let count = chars.count
+    var i = 0
+    var result = ""
+    let marker = Array(".package(")
+
+    func matchMarker(at idx: Int) -> Bool {
+      guard idx + marker.count <= count else { return false }
+      for k in 0..<marker.count where chars[idx + k] != marker[k] { return false }
+      return true
+    }
+
+    let urlRegex = try? NSRegularExpression(pattern: #"\burl\s*:\s*"([^"]+)""#)
+    let pathRegex = try? NSRegularExpression(pattern: #"\bpath\s*:\s*"([^"]+)""#)
+
+    while i < count {
+      // Skip line comments
+      if i + 1 < count && chars[i] == "/" && chars[i + 1] == "/" {
+        let start = i
+        i += 2
+        while i < count && chars[i] != "\n" { i += 1 }
+        result.append(contentsOf: chars[start..<i])
+        continue
+      }
+      // Skip block comments
+      if i + 1 < count && chars[i] == "/" && chars[i + 1] == "*" {
+        let start = i
+        i += 2
+        while i + 1 < count && !(chars[i] == "*" && chars[i + 1] == "/") { i += 1 }
+        i = min(count, i + 2)
+        result.append(contentsOf: chars[start..<i])
+        continue
+      }
+      // Skip string literals
+      if chars[i] == "\"" {
+        let start = i
+        i += 1
+        while i < count {
+          if chars[i] == "\\" { i += 2; continue }
+          if chars[i] == "\"" { i += 1; break }
+          i += 1
+        }
+        result.append(contentsOf: chars[start..<min(i, count)])
+        continue
+      }
+
+      if matchMarker(at: i) {
+        let callStart = i
+        var j = i + marker.count
+        var depth = 1
+        while j < count && depth > 0 {
+          if chars[j] == "\"" {
+            j += 1
+            while j < count {
+              if chars[j] == "\\" { j += 2; continue }
+              if chars[j] == "\"" { j += 1; break }
+              j += 1
+            }
+            continue
+          }
+          if chars[j] == "(" { depth += 1 }
+          else if chars[j] == ")" { depth -= 1 }
+          j += 1
+        }
+        let callText = String(chars[callStart..<j])
+        let nsCall = callText as NSString
+        let fullRange = NSRange(location: 0, length: nsCall.length)
+
+        var replacement: String? = nil
+        if !adaptedRemoteOverrides.isEmpty,
+           let m = urlRegex?.firstMatch(in: callText, range: fullRange),
+           let r = Range(m.range(at: 1), in: callText)
+        {
+          let rawURL = String(callText[r])
+          let lowerURL = rawURL.lowercased()
+          let urlLast = rawURL
+            .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+            .split(separator: "/").last.map(String.init) ?? ""
+          let slug = (urlLast.hasSuffix(".git") ? String(urlLast.dropLast(4)) : urlLast).lowercased()
+          if let overrideURL = adaptedRemoteOverrides[lowerURL] ?? adaptedRemoteOverrides[slug] {
+            replacement = ".package(path: \(swiftStringLiteral(overrideURL.path)))"
+          }
+        } else if let sourceRoot,
+                  let m = pathRegex?.firstMatch(in: callText, range: fullRange),
+                  let r = Range(m.range(at: 1), in: callText)
+        {
+          let rawPath = String(callText[r])
+          if !rawPath.isEmpty && !rawPath.hasPrefix("/") && !rawPath.contains("\\(") {
+            let resolved = sourceRoot.appendingPathComponent(rawPath).standardizedFileURL.path
+            replacement = callText.replacingCharacters(in: r, with: resolved)
+          }
+        }
+
+        result.append(replacement ?? callText)
+        i = j
+        continue
+      }
+
+      result.append(chars[i])
+      i += 1
+    }
+
+    return result
+  }
+
   /// Adapts a checked-out package directory into `outputDirectory` if inspection shows
   /// it needs CrossSwiftUI module injection, `@objc` stripping, or undeclared `.xcassets`
   /// resource wiring. Returns `nil` if the package needs no adaptation.
@@ -286,15 +442,22 @@ public enum PackageDependencyAdapter {
     crossSwiftRoot: URL,
     consumerReferences: ConsumerReferences? = nil,
     allowedCrossSwiftModules: Set<String> = crossSwiftProvidedModules,
-    useWasmBundleShim: Bool = false
+    useWasmBundleShim: Bool = false,
+    adaptedRemoteOverrides: [String: URL] = [:],
+    resolveRelativePaths: Bool = false
   ) throws -> URL? {
     let inspection = inspect(
       packageRoot: sourceRoot,
-      allowedCrossSwiftModules: allowedCrossSwiftModules
+      allowedCrossSwiftModules: allowedCrossSwiftModules,
+      includeJavaScriptKit: useWasmBundleShim
     )
-    guard inspection.needsAdaptation else { return nil }
 
     let fm = FileManager.default
+    let manifestURL = sourceRoot.appendingPathComponent("Package.swift")
+    guard let originalManifest = try? String(contentsOf: manifestURL, encoding: .utf8) else {
+      return nil
+    }
+
     // Compute generic tree-shaken imageset subsets for any large *.xcassets catalogs.
     var prunedImagesetsByCatalogKey: [String: [String]] = [:]
     var prunedLargeCatalogRelPaths = Set<String>()
@@ -316,15 +479,17 @@ public enum PackageDependencyAdapter {
       }
     }
 
-    let manifestURL = sourceRoot.appendingPathComponent("Package.swift")
-    let originalManifest = try String(contentsOf: manifestURL, encoding: .utf8)
     let patchedManifest = patchManifest(
       originalManifest,
       inspection: inspection,
       crossSwiftRoot: crossSwiftRoot,
       prunedLargeCatalogs: prunedLargeCatalogRelPaths,
-      useWasmBundleShim: useWasmBundleShim
+      useWasmBundleShim: useWasmBundleShim,
+      adaptedRemoteOverrides: adaptedRemoteOverrides,
+      sourceRoot: resolveRelativePaths ? sourceRoot : nil
     )
+
+    guard inspection.needsAdaptation || patchedManifest != originalManifest else { return nil }
 
     let stampSummary = prunedImagesetsByCatalogKey.keys.sorted().map { key in
       "\(key)=\(prunedImagesetsByCatalogKey[key]?.joined(separator: ",") ?? "")"
@@ -365,13 +530,22 @@ public enum PackageDependencyAdapter {
         keptEnumCases = kept
       }
 
-      try stageDirectory(
-        from: srcTarget,
-        to: dstTarget,
-        skipNames: Set(target.largeAssetCatalogs.map { URL(fileURLWithPath: $0).lastPathComponent }),
-        stripObjCInSwiftFiles: needsSwiftRewrite,
-        pruneEnumCases: keptEnumCases
-      )
+      if !needsSwiftRewrite
+        && !targetHasPrunedCatalog
+        && target.largeAssetCatalogs.isEmpty
+        && !(useWasmBundleShim && !target.undeclaredAssetCatalogs.isEmpty)
+      {
+        try fm.createDirectory(at: dstTarget.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try linkOrCopyDirectory(from: srcTarget, to: dstTarget)
+      } else {
+        try stageDirectory(
+          from: srcTarget,
+          to: dstTarget,
+          skipNames: Set(target.largeAssetCatalogs.map { URL(fileURLWithPath: $0).lastPathComponent }),
+          stripObjCInSwiftFiles: needsSwiftRewrite,
+          pruneEnumCases: keptEnumCases
+        )
+      }
 
       var fallbackCatalogPaths: [String] = []
       for relCatalog in target.largeAssetCatalogs {
@@ -770,17 +944,17 @@ public enum PackageDependencyAdapter {
   private static func findMatchingDelimiter(
     in text: String,
     openIndex: Int,
-    open: UInt8,
-    close: UInt8
+    open: UInt16,
+    close: UInt16
   ) -> Int? {
-    let bytes = Array(text.utf8)
-    guard openIndex < bytes.count, bytes[openIndex] == open else { return nil }
+    let units = Array(text.utf16)
+    guard openIndex < units.count, units[openIndex] == open else { return nil }
     var depth = 0
     var inString = false
     var escaped = false
     var i = openIndex
-    while i < bytes.count {
-      let b = bytes[i]
+    while i < units.count {
+      let b = units[i]
       if inString {
         if escaped { escaped = false }
         else if b == 0x5C { escaped = true }
@@ -805,7 +979,7 @@ public enum PackageDependencyAdapter {
     close: Character
   ) -> Int? {
     guard let o = open.asciiValue, let c = close.asciiValue else { return nil }
-    return findMatchingDelimiter(in: text, openIndex: openIndex, open: o, close: c)
+    return findMatchingDelimiter(in: text, openIndex: openIndex, open: UInt16(o), close: UInt16(c))
   }
 
   private static func scanSwiftSources(in directory: URL) -> (modules: Set<String>, hasObjC: Bool) {
@@ -897,8 +1071,8 @@ public enum PackageDependencyAdapter {
     in manifest: String,
     openParen: Int
   ) -> (labelStart: Int, colonIndex: Int, openBracket: Int?)? {
-    let bytes = Array(manifest.utf8)
-    let labelBytes = Array(label.utf8)
+    let bytes = Array(manifest.utf16)
+    let labelBytes = Array(label.utf16)
     let count = bytes.count
     guard openParen < count, bytes[openParen] == 0x28 else { return nil }
 
@@ -975,7 +1149,7 @@ public enum PackageDependencyAdapter {
     return nil
   }
 
-  private static func isIdentByte(_ b: UInt8) -> Bool {
+  private static func isIdentByte(_ b: UInt16) -> Bool {
     (b >= 0x41 && b <= 0x5A)
       || (b >= 0x61 && b <= 0x7A)
       || (b >= 0x30 && b <= 0x39)

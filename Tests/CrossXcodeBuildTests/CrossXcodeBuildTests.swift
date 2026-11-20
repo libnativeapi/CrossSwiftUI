@@ -567,6 +567,77 @@ final class CrossXcodeBuildTests: XCTestCase {
     XCTAssertTrue(manifest.contains(".product(name: \"CrossFoundation\", package: \"crossswift\")"))
   }
 
+  func testLocalPackageAdaptationWithUnicodeCommentRemoteOverrideAndWasmJSKit() throws {
+    let fm = FileManager.default
+    let tmp = fm.temporaryDirectory.appendingPathComponent("CrossXcodeBuildLocalAdapt-\(UUID().uuidString)")
+    defer { try? fm.removeItem(at: tmp) }
+
+    let pkgDir = tmp.appendingPathComponent("MyDesignKit")
+    let srcDir = pkgDir.appendingPathComponent("Sources/MyDesignKit")
+    try fm.createDirectory(at: srcDir, withIntermediateDirectories: true)
+
+    let manifest = """
+    // swift-tools-version: 5.9
+    // Design kit — includes non-ASCII em-dash before Package declaration.
+    import PackageDescription
+
+    let package = Package(
+      name: "MyDesignKit",
+      products: [.library(name: "MyDesignKit", targets: ["MyDesignKit"])],
+      dependencies: [
+        .package(
+          url: "https://github.com/microsoft/fluentui-system-icons.git",
+          revision: "21d5d02f724be2aaf586564775fff73a18a76eb6"
+        ),
+        .package(name: "SiblingPkg", path: "../SiblingPkg"),
+      ],
+      targets: [
+        .target(
+          name: "MyDesignKit",
+          dependencies: [
+            .product(name: "FluentIcons", package: "fluentui-system-icons"),
+          ]
+        ),
+      ]
+    )
+    """
+    try manifest.write(to: pkgDir.appendingPathComponent("Package.swift"), atomically: true, encoding: .utf8)
+    try """
+    import SwiftUI
+    #if os(WASI)
+      import JavaScriptKit
+    #endif
+    public struct KitView: View {
+      public var body: some View { EmptyView() }
+    }
+    """.write(to: srcDir.appendingPathComponent("KitView.swift"), atomically: true, encoding: .utf8)
+
+    let adaptedIcons = tmp.appendingPathComponent("adapted/fluentui-system-icons")
+    let adaptedOut = tmp.appendingPathComponent("adapted/mydesignkit")
+    let result = try PackageDependencyAdapter.adaptCheckoutIfNeeded(
+      sourceRoot: pkgDir,
+      outputDirectory: adaptedOut,
+      crossSwiftRoot: repositoryRoot,
+      allowedCrossSwiftModules: ["SwiftUI", "SwiftUIRuntime"],
+      useWasmBundleShim: true,
+      adaptedRemoteOverrides: [
+        "https://github.com/microsoft/fluentui-system-icons.git": adaptedIcons,
+        "fluentui-system-icons": adaptedIcons,
+      ],
+      resolveRelativePaths: true
+    )
+    XCTAssertEqual(result, adaptedOut)
+
+    let patched = try String(contentsOf: adaptedOut.appendingPathComponent("Package.swift"), encoding: .utf8)
+    XCTAssertTrue(patched.contains(".package(path: \"\(adaptedIcons.path)\")"))
+    XCTAssertFalse(patched.contains("https://github.com/microsoft/fluentui-system-icons.git"))
+    XCTAssertTrue(patched.contains(".package(name: \"SiblingPkg\", path: \"\(tmp.appendingPathComponent("SiblingPkg").path)\")"))
+    XCTAssertTrue(patched.contains("JavaScriptKit.git"))
+    XCTAssertTrue(patched.contains(".product(name: \"SwiftUI\", package:"))
+    XCTAssertTrue(patched.contains(".product(name: \"JavaScriptKit\", package: \"javascriptkit\")"))
+    XCTAssertTrue(fm.fileExists(atPath: adaptedOut.appendingPathComponent("Sources/MyDesignKit/KitView.swift").path))
+  }
+
   private func makeMinimalPNG(width: Int, height: Int) -> Data {
     var data = Data([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A])
     data.append(contentsOf: [0, 0, 0, 13]) // IHDR length
