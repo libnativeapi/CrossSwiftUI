@@ -1,5 +1,7 @@
 # HarmonyOS PC Swift runtime probe
 
+English | [简体中文](./README-ZH.md)
+
 This Stage-model HAP loads an ARM64 Node-API library from
 `EntryAbility.onCreate`. The startup checks cover Swift standard library
 collections and dynamic casts, Foundation JSON/URL/Date, a detached Swift task

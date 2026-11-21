@@ -2,124 +2,135 @@
 
 **Unofficial; not affiliated with Apple.** See [COMPAT.md](COMPAT.md) for API status.
 
+English | [简体中文](./DIVERGENCES-ZH.md)
+
 ## Platforms and controls
 
-Windows uses a retained GDI+ display list on a nativeapi content HWND. Styled
-buttons retain native BUTTON activation, capture, focus, names and disabled
-state, using owner drawing. TextField/SecureField use native EDIT controls for
-selection, clipboard commands and IME. Native controls are clipped to scroll
-viewports. Their backgrounds are opaque; use a native placeholder rather than
-placing placeholder text behind an editor. EDIT opacity uses a layered child
-window, allowing an invisible editor behind a custom drawn value.
+On Windows, `CrossSwiftUI` (`WindowsDrawingBackend` + `CSwiftUIWindows`) uses a
+retained GDI+ display list on a `NativeAPI` content HWND. Styled buttons retain
+native `BUTTON` activation, capture, focus, accessible names, and disabled state
+using owner drawing. `TextField`, `SecureField`, and `TextEditor` use native
+Win32 `EDIT` controls for selection, clipboard commands, and IME, composited
+transparently over the drawn canvas backdrop via dual-pass matte extraction so
+custom backgrounds, placeholders, scroll views, and disabled states show through
+cleanly. Native controls are clipped to scroll viewports. Borderless windows and
+floating AppKit panels (`CrossAppKit.NSPanel`) support per-pixel alpha and
+alpha-silhouette window shadows on Windows.
 
-Decorative content has no complete UI Automation provider. Accessibility
-modifiers retain metadata; native control names and modal control exclusion are
-implemented, but a full accessible hierarchy and focus scopes are not.
+Decorative content has no complete UI Automation or AT-SPI provider.
+Accessibility modifiers retain metadata; native control names and modal control
+exclusion are implemented, while a full accessible hierarchy for drawn shapes
+and focus scopes are not.
 
-Linux uses Cairo and Pango in a GTK 3 drawing area. GTK entries and text views
-provide native editing and keyboard focus. GTK buttons expose native activation
-and AT-SPI names. Drawn content lacks a complete accessible hierarchy.
-macOS apps import Apple's SwiftUI; only runtime tests use this implementation.
+On Linux, `CrossSwiftUI` (`LinuxDrawingBackend`) uses Cairo and Pango in a GTK 3
+drawing area. GTK entries and text views provide native editing, multiline
+placeholder overlays, and keyboard focus. GTK buttons expose native activation
+and AT-SPI names. Window chrome follows light and dark appearances on both
+Windows and Linux.
 
-## Browser
+On macOS, applications compile directly against Apple's native `SwiftUI` and
+`AppKit` SDKs; `SwiftUIRuntime`, `CrossAppKit`, and `CrossXcodeBuild` build on
+macOS for unit testing and cross-platform `.xcodeproj` compilation.
 
-WebAssembly mounts one `WindowGroup` in the page. Its title sets the document
-title, and the root element's dimensions determine the layout. HTML controls
-provide editing, focus and activation. Text metrics and scrollbar appearance
-follow the browser. Image names resolve to URLs served alongside the page.
-Apple asset catalog lookup and drawing-property animations are currently
-desktop features. SwiftUI's runtime compatibility limits also apply in the
-browser.
+## Browser and mobile hosts
 
-## Drawing and text
+`SwiftUIWeb` mounts one `WindowGroup` inside `#swiftui-root` in the page. Its
+title sets `document.title`, and the host element's dimensions drive layout.
+HTML controls provide editing, focus, and activation; text metrics and
+scrollbars follow the browser. When staged by `CrossXcodeBuild`, `.xcassets`
+images, `.xcstrings` catalogs, and embedded SF Symbols are loaded via
+`web-manifest.json` (`window.__crossSwiftUIResources`). `CrossAppKit` and
+`MenuBarExtra` are desktop-only modules and are not available on WebAssembly or
+Android.
 
-GDI+ measures and draws Windows fonts in logical points. System sans, serif and
-monospaced faces map to Segoe UI, Georgia and Consolas. Weights use regular/bold
-buckets. There is no variable-font, dynamic-type or Apple font fallback parity.
-Wrapping, newlines, line spacing and limited ellipsis are supported. Concatenated
-Text runs retain font/color but do not form a full attributed text layout engine.
-Linux uses the system font families and Pango weight selection, tracking and
-underline. Multiline alignment and attributed text layout remain limited.
+`SwiftUIAndroid` and the HarmonyOS ArkUI host (`HarmonyBuilder`) map semantic
+controls (`Toggle`, `Slider`, `Stepper`, `Picker`, `Menu`, `ProgressView`,
+`List`, `NavigationStack`, `TabView`, `.sheet`, `.alert`) to native Jetpack
+Compose / ArkUI components or iOS Liquid Glass renderers while `SwiftUIRuntime`
+evaluates state and layout in Swift. See [ANDROID.md](ANDROID.md).
 
-SVG template images support path geometry, including elliptical arcs, from a
-viewBox. SVG styling, text, filters, embedded images and asset catalogs are not
-implemented. Gradients use evenly spaced stops. Canvas supports path fills,
-clipping and scale/translation. Circular trim is supported. Arbitrary path trim
-is incomplete. Linux supports dashed strokes.
+## Drawing, assets and text
 
-Rounded corners use circular arcs for both styles. Desktop shadows blur a
-rounded-rectangle alpha mask with three box filters approximating a Gaussian;
-they do not yet follow arbitrary paths or the alpha of view content.
-Windows applies alpha per primitive; Linux composites Cairo
-groups. Arbitrary clip paths constrain drawing; native controls use rectangular
-viewport clipping.
+GDI+ measures and draws Windows fonts in logical points. System sans, serif, and
+monospaced faces map to Segoe UI, Georgia, and Consolas; weights use
+regular/bold buckets without variable-font or Apple font-fallback parity.
+Wrapping, newlines, line spacing, and head/tail ellipsis are supported. Linux
+uses system font families with Pango weight selection, tracking, and underline.
+Concatenated `Text` runs retain font and color metadata without forming a full
+bidirectional paragraph engine.
+
+`Image` supports the embedded `SFSymbolCatalog` (`Image(systemName:)`),
+`.xcassets` imagesets and PDF vector assets, raster files, and bundled SVG
+paths (including elliptical arcs, per-path fill/stroke styles, and template vs.
+original `renderingMode`). Arbitrary SVG `<text>`, `<filter>`, and embedded
+bitmap elements are not parsed. `LinearGradient`, `RadialGradient`, and
+`AngularGradient` support explicit stops, and `Canvas` supports path
+fills/strokes, clipping, and scale/translation. Circular path `trim` is
+supported; arbitrary multi-segment path `trim` is incomplete.
+
+Rounded corners use circular arcs for both `.circular` and `.continuous` styles.
+Desktop shadows blur a rounded-rectangle or circular silhouette mask with three
+box filters approximating a Gaussian, and `.mask` applies view alpha masks on
+desktop. Windows applies `.opacity` per primitive; Linux composites Cairo
+groups. Arbitrary clip paths constrain vector drawing, whereas native controls
+use rectangular viewport clipping.
 
 ## Layout, state and events
 
-Layout uses proposals, nested frames/padding/layers, stack flexibility, grids,
-scroll content extents and custom Layout callbacks. Lazy containers currently
-evaluate all children. Layout priority, exact baseline alignment and full SwiftUI
-proposal negotiation are absent. Spacer.minLength is not enforced. Very narrow
-windows can overflow.
+Layout uses proposals, nested frames/padding/layers, stack flexibility, `Grid`,
+scroll content extents, and custom `Layout` callbacks (with axis-flexibility
+probing). Inside a `ScrollView`, `LazyVStack` virtualizes `ForEach` collections
+exceeding 72 items using cached height estimates; smaller `LazyVStack`s,
+`LazyHStack`, `LazyVGrid`, and `LazyHGrid` evaluate children eagerly. Layout
+priority, exact text-baseline alignment across mixed controls, and `Spacer.minLength`
+enforcement are incomplete.
 
 `.hidden()` collapses space and inner `.disabled(false)` can re-enable content.
 Dragging and hovering are hit-tested in the host, and controls bubble key/focus
-callbacks to their ancestors. Gesture priority/composition and full keyboard
-layout-to-character conversion are not implemented.
+callbacks to ancestors. Multi-gesture priority/simultaneous arbitration, timed
+`LongPressGesture` recognition, and full keyboard layout-to-character mapping
+are not implemented.
 
-State is scoped by structural path, concrete type and property position; `.id`
-and ForEach data IDs add stable scopes. StateObject initializes lazily and retains
-its object. Published writes invalidate after updating storage. Environment
-snapshots survive callbacks. Reflection installs directly stored wrappers, not
-SwiftUI's complete DynamicProperty machinery. The registry is process-wide, but state retention and lifecycle ownership are
-scoped to each renderer root. Shared models invalidate all observing renderers.
-Local State reads are tracked for incremental body evaluation. ObservableObject
-notifications still invalidate globally; lazy containers are not virtualized.
-Measurement and placement caches reuse unchanged geometry. GeometryReader can
-retain size-only content during translation; position readers and opaque custom
-layout/guide closures stay conservative. The Windows backend verifies display
-commands before reusing integer-pixel scroll interiors, and otherwise repaints.
-Native button HWNDs inside scroll content can remain visible in the Win32 style
-while clipped offscreen; viewport geometry and Tab eligibility determine whether
-they can receive input. Debug builds retain
-Swift's unoptimized overhead; use release builds for interactive performance.
+`StateRegistry` is process-wide, while `@State` retention and `.onAppear` /
+`.onDisappear` / `.task` lifecycles are isolated per `Renderer` root (allowing
+independent windows, `MenuBarExtra` menus, and `NSHostingView` instances).
+`@Observable` (`@Bindable`) and `ObservableObject` models invalidate all
+observing renderers. Reflection installs directly stored wrappers rather than
+Apple SwiftUI's complete nested `DynamicProperty` graph. Measurement and
+placement caches reuse unchanged subtrees; `WindowsDrawingBackend` verifies
+display commands before reusing integer-pixel scroll interiors, falling back to
+normal damage repainting when unsafe. Use `Release` builds when benchmarking
+interactive frame rates.
 
-Popovers are hoisted above clipping, flip at available edges and dismiss on
-outside press or Escape. PresentationBackgroundInteraction can keep underlying
-controls enabled for inline editing; outside host presses still dismiss first.
-Native separate windows and custom attachment rectangles/alignment are not
-complete. Context menus are drawn content, not native OS menus.
+Presentations (`.popover`, `.sheet`, `.confirmationDialog`, `.alert`,
+`.contextMenu`, and `Menu` dropdowns) hoist above scroll clipping on desktop and
+web, flip `.popover` edges within window bounds, and dismiss on backdrop press
+or Escape. On desktop they render inside the window surface rather than spawning
+separate OS windows (except `MenuBarExtra` status items and explicit
+`CrossAppKit` `NSWindow` / `NSPanel` instances).
 
-## Lifecycle and motion
+## Lifecycle, scenes and compatibility shims
 
-Appearance/change/disappearance callbacks run after mounting. Tasks cancel when
-their view disappears or task id changes. NativeAPI's Swift binding pumps Swift's
-main Dispatch queue alongside the Win32, GTK and OpenHarmony UI loops.
+Appearance, change, and disappearance callbacks commit after mounting; `.task`
+cancels on disappearance or `id` change. `NativeAPI`'s Swift binding pumps
+Swift's main `DispatchQueue` alongside the Win32, GTK, and HarmonyOS UI loops.
 
-Both backends interpolate rotation, scale, opacity and offset, including repeat and
-delay, and the runtime interpolates animated layout sizing (frames, padding and
-spacing) across `withAnimation` and `.animation(_:value:)` transactions using
-cubic-bezier timing curves. Color interpolation, entry/exit transitions and
-presentation-time transform hit geometry remain incomplete.
-Reduced motion can be supplied through EnvironmentValues.
+Desktop backends interpolate rotation, scale, opacity, offset, and animated
+layout sizing (frames, padding, and stack spacing) across `withAnimation` and
+`.animation(_:value:)` using cubic-bezier timing curves. Color interpolation and
+insertion/removal `.transition` animations remain incomplete.
 
-WindowGroup supplies one native window and defaultSize. There is no multi-window
-scene management or state restoration. Windows executables reserve 16 MiB
-of stack for deeply nested declarative trees. Headless and native integration
-tests demonstrate behavior, not pixel equivalence with Apple SwiftUI.
+`CrossSwiftUI`'s scene runner supports one `WindowGroup` together with
+`MenuBarExtra` status items (plus accessory/menu-bar-only apps backed by
+`CrossAppKit.NSApplication`). Declarative `Window`, `Settings`, and
+`DocumentGroup` scenes and scene state restoration are not implemented. Windows
+executables reserve 16 MiB of stack (and WASI debug builds reserve 16 MiB) for
+deeply nested declarative view trees.
 
-## Additional compatibility APIs
-
-`ViewThatFits` evaluates its alternatives eagerly and clips the unselected ones;
-it does not reproduce SwiftUI's lazy appearance/task semantics for alternatives.
-`TimelineView` uses a cancellable task, not a display link, and supports only the
-animation schedule. Timer intervals are bounded to 1/240 second through one day.
-`ScrollViewReader` locates explicit IDs in existing content; it does not animate
-scrolling or materialize lazy views.
-
-Attributed strings import text and links, not arbitrary Foundation attributes.
-Concatenated runs use horizontal layout rather than a full attributed paragraph
-engine. URL links require a host-provided `openURL` handler to launch a browser.
-Text selection and accessibility identifiers are retained as metadata only.
-Saturation changes explicit colors; it is not a post-compositing filter.
-Alerts are centered drawn panels, not native system dialogs.
+`ViewThatFits` evaluates candidates eagerly and clips unselected branches.
+`TimelineView` uses a cancellable task rather than a display link and supports
+the `.animation` schedule (bounded between 1/240s and 86,400s).
+`ScrollViewReader` jumps to explicit IDs without scroll animation. `.blur`
+applies a compile-compatible opacity fallback rather than a pixel blur filter,
+and `.saturation` / `.grayscale` transform explicit colors rather than
+post-composited pixels.

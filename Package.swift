@@ -4,22 +4,37 @@ import CompilerPluginSupport
 import Foundation
 import PackageDescription
 
-// CrossSwiftUI — a declarative SwiftUI-shaped API over nativeapi's native views,
-// together with CrossAppKit's cross-platform AppKit/system shims.
+// CrossSwift (`crossswift`) — cross-platform SwiftUI, AppKit, Apple-framework
+// compatibility shims, and an `xcodebuild`-compatible build tool for Windows,
+// Linux, WebAssembly, HarmonyOS, and Android.
 // Unofficial; not affiliated with Apple.
 //
-// The package is organized into these modules:
-//   SwiftUIRuntime  engine: view protocol, element tree, layout, diff, state.
-//                   No nativeapi dependency, so it builds and tests on macOS.
-//   CrossSwiftUI    the nativeapi backend and app/window integration.
-//   CrossAppKit     cross-platform AppKit and Apple-framework shims.
-//   SwiftUIWeb      the WebAssembly backend and browser integration.
-//   SwiftUIAndroid  the Android Activity host and JNI integration.
-//   SwiftUI         the user-facing facade (`import SwiftUI`).
+// Note: The SwiftPM manifest retains `Package(name: "CrossSwiftUI")` for
+// downstream package manifest compatibility, while `CrossSwiftUI` is specifically
+// the desktop NativeAPI backend and AppKit-hosting module.
 //
-// The desktop macOS build contains SwiftUIRuntime, CrossAppKit, their tests,
-// and Counter compiled against Apple's SwiftUI. The WebAssembly build uses the
-// SwiftUI facade on every supported host.
+// Core module groups:
+//   SwiftUIRuntime  platform-independent SwiftUI engine (views, layout, diff,
+//                   state, observation, controls, vector graphics, localization)
+//                   paired with `SwiftUIRuntimeMacros` (`@Entry`, `#Preview`).
+//   CrossSwiftUI    desktop NativeAPI backend (Windows GDI+ via `CSwiftUIWindows`,
+//                   Linux GTK/Cairo/Pango), `App`/`MenuBarExtra` runner, and
+//                   `CrossAppKit` hosting (`NSHostingView`, `NSViewRepresentable`).
+//   CrossAppKit     cross-platform AppKit implementation (re-exported as `AppKit`
+//                   on Windows/Linux, backed by NativeAPI and `CAppKitWindows`).
+//   CrossFoundation Apple Foundation extensions plus `Sources/AppleShims/*` and
+//                   standalone shims (`CoreGraphics`, `Combine`, `CryptoKit`,
+//                   `Carbon`, `UniformTypeIdentifiers`, `OSLog`, `os`, `SQLite3`).
+//   SwiftUIWeb      WebAssembly (`os(WASI)`) DOM backend and browser runner.
+//   SwiftUIAndroid  Android JNI bridge (`CSwiftUIAndroid`) and Jetpack Compose host.
+//   SwiftUI         user-facing `import SwiftUI` facade on non-Apple targets.
+//   CrossXcodeBuild pure-Swift `.xcodeproj`/`.xcworkspace` parser, adapter, and
+//                   multi-platform builder powering `CrossXcodeBuildCLI` (`xcodebuild`).
+//
+// On macOS, the desktop package graph builds `SwiftUIRuntime`, `CrossAppKit`,
+// `CrossXcodeBuild` (`xcodebuild`), their test suites, and `Counter` compiled
+// against Apple's native SwiftUI. WebAssembly (`CROSS_SWIFTUI_WEB=1`) and Android
+// (`CROSS_SWIFTUI_ANDROID=1`) select isolated cross-compilation package graphs.
 //
 // The nativeapi Swift package is consumed as a sibling checkout at
 // ../nativeapi/bindings/swift (see README "Requirements"). It is intentionally

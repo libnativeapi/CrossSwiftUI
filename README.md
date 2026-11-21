@@ -1,12 +1,26 @@
-# CrossSwiftUI
+# CrossSwift
 
 **Unofficial; not affiliated with Apple.**
 
-SwiftUI's declarative API shape for Windows, Linux, the browser, and an
-initial Android host. Desktop builds use [nativeapi](https://github.com/libnativeapi/nativeapi),
-Web builds use WebAssembly and browser controls, and the Android host renders
-the shared runtime's controls with Jetpack Compose. CrossSwiftUI is an
-independent implementation.
+English | [简体中文](./README-ZH.md)
+
+CrossSwift (`crossswift`) is an independent Apple-framework compatibility layer
+and `xcodebuild`-compatible build toolchain that compiles SwiftUI and AppKit
+applications — including unmodified macOS/iOS `.xcodeproj` projects — for
+**Windows, Linux, WebAssembly, HarmonyOS, and Android**, while letting Apple
+platform builds compile natively against Apple's SDKs.
+
+- **Windows & Linux desktop**: `CrossSwiftUI` and `CrossAppKit` render views and
+  host windows, menus, status items, and native text controls over
+  [nativeapi](https://github.com/libnativeapi/nativeapi), backed by
+  `CrossFoundation` and Apple framework shims.
+- **WebAssembly**: `SwiftUIWeb` mounts apps in the browser DOM using
+  JavaScriptKit and native HTML controls.
+- **Android**: `SwiftUIAndroid` connects the shared runtime over JNI to Jetpack
+  Compose, supporting live switching between Material 3 + Navigation Compose and
+  iOS 27 Liquid Glass styling.
+- **HarmonyOS**: `CrossXcodeBuild` (`HarmonyBuilder`) cross-compiles ARM64
+  Swift static objects against `NativeAPI` and packages an ArkUI Stage-model HAP.
 
 ```swift
 import SwiftUI
@@ -43,35 +57,52 @@ struct CounterView: View {
 ```
 
 That program is checked in as [`Examples/Counter`](Examples/Counter/CounterApp.swift).
-The same view source builds for Windows, Linux, WebAssembly, and Android.
-Desktop macOS builds compile it against Apple's SwiftUI.
+The same view source builds for Windows, Linux, WebAssembly, and Android, while
+macOS builds compile it directly against Apple's `SwiftUI`.
+
+## Modules
+
+The root [`Package.swift`](Package.swift) retains the SwiftPM manifest name
+`CrossSwiftUI` for downstream dependency compatibility. Inside the repository,
+responsibilities are split cleanly across distinct modules:
+
+| Module | Role |
+| --- | --- |
+| `SwiftUIRuntime` + `SwiftUIRuntimeMacros` | Platform-independent SwiftUI engine: `View`, `@ViewBuilder`, element tree, layout, sibling diff, `@State` / `@Binding` / `@Environment` / `@FocusState`, `@Observable` (`@Bindable`) and `ObservableObject`, `@Entry` & `#Preview` macros, controls, navigation, presentations, SVG/PDF vectors, SF Symbols, `.xcstrings` localization, and animations. Has no `NativeAPI` dependency, so `SwiftUIRuntimeTests` runs on macOS, Windows, and Linux. |
+| `CrossSwiftUI` (+ `CSwiftUIWindows`) | Desktop `NativeAPI` SwiftUI backend for **Windows** (retained Win32/GDI+ display list, native buttons, transparent matte-composited `EDIT` controls) and **Linux** (GTK 3 drawing area with Cairo/Pango and native GTK controls), `App` / `WindowGroup` / `MenuBarExtra` runner, and AppKit hosting (`NSHostingView`, `NSHostingController`, `NSViewRepresentable`, `NSApplicationDelegateAdaptor`). |
+| `SwiftUIWeb` | WebAssembly (`os(WASI)`) DOM renderer, `WindowGroup` browser runner, and web `.xcassets` / `.xcstrings` / SF Symbol loader. |
+| `SwiftUIAndroid` (+ `CSwiftUIAndroid`) | Android JNI bridge (`AndroidHost`) and Jetpack Compose host (`SwiftUIComposeHost`), with dual Material 3 and iOS Liquid Glass renderers. |
+| `SwiftUI` | User-facing `import SwiftUI` facade on non-Apple targets, re-exporting `SwiftUIRuntime` together with the active platform backend (`CrossSwiftUI` + `CrossAppKit` + `CrossFoundation` + `CoreGraphics` on Windows/Linux, `SwiftUIWeb` on WASI, `SwiftUIAndroid` on Android, or `SwiftUIRuntime` on HarmonyOS). |
+| `CrossAppKit` + `AppKit` (+ `CAppKitWindows`) | Cross-platform AppKit implementation (`NSApplication`, `NSWindow`, `NSPanel`, `NSView`, controls, TextKit 1/2, `NSMenu`, `NSStatusItem`, `NSPasteboard`, `NSWorkspace`, `NSColor`, `NSAppearance`, `NSFont`, `NSImage`, `NSBezierPath`, Carbon hotkey bridge). Re-exported as `import AppKit` on Windows and Linux; `CrossAppKit` also builds standalone on macOS for `CrossAppKitTests`. |
+| `CrossFoundation` & Apple shims | Apple `Foundation` extensions missing from `swift-corelibs-foundation`, standalone framework shims (`CoreGraphics`, `Combine`, `CryptoKit`, `Carbon`, `UniformTypeIdentifiers`, `OSLog`, `os`, `SQLite3`), and 34 system/framework shims under `Sources/AppleShims/` (`CoreFoundation`, `Darwin`, `ApplicationServices`, `ServiceManagement`, `Security`, `CoreText`, `ImageIO`, `JavaScriptCore`, `IOKit`, `Network`, `AVFoundation`, `PDFKit`, etc.). |
+| `CrossXcodeBuild` + `CrossXcodeBuildCLI` | Pure-Swift `.xcodeproj` / `.xcworkspace` parser, Apple-framework & SwiftPM dependency adapter, `.xcassets` / `.xcstrings` / icon compiler, and the cross-platform `xcodebuild` executable targeting Windows, Linux, WebAssembly, HarmonyOS, and Android. |
 
 ## What this is
 
-The engine keeps SwiftUI's authoring model: value views, builders, state,
-bindings, scoped environment, modifiers and WindowGroup. The Windows and
-Linux backends draw text, shapes and layers in a nativeapi window, including
-custom ButtonStyle labels. Native controls supply activation, focus,
-accessible names and text editing.
+CrossSwift preserves SwiftUI and AppKit authoring conventions — value views,
+result builders, state and `@Observable` tracking, scoped environment,
+modifiers, `WindowGroup` and `MenuBarExtra` scenes, AppKit windows/views, and
+asset/localization catalogs — without coupling user code to platform-specific
+APIs.
 
 This is a **partial compatibility layer**. It contains no host application's
-components, themes or tokens. It is not Apple's source or renderer, and does
-not promise pixel equality. Both drawing backends supply scrolling, vector
-images, native text editing, popovers, gestures and basic animation.
-Read [docs/COMPAT.md](docs/COMPAT.md) and
+domain components, themes, or tokens. It is not Apple's source or renderer, and
+does not promise pixel equality. Read [docs/COMPAT.md](docs/COMPAT.md) and
 [docs/DIVERGENCES.md](docs/DIVERGENCES.md) before adopting an API.
 
 ## Requirements
 
-- Swift 6.0 or newer on Linux/macOS, language mode 5 (`swift-tools-version:5.9`).
+- Swift 6.0 or newer on Linux/macOS, language mode 5 (`swift-tools-version:5.9`;
+  `CrossXcodeBuild` also adapts Swift 6 language-mode app targets).
   Windows uses Swift 6.4.2 or newer: Swift 6.3.1 fails to link Foundation's
   `AttributedString.runs` ([swift#88132](https://github.com/swiftlang/swift/issues/88132)).
-  The current Windows runners also require a modern Clang for the MSVC 14.51 STL.
-  The package itself remains in language mode 5.
+  The current Windows runners also require a modern Clang (or
+  `-Xcxx -D_ALLOW_COMPILER_AND_STL_VERSION_MISMATCH`) for the MSVC STL.
 - A [nativeapi](https://github.com/libnativeapi/nativeapi) checkout with the
-  Swift binding's platform support. The package consumes it as a **sibling path
-  dependency** at `../nativeapi/bindings/swift`, or the path in
-  `NATIVEAPI_SWIFT_PATH`:
+  Swift binding's platform support (required for Windows, Linux, and HarmonyOS;
+  not required for macOS host tests, WebAssembly, or Android). The package
+  consumes it as a **sibling path dependency** at `../nativeapi/bindings/swift`,
+  or the path in `NATIVEAPI_SWIFT_PATH`:
 
   ```text
   Projects/
@@ -79,22 +110,18 @@ Read [docs/COMPAT.md](docs/COMPAT.md) and
   └── crossswift/
   ```
 
-  The Windows backend requires the view batching and update scheduling APIs
-  in [libnativeapi/nativeapi#34](https://github.com/libnativeapi/nativeapi/pull/34).
-  Use the nativeapi revision pinned in `.github/workflows/ci.yml` or a revision
-  that includes those APIs. macOS builds `SwiftUIRuntime` for its tests and the
-  Counter example against Apple's SwiftUI without a nativeapi dependency.
-- Linux: `pkg-config`, `libgtk-3-dev`, `libx11-dev`, `libxi-dev` (the binding
-  gets its flags from pkg-config; no `unsafeFlags`).
-- Windows: the official Swift toolchain with the Visual Studio build tools the
-  Swift installer requires.
+  Use the `nativeapi` revision pinned in [`.github/workflows/ci.yml`](.github/workflows/ci.yml)
+  or a newer compatible revision.
+- Linux: `pkg-config`, `libgtk-3-dev`, `libsqlite3-dev`, `libx11-dev`, `libxi-dev`.
+- Windows: the official Swift toolchain with the Visual Studio build tools and
+  Windows SDK required by the Swift installer.
 
 ## Build and test
 
-macOS builds the platform-independent engine for its test suite, and builds the
-Counter example against **Apple's SwiftUI** (the port's own `SwiftUI` facade is
-not built there). The test suite needs no window; `swift run Counter` opens a
-normal SwiftUI window:
+On macOS, `swift build` and `swift test` compile `SwiftUIRuntime`,
+`CrossAppKit`, `CrossXcodeBuild` (`xcodebuild`), their test suites, and the
+`Counter` example against **Apple's native SwiftUI** (CrossSwift's own `SwiftUI`
+and `AppKit` facades are only built for non-Apple targets):
 
 ```bash
 swift build
@@ -102,7 +129,8 @@ swift test
 swift run Counter
 ```
 
-Linux and Windows build the engine, the nativeapi backend and the example:
+Linux and Windows build the runtime, `CrossSwiftUI`, `CrossAppKit`,
+`CrossFoundation` and framework shims, `CrossXcodeBuild`, and `Counter`:
 
 ```bash
 swift build
@@ -110,8 +138,8 @@ swift test
 swift run Counter
 ```
 
-For the verified Windows source-build path (Swift 6.4.2, MSVC and Windows SDK),
-prepare nativeapi's source symlink and use the SwiftPM native builder:
+For the verified Windows source-build path (Swift 6.4.2, MSVC, and Windows SDK),
+prepare `nativeapi`'s source symlink and use the SwiftPM native builder:
 
 ```powershell
 $env:NATIVEAPI_SWIFT_PATH = 'C:/src/nativeapi/bindings/swift'
@@ -121,21 +149,18 @@ swift test --build-system native
 swift run --build-system native Counter --smoke
 ```
 
-Enable Windows Developer Mode if Git checked the core symlink out as a text
-file. Initialize nativeapi's `core` submodule first. Swift 6.4 warns that the
-native builder is deprecated; the commands above record the tested builder.
+Enable Windows Developer Mode if Git checked the `core` symlink out as a text
+file, and initialize `nativeapi`'s `core` submodule first.
 
-On Windows and Linux, `swift run Counter --smoke` opens the window and asks the
-port's runner to quit a few seconds later; CI uses it to prove the window, event
-loop and renderer start. The window can also be closed normally. macOS runs the
-example under Apple's SwiftUI, where the flag has no special meaning.
+On Windows and Linux, `swift run Counter --smoke` opens the window and asks
+`CrossSwiftUI`'s app runner to quit after three seconds; CI uses it to verify
+that the window, event loop, and renderer start cleanly.
 
 ## Build for the web
 
 Use the Swift.org Swift 6.4.2 toolchain and matching
 [Swift SDK for WebAssembly](https://www.swift.org/documentation/articles/wasm-getting-started.html)
-on macOS or Linux, with Node.js and npm for packaging. With the toolchain selected,
-run these commands from the repository root.
+on macOS or Linux, with Node.js and npm for packaging:
 
 ```bash
 swift sdk install https://download.swift.org/swift-6.4.2-release/wasm-sdk/swift-6.4.2-RELEASE/swift-6.4.2-RELEASE_wasm.artifactbundle.tar.gz \
@@ -146,42 +171,38 @@ python3 -m http.server 8000 --directory .build/web
 
 With Swiftly on macOS, `swiftly run ./scripts/build-web.sh +6.4.2` selects the
 Swift.org toolchain for this build. Open [localhost:8000](http://localhost:8000)
-to try Counter. Serve `.build/web` from a static HTTP host. The directory
-includes the WebAssembly module and its JavaScript dependencies.
+to try `Counter`, or serve `.build/web` from any static HTTP host.
 
-The script selects the Web package graph with `CROSS_SWIFTUI_WEB=1`, uses a
-separate SwiftPM scratch directory and packages the executable with
-JavaScriptKit. It accepts an executable product name and a build configuration
-as optional arguments, for example `./scripts/build-web.sh Counter debug`.
-Web builds require no nativeapi checkout.
+`scripts/build-web.sh` selects the Web package graph (`CROSS_SWIFTUI_WEB=1`),
+uses a separate SwiftPM scratch directory, and packages the executable with
+JavaScriptKit (`./scripts/build-web.sh Counter debug`). Web builds require no
+`nativeapi` checkout. See [docs/DIVERGENCES.md](docs/DIVERGENCES.md) for
+browser-specific limits.
 
-Web apps use the same `import SwiftUI`, `@main` and `WindowGroup` entry point.
-The browser lays out the app to the size of `#swiftui-root` and uses native
-HTML controls for buttons, text fields and scrolling. See
-[docs/DIVERGENCES.md](docs/DIVERGENCES.md) for Web-specific limits.
-
-For a separate Swift package, add the `SwiftUI` product from this package and
-JavaScriptKit's `PackageToJS` command plugin dependency. Set
-`CROSS_SWIFTUI_WEB=1` when invoking `swift package --swift-sdk <id> js` for your
-executable. Use [Web/index.html](Web/index.html) as a host page. For deeply
-nested views in debug builds, use the WASI stack size linker setting on
-Counter's executable target in [Package.swift](Package.swift).
+For a separate SwiftPM Web package, depend on the `SwiftUI` product from this
+package and JavaScriptKit's `PackageToJS` plugin, set `CROSS_SWIFTUI_WEB=1` when
+invoking `swift package --swift-sdk <id> js`, and use [Web/index.html](Web/index.html)
+as a host page.
 
 ## Build for Android
 
-The [Android Counter example](Examples/AndroidCounter/README.md) builds an APK
-with the official Swift SDK for Android and Gradle. The Activity hosts the
-same `CounterView` with Compose Material 3 text and buttons. See the
-[Android compatibility plan](docs/ANDROID.md) for the supported subset and
-upcoming milestones.
+Unmodified `.xcodeproj` apps (such as [`Examples/MobileUIGallery`](Examples/MobileUIGallery/MobileUIGallery.xcodeproj)
+and [`Examples/XcodeDemo`](Examples/XcodeDemo/XcodeDemo.xcodeproj)) can be built
+directly into an APK with CrossSwift's `xcodebuild` CLI (`-destination generic/platform=Android`;
+see below). For standalone Gradle integration, the
+[Android Counter example](Examples/AndroidCounter/README.md) builds a multi-ABI
+APK using `CROSS_SWIFTUI_ANDROID=1`, `SwiftUIAndroid`, and Jetpack Compose. See
+[docs/ANDROID.md](docs/ANDROID.md) for the Android architecture, dual Material 3 /
+iOS Liquid Glass rendering modes, and build settings.
 
-## Build an `.xcodeproj` for Windows, Linux, Wasm & HarmonyOS
+## Build an `.xcodeproj` for Windows, Linux, Wasm, HarmonyOS & Android
 
-CrossSwiftUI provides a cross-platform **`xcodebuild`-compatible CLI**
-(`CrossXcodeBuild` / `CrossXcodeBuildCLI`) that compiles unmodified macOS
-`.xcodeproj` projects (classic groups or Xcode 16 synchronized folders) into
-self-contained Windows, Linux, WebAssembly, or HarmonyOS output directories
-with zero platform-specific configuration in the app project:
+CrossSwift provides a cross-platform **`xcodebuild`-compatible CLI**
+(`CrossXcodeBuild` / `CrossXcodeBuildCLI`) that compiles unmodified macOS/iOS
+`.xcodeproj` and `.xcworkspace` projects (classic groups or Xcode 16
+synchronized folders) into self-contained Windows, Linux, WebAssembly,
+HarmonyOS, or Android artifacts with zero platform-specific configuration in the
+app project:
 
 ```bash
 # List targets, configurations, and schemes (Apple-compatible text or JSON)
@@ -216,17 +237,21 @@ xcodebuild -project Examples/XcodeDemo/XcodeDemo.xcodeproj \
   -derivedDataPath build clean build
 ```
 
-When run from source via SwiftPM (`swift run xcodebuild ...`), or installed as
-`xcodebuild`, `CrossXcodeBuild`:
+> On macOS, `/usr/bin/xcodebuild` is Apple's Xcode tool; invoke CrossSwift's CLI
+> via `swift run xcodebuild ...` (or its built binary path).
 
-- Parses `project.pbxproj` (plus `.xcconfig`, `Package.resolved`, and
-  `Info.plist` keys) in pure Swift with no Xcode dependency.
+When invoked, `CrossXcodeBuild`:
+
+- Parses `project.pbxproj` (plus `.xcworkspace`, `.xcconfig`,
+  `Package.resolved`, and `Info.plist` keys) in pure Swift with no Xcode
+  dependency.
 - Maps imported Apple frameworks (`SwiftUI`, `AppKit`, `CryptoKit`, `Combine`,
-  `CoreGraphics`, `SQLite3`, etc.) to `CrossSwiftUI` products and omits
-  Darwin-only conditional SPM dependencies.
+  `CoreGraphics`, `SQLite3`, and `AppleShims` modules) to products of the
+  `CrossSwiftUI` SwiftPM package, adapts local SwiftPM dependencies, and omits
+  Darwin-only conditional packages.
 - Synthesizes `Info.plist`, `GeneratedAssetSymbols.swift`, `.colorset` /
-  `.imageset` / `.xcstrings` runtime assets, multi-size Windows `AppIcon.ico`
-  + Win32 manifest/version resource (`AppResources.rc`), and Linux
+  `.imageset` / PDF vector / `.xcstrings` runtime assets, multi-size Windows
+  `AppIcon.ico` + Win32 manifest/version resource (`AppResources.rc`), and Linux
   `.desktop` + `hicolor` PNG icons.
 - Stages a self-contained output directory at
   `<CONFIGURATION_BUILD_DIR>/<ProductName>/` (defaulting to
@@ -243,54 +268,76 @@ When run from source via SwiftPM (`swift run xcodebuild ...`), or installed as
     Swift/Foundation musl archives, plus a ready-to-assemble Stage-model
     HarmonyOS project (`AppScope/`, `entry/src/main/cpp/`, `entry/src/main/ets/`,
     `rawfile/Resources/`). When DevEco Studio is installed (`DEVECO_STUDIO_HOME`
-    or `/Applications/DevEco-Studio.app/Contents`), `ohpm` + `hvigorw` are
-    invoked automatically to produce the `.hap`.
+    or `/Applications/DevEco-Studio.app/Contents`), `ohpm` + `hvigorw` run
+    automatically to produce `<ProductName>.hap`.
   - **Android** (`-destination generic/platform=Android` or `-sdk android`):
-    self-contained Gradle Android project (`app/`, `gradlew`, `jniLibs/<abi>/lib<Product>.so`,
-    `libc++_shared.so`, `assets/Resources/`, Jetpack Compose `MainActivity.kt`)
-    plus the assembled `<ProductName>.apk` (pass `ANDROID_ABIS=arm64-v8a,x86_64`
-    for multi-ABI builds).
+    self-contained Gradle Android project (`app/`, `gradlew`,
+    `jniLibs/<abi>/lib<Product>.so`, `libc++_shared.so`, `assets/Resources/`,
+    Jetpack Compose `MainActivity.kt`) plus `<ProductName>.apk` (pass
+    `ANDROID_ABIS=arm64-v8a,x86_64` for multi-ABI builds).
 
 [`Examples/XcodeDemo`](Examples/XcodeDemo/XcodeDemo.xcodeproj) is an unmodified
 macOS Xcode project that builds with Apple's `xcodebuild` on macOS and with
-CrossSwiftUI's `xcodebuild` for Windows, Linux, WebAssembly, and HarmonyOS.
+CrossSwift's `xcodebuild` for Windows, Linux, WebAssembly, HarmonyOS, and
+Android.
 
 ## Repository layout
 
-```
-Sources/SwiftUIRuntime/      view protocol, element tree, layout, diff, state
-Sources/CrossSwiftUI/        Windows and Linux drawing backends, app runner
-Sources/CrossAppKit/         cross-platform AppKit and Apple-framework shims
-Sources/CrossXcodeBuild/     zero-config .xcodeproj parser, driver & stager
-Sources/CrossXcodeBuildCLI/  cross-platform `xcodebuild` executable
-Sources/SwiftUIWeb/          DOM renderer and WebAssembly app runner
-Sources/SwiftUIAndroid/      Compose host and Swift renderer integration
-Sources/CSwiftUIWindows/     generic GDI+ display list and native button bridge
-Sources/SwiftUI/             facade: `import SwiftUI`
-Examples/Counter/            the README program
-Examples/XcodeDemo/          unmodified macOS .xcodeproj built on Windows/Linux
-Examples/AndroidCounter/     Android Activity, APK build and smoke test
-Web/                         browser entry page
-Tests/SwiftUIRuntimeTests/   FakeBackend assertions for layout, diff and state
-Tests/CrossXcodeBuildTests/  unit tests for parser, loader & xcodebuild CLI
-docs/                        architecture, compatibility, divergences
+```text
+Sources/SwiftUIRuntime/       platform-independent SwiftUI engine (views, layout, diff, state)
+Sources/SwiftUIRuntimeMacros/ compiler-plugin macros (@Entry, #Preview; no swift-syntax dep)
+Sources/CrossSwiftUI/         desktop NativeAPI backends (Windows/Linux), runner, AppKit hosting
+Sources/CSwiftUIWindows/      Win32/GDI+ retained display list, text & control compositing bridge
+Sources/CrossAppKit/          cross-platform AppKit views, windows, menus, TextKit & pasteboard
+Sources/AppKit/               `import AppKit` facade for Windows and Linux
+Sources/CAppKitWindows/       Win32/DWM/Shell/COM/Accessibility C++ glue for CrossAppKit & shims
+Sources/CrossFoundation/      Apple Foundation extensions on Windows and Linux
+Sources/AppleShims/           34 Apple system/framework compatibility modules (CoreText, IOKit, …)
+Sources/{CoreGraphics,Combine,CryptoKit,Carbon,UniformTypeIdentifiers,OSLog,os,SQLite3}/
+                              standalone Apple framework shims
+Sources/SwiftUIWeb/           WebAssembly DOM renderer and browser app runner
+Sources/SwiftUIAndroid/       Android JNI bridge and Jetpack Compose host (Material 3 / iOS style)
+Sources/CSwiftUIAndroid/      C header glue for Android JNI entry points
+Sources/SwiftUI/              `import SwiftUI` facade selecting the target platform backend
+Sources/CrossXcodeBuild/      pure-Swift .xcodeproj parser, package adapter, asset compiler & driver
+Sources/CrossXcodeBuildCLI/   cross-platform `xcodebuild` executable
+Examples/Counter/             minimal SwiftPM counter shared across desktop, Web, and Android
+Examples/XcodeDemo/           unmodified macOS .xcodeproj built for all five non-Apple targets
+Examples/DesktopUIGallery/    desktop SwiftUI component, layout, graphics & navigation gallery
+Examples/MobileUIGallery/     mobile SwiftUI gallery (iOS, Android, HarmonyOS dual-style showcase)
+Examples/{MenuBarDemo,NotesApp,MetricsDashboard,KanbanBoard}/
+                              unmodified macOS .xcodeproj apps verified on macOS, Windows & Linux
+Examples/AndroidCounter/      standalone Gradle + Swift Android SDK Activity example & smoke test
+Examples/HarmonyRuntimeProbe/ HarmonyOS Stage-model Swift runtime & ArkUI gallery probe
+Web/                          HTML host template for WebAssembly builds
+Tests/SwiftUIRuntimeTests/    headless FakeBackend tests for layout, diff, state & COMPAT.md
+Tests/CrossAppKitTests/       CrossAppKit geometry, appearance, font & asset resolution tests
+Tests/CrossXcodeBuildTests/   .xcodeproj parser, loader, adapter & xcodebuild CLI tests
+Tests/{Windows,Linux}DrawingTests/
+                              platform backend drawing, shadow, scroll & editor integration tests
+skills/xcodebuild/            agent skill for CrossSwift's `xcodebuild` CLI
+docs/                         architecture, Android backend, compatibility table & divergences
 ```
 
 ## Design in one paragraph
 
-A render pass evaluates bodies under scoped environment/state, resolves
-inherited properties, lays out the tree and diffs sibling identity. Backends
-receive incremental commands and the complete tree after diffing. Windows
-publishes a retained GDI+ display list. Linux paints the tree with Cairo and
-Pango in GTK. The Web backend retains DOM elements by node identity and
-positions them using the shared layout frames.
-FakeBackend records commands for platform-independent tests. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+A `SwiftUIRuntime` render pass evaluates view bodies under scoped environment,
+state, and `@Observable` tracking, resolves inherited properties, lays out the
+tree, hoists presentations, and diffs sibling identity. Platform backends
+consume incremental commands and/or the reconciled element tree: `CrossSwiftUI`
+publishes a retained GDI+ display list on Windows (`CSwiftUIWindows`) and paints
+with Cairo/Pango in GTK 3 on Linux while bridging `CrossAppKit` views and
+windows; `SwiftUIWeb` retains positioned DOM elements in the browser;
+`SwiftUIAndroid` and the HarmonyOS ArkUI host map semantic controls and layout
+frames to Jetpack Compose and ArkUI; and `FakeBackend` records commands for
+deterministic headless tests. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 ## Compatibility
 
 - API status: [docs/COMPAT.md](docs/COMPAT.md)
-- Known behavioural and visual gaps: [docs/DIVERGENCES.md](docs/DIVERGENCES.md)
+- Known behavioral and visual gaps: [docs/DIVERGENCES.md](docs/DIVERGENCES.md)
 - Architecture and update strategy: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
+- Android backend and Compose integration: [docs/ANDROID.md](docs/ANDROID.md)
 
 ## License
 

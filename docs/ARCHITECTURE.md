@@ -2,170 +2,212 @@
 
 **Unofficial; not affiliated with Apple.**
 
+English | [简体中文](./ARCHITECTURE-ZH.md)
+
+CrossSwift (`crossswift`, SwiftPM manifest `CrossSwiftUI`) separates the
+platform-independent declarative UI engine from platform backends, AppKit and
+Apple-framework compatibility shims, and the `.xcodeproj` build toolchain.
+
 ## Modules and boundaries
 
-- `SwiftUIRuntime`: platform-independent view values, builders, scoped
-  environment, state, element tree, layout and diff. No native API imports.
-- `CrossSwiftUI`: nativeapi window/application lifecycle and platform backends.
-- `SwiftUIWeb`: WebAssembly app hosting and a DOM renderer.
-- `SwiftUIAndroid`: Jetpack Compose hosting and a JNI bridge.
-- `CSwiftUIWindows`: generic Win32/GDI+ drawing, text measurement, edit and button
-  painting, focus and tooltip bridge. Owns no application design tokens,
-  components or theme recipes. Borrows the window/button HWNDs owned by nativeapi and owns EDIT children.
-- `SwiftUI`: facade exporting the shared runtime and selected backend.
+- `SwiftUIRuntime` + `SwiftUIRuntimeMacros`: platform-independent view values,
+  result builders, scoped `EnvironmentValues`, `@State` / `@Binding` /
+  `@FocusState`, `@Observable` (`@Bindable`) and `ObservableObject`, compiler
+  macros (`@Entry` and `#Preview` over Swift's JSON plugin wire protocol without
+  `swift-syntax`), element tree, layout engine, sibling diff, controls,
+  navigation, presentations, SVG/PDF vector parsing, embedded `SFSymbolCatalog`,
+  and `.xcstrings` localization (`XCStringsCatalog`). Imports no `NativeAPI`,
+  AppKit, browser, or Android APIs.
+- `CrossSwiftUI`: desktop (`NativeAPI`) integration for **Windows and Linux** —
+  `WindowsDrawingBackend`, `LinuxDrawingBackend`, `NativeViewBackend`, the
+  `App` / `WindowGroup` / `MenuBarExtra` scene runner (`runApp`), native window
+  dark/light chrome synchronization, and `CrossAppKit` hosting (`NSHostingView`,
+  `NSHostingController`, `NSViewRepresentable`, `NSApplicationDelegateAdaptor`,
+  plus `Color`/`Font`/`Image` ↔ `NSColor`/`NSFont`/`NSImage` conversions).
+- `CSwiftUIWindows`: generic Win32/GDI+ retained display list, buffered
+  `WM_PAINT` DIB compositor, text measurement, dual-pass matte transparent
+  `EDIT` compositing, borrowed `NativeAPI` `BUTTON` subclassing, focus/tooltip
+  bridge, and layered window shadow helper. Owns no application design tokens,
+  domain components, or theme recipes.
+- `CrossAppKit` + `AppKit` + `CAppKitWindows`: cross-platform AppKit views,
+  controls, windows/panels, menus, status items, TextKit 1/2, pasteboard,
+  workspace, colors/appearances, fonts, images, and Carbon global hotkeys over
+  `NativeAPI` (with Win32/DWM/Shell/COM/Accessibility glue in `CAppKitWindows`
+  on Windows). `CrossAppKit` compiles standalone on macOS for unit tests;
+  `AppKit` is the `import AppKit` facade on Windows and Linux.
+- `CrossFoundation` + framework shims: Apple `Foundation` extensions missing
+  from `swift-corelibs-foundation` on Windows/Linux, standalone framework
+  targets (`CoreGraphics`, `Combine`, `CryptoKit`, `Carbon`,
+  `UniformTypeIdentifiers`, `OSLog`, `os`, `SQLite3`), and 34 system/framework
+  shims under `Sources/AppleShims/`.
+- `SwiftUIWeb`: WebAssembly (`os(WASI)`) `WindowGroup` hosting, DOM renderer,
+  and web `.xcassets` / `.xcstrings` / SF Symbol loader via `JavaScriptKit`.
+- `SwiftUIAndroid` + `CSwiftUIAndroid`: Android JNI snapshot/event bridge
+  (`AndroidHost`) and Jetpack Compose host (`SwiftUIComposeHost`,
+  `AndroidStyleRenderers`) supporting live switching between Material 3 +
+  Navigation Compose and iOS 27 Liquid Glass styling. See [ANDROID.md](ANDROID.md).
+- `SwiftUI`: user-facing `import SwiftUI` facade on non-Apple targets,
+  re-exporting `Foundation` and `SwiftUIRuntime` together with `CrossSwiftUI`
+  (+ `CrossAppKit`, `CrossFoundation`, `CoreGraphics`) on Windows/Linux,
+  `SwiftUIWeb` on WASI, `SwiftUIAndroid` on Android, or `SwiftUIRuntime` under
+  `CROSS_SWIFTUI_HARMONY` for the HarmonyOS ArkUI host.
+- `CrossXcodeBuild` + `CrossXcodeBuildCLI`: pure-Swift `.xcodeproj` /
+  `.xcworkspace` parser, Apple-framework & SwiftPM dependency adapter,
+  `.xcassets` / `.xcstrings` / icon compiler, and the `xcodebuild` CLI driver
+  for Windows, Linux, WebAssembly, HarmonyOS (`HarmonyBuilder`), and Android
+  (`AndroidBuilder`).
 
-macOS builds runtime tests and the Counter example against Apple's SwiftUI.
-Windows, Linux, WebAssembly and Android use the facade. A host library owns
-its own components and styles. See [ANDROID.md](ANDROID.md) for the Activity
-lifecycle and Android milestones.
+On macOS, `swift build` / `swift test` builds `SwiftUIRuntime`, `CrossAppKit`,
+`CrossXcodeBuild` (`xcodebuild`), their test suites, and `Counter` compiled
+against Apple's native SwiftUI. Windows, Linux, WebAssembly, HarmonyOS, and
+Android builds consume CrossSwift's `SwiftUI` (and `AppKit` on desktop) facades.
 
 ## Render pass
 
 1. Begin state collection. Install stored wrappers by structural path, concrete
-   view type and property position before evaluating each body.
-2. Track state reads while evaluating bodies and modifiers under scoped
-   EnvironmentValues. A local write invalidates its readers and ancestors;
-   unaffected branches retain their element trees, state and lifecycle entries.
-   ObservableObject and untracked geometry-state writes invalidate conservatively.
-3. Normalize fragments, retain both slots of view layers, and resolve inherited foreground, disabled, visibility and alpha values.
-4. Compute layout, evaluate geometry children, hoist presentations, prune state
+   view type, and property position before evaluating each body.
+2. Track `@State` and `@Observable` reads while evaluating bodies and modifiers
+   under scoped `EnvironmentValues`. A local write invalidates its readers and
+   ancestors; unaffected branches retain their element trees, state, and
+   lifecycle entries. `ObservableObject` and untracked geometry-state writes
+   invalidate conservatively.
+3. Normalize fragments (preserving explicit IDs and tags), retain both slots of
+   view layers, and resolve inherited foreground, color scheme, disabled,
+   visibility, and alpha values.
+4. Compute layout, evaluate geometry children, hoist presentations, prune state,
    and assign sibling diff keys. The drawing backends supply native text
-   measurers; deterministic metrics serve engine tests.
-5. Diff against the mounted tree, retaining NodeIDs for matched elements.
+   measurers; deterministic metrics serve headless engine tests.
+5. Diff against the mounted tree, retaining `NodeID`s for matched elements.
    Keys are local to sibling lists; an unchanged sibling order uses a linear
    path without key dictionaries or move-list scans.
 6. Publish the updated tree and callbacks, send backend commands, then call
    `didRender(root)`. Rendering guards coalesce writes made during a pass;
    the Windows bridge batches deferred native notifications from a message turn.
 
-Commands are create, insert, remove, move, setProps and setFrame. Removing a
-node disposes its subtree. Actions are looked up by retained NodeID, so a
-native callback never needs an old body closure. Reentrant writes are coalesced
-into at most eight follow-up render passes.
+Commands are `create`, `insert`, `remove`, `move`, `setProps`, and `setFrame`.
+Removing a node disposes its subtree. Actions are looked up by retained
+`NodeID`, so a native callback never invokes a stale body closure. Reentrant
+writes are coalesced into at most eight follow-up render passes.
 
 ## Windows backend
 
-`WindowsDrawingBackend` sets nativeapi's content view to absolute layout and
-publishes a retained display list after each diff. The bridge reparents borrowed
-button HWNDs directly; NativeAPI retains their lifetime/events, while SwiftUI
-owns layout without enrolling controls in a second layout tree. Shapes and Text share the
-surface; padding/frame/layer nodes determine paint order and coordinates.
-Native BUTTON HWNDs are created only for new button IDs and retained across
-state, theme and resize changes. Removed controls unregister listeners and
-subclasses before disposal. The renderer remains alive through the native
-application loop.
+`WindowsDrawingBackend` (in `CrossSwiftUI`) sets `NativeAPI`'s content view to
+absolute layout and publishes a retained display list after each diff. The
+bridge reparents borrowed button HWNDs directly; `NativeAPI` retains their
+lifetime and events, while `SwiftUIRuntime` owns layout without enrolling
+controls in a second layout tree. Shapes and `Text` share the surface;
+padding/frame/layer nodes determine paint order and coordinates. Native `BUTTON`
+HWNDs are created only for new button IDs and retained across state, theme, and
+resize changes. Hosted `CrossAppKit` views (`NSViewRepresentable`) mount once
+per host identity and update in place, while `NSHostingView` and
+`NSHostingController` embed independent `Renderer` instances inside AppKit
+windows and panels (including borderless per-pixel alpha windows with layered
+alpha-silhouette shadows). Removed controls unregister listeners and subclasses
+before disposal.
 
-`CSwiftUIWindows` subclasses the content HWND for buffered WM_PAINT. A retained
-physical-pixel DIB is shared by the host and owner-drawn buttons. Display-list
-comparison invalidates only changed ink bounds. Structural/clip/transform changes
-repaint their common enclosing clip, or the full viewport when none is available.
-Painting clips to the accumulated damage and reuses bounded font resources.
-ScrollView controls share a fixed viewport and translated content HWND, including
-nested scroll views. Scrolling moves the content host instead of every button;
-viewport clipping and Tab eligibility keep offscreen controls out of input.
-Translations use DeferWindowPos without intermediate redraws. The content host
-copies the shared framebuffer once per damaged frame; independent EDITs and
-unstyled buttons retain native painting. Styled buttons can also copy their
-rectangle for native exposure/print messages. The native control still
-handles mouse capture, Space activation, enabled state and BN_CLICKED. The
+`CSwiftUIWindows` subclasses the content HWND for buffered `WM_PAINT`. A
+retained physical-pixel DIB is shared by the host, owner-drawn buttons, and
+transparently composited `EDIT` controls (rendered over the canvas backdrop via
+dual-pass matte extraction so custom search bars, placeholders, scroll views,
+and disabled states blend cleanly). Display-list comparison invalidates only
+changed ink bounds. Structural/clip/transform changes repaint their common
+enclosing clip, or the full viewport when none is available. Painting clips to
+the accumulated damage and reuses bounded font resources. `ScrollView` controls
+share a fixed viewport and translated content HWND, including nested scroll
+views. Scrolling moves the content host instead of every button; viewport
+clipping and Tab eligibility keep offscreen controls out of input. Translations
+use `DeferWindowPos` without intermediate redraws. The native `BUTTON` still
+handles mouse capture, Space activation, enabled state, and `BN_CLICKED`; the
 bridge adds Enter activation, ordered Tab navigation, hover/pressed/focus
-callbacks, rounded hit regions and tooltips. EDIT notifications update bindings
-after the native message unwinds, so a render can safely remove old controls.
-Deferred focus events are checked against current HWND focus. Host events route
-scrolling, gestures and shortcuts through the renderer. No global input is injected.
+callbacks, rounded hit regions, and tooltips. `EDIT` notifications update
+bindings after the native message unwinds, so a render can safely remove old
+controls. Deferred focus events are checked against current HWND focus. Host
+events route scrolling, gestures, and shortcuts through the renderer. No global
+input is injected.
 
 Only controls intersecting the viewport acquire native handles; existing handles
-remain retained when scrolled away. Unchanged labels, frames, z-order and hit
+remain retained when scrolled away. Unchanged labels, frames, z-order, and hit
 regions skip native mutations. Local button regions exclude clipping already
-performed by their viewport, so scrolling does not rebuild per-button HRGNs.
-Offscreen text/images/shapes and transparent
-layout boxes do not generate drawing commands. Lazy containers still construct
-all children initially; local state can reuse their unchanged branches.
-A focused container chooses one
-native descendant, rather than requesting focus on every child.
+performed by their viewport, so scrolling does not rebuild per-button `HRGN`s.
+Offscreen text/images/shapes and transparent layout boxes do not generate
+drawing commands. Within a `ScrollView`, `LazyVStack` virtualizes large
+`ForEach` collections using cached item-height estimates and a viewport buffer,
+while `LazyHStack`, `LazyVGrid`, and `LazyHGrid` evaluate children eagerly.
+A focused container chooses one native descendant rather than requesting focus
+on every child.
 
 `App.main` configures per-monitor V2 DPI awareness before application/window
 initialization. Embedders should call `WindowsDrawingBackend.prepareApplication()`
-before creating native windows, or provide their own DPI-aware application manifest.
-All geometry is in logical points. Painting scales using GetDpiForWindow;
-the drawing bridge converts borrowed button frames to the same device coordinates. Native text
-measurement uses the same font choice as painting. Resize uses the window's
-content size, not the event's decorated frame size. Framebuffer copies specify
-both rectangles in pixels, avoiding GDI+'s implicit image-DPI scaling. Display
-lists publish after native control updates, so intermediate messages still paint
-the previous complete frame.
+before creating native windows, or provide their own DPI-aware application
+manifest. All geometry is in logical points. Painting scales using
+`GetDpiForWindow`; the drawing bridge converts borrowed control frames to the
+same device coordinates. Native text measurement uses the same font choice as
+painting. Resize uses the window's content size, not the event's decorated frame
+size. Framebuffer copies specify both rectangles in pixels, avoiding GDI+'s
+implicit image-DPI scaling. Display lists publish after native control updates,
+so intermediate messages still paint the previous complete frame.
 
-The backend's activate/nativeButton/advanceFocus methods allow integration
-tests scoped to their own controls. Public core API and generated bindings
-are unchanged by this drawing backend.
+The backend's `activate`/`nativeButton`/`advanceFocus` methods allow integration
+tests scoped to their own controls. Public `NativeAPI` core APIs and generated
+bindings remain decoupled from the SwiftUI display-list renderer.
 
 ## Linux backend
 
-`LinuxDrawingBackend` hosts a GTK drawing area in the nativeapi window. Cairo
-paints the shared tree, and Pango supplies text measurement and rendering.
-Retained GTK buttons and editors follow the shared layout, with GTK providing
-keyboard focus, activation, native text entry and AT-SPI names. Pointer and
-scroll events go through the runtime hit tester. GLib coalesces renders into
-an idle callback, services the Swift main queue and schedules animated redraws.
-See [DIVERGENCES.md](DIVERGENCES.md) for platform limits.
+`LinuxDrawingBackend` (in `CrossSwiftUI`) hosts a GTK 3 drawing area in the
+`NativeAPI` window. Cairo paints the reconciled element tree (including view
+masks and cached Gaussian-approximated shadow masks), and Pango supplies text
+measurement and rendering. Retained GTK buttons, entries, and text views follow
+the shared layout, with GTK providing keyboard focus, activation, native text
+entry, multiline placeholder overlays, and AT-SPI names. Pointer and scroll
+events go through the runtime hit tester. GLib coalesces renders into an idle
+callback, services the Swift main queue, and schedules animated redraws. See
+[DIVERGENCES.md](DIVERGENCES.md) for platform limits.
 
 ## State, layout and testing
 
-State uses a process-wide registry for one renderer. Bindings are get/set
-closures; focus bindings wrap State. Environment values are saved/restored
-around subtrees. `.id` and ForEach identifiers scope both diff identity and stored state.
-The runtime interns paths by parent and child key, keeping state lookups
-independent of view depth. Reevaluation retains subscriptions to state values
-the same view still reads.
-Published values invalidate the active renderer; StateObject initialization is lazy.
-Writes from one action or native notification batch are published together.
-ScrollView retains its stored content when only its internal offset changes.
-Lifecycle callbacks commit after mounting, and the Windows timer services tasks
-and a limited set of animated drawing properties.
+`StateRegistry` is process-wide, with state retention and lifecycle ownership
+isolated per `Renderer` root so multiple windows, `MenuBarExtra` hosts, and
+`NSHostingView` instances maintain independent `@State` and `.onAppear` /
+`.onDisappear` / `.task` lifecycles while sharing `@Observable` and
+`ObservableObject` models. Bindings are get/set closures; focus bindings wrap
+state. Environment values are saved and restored around subtrees. `.id` and
+`ForEach` identifiers scope both diff identity and stored state. The runtime
+interns paths by parent and child key, keeping state lookups independent of view
+depth. Reevaluation retains subscriptions to state values the same view still
+reads. Published and `@Observable` writes invalidate observing renderers;
+`StateObject` initialization is lazy. Writes from one action or native
+notification batch are published together. `ScrollView` retains its stored
+content when only its internal offset changes. Lifecycle callbacks commit after
+mounting, and native run-loop timers service tasks plus property and layout
+animations.
 
 Stack measurement sums main-axis sizes and takes the largest cross-axis size.
-Padding adds insets; frames constrain/alignment-place a child; layers measure
-the base view only. Flexible frames/spacers consume remaining proposed space.
-This is deliberately smaller than SwiftUI's layout system.
-Measurements are cached by proposal and sizing inputs. Wrapped text and its
-measured size share a cache across measurement and placement. Rebuilt
-GeometryReader content can keep layout identities when its sizing inputs match.
-Placement snapshots copy
-geometry into the new tree without replacing callbacks or visual properties.
-Unchanged evaluation revisions reuse mounted subtrees when inherited properties
-also match. Moving them translates their frames; resizing reflows them. Their
-diffs and key assignment are skipped only while geometry remains unchanged.
-Changed text, fonts, constraints, alignment, scroll offsets and child identities
+Padding adds insets; frames constrain and alignment-place a child; layers
+measure the base view only. Flexible frames and spacers consume remaining
+proposed space. Custom `Layout` implementations are probed for axis flexibility
+rather than assumed to expand horizontally. Measurements are cached by proposal
+and sizing inputs. Wrapped text and its measured size share a cache across
+measurement and placement. Rebuilt `GeometryReader` content keeps layout
+identities when its sizing inputs match. Placement snapshots copy geometry into
+the new tree without replacing callbacks or visual properties. Unchanged
+evaluation revisions reuse mounted subtrees when inherited properties also
+match: moving them translates their frames, and resizing reflows them. Changed
+text, fonts, constraints, alignment, scroll offsets, and child identities
 invalidate the relevant caches. Opaque custom layout/guide closures take the
-conservative path. GeometryReader snapshots retain state and
-lifecycle registrations when reused; size changes re-evaluate their content.
-Readers of global/named positions re-evaluate when coordinates change, while
-escaped proxies keep current coordinates after cached translation. Obsolete
-layout cache entries are reclaimed every eight passes; changing the text
-measurer or fallback metrics clears them immediately.
+conservative path. Obsolete layout cache entries are reclaimed every eight
+passes; changing the text measurer or fallback metrics clears them immediately.
 
-The Linux drawing backend consumes the reconciled tree directly. It skips
-incremental commands while preserving the mounted IDs used for native input.
-When scrolling only translates an existing subtree, it updates native control
-positions and redraws the affected viewport.
+On Windows, integer-pixel scrolls can reuse the framebuffer's interior when
+visible paint commands and clip stacks are exact translations over a uniform
+backdrop without intersecting stationary overlays; exposed strips, edges, and
+scroll indicators repaint, and pixel regression tests compare reuse against
+fresh rendering.
 
-Integer-pixel scrolls can reuse the framebuffer's interior. The bridge verifies
-that visible paint commands and their clip stacks are exact translations, that
-the backdrop is uniform, and that no stationary overlay intersects the copy.
-Exposed strips, edges and scroll indicators repaint. Content edits, fractional
-pixel shifts, transforms, complex backgrounds and unpainted intermediate frames
-fall back to normal drawing. Pixel regression tests compare reuse with fresh
-rendering, including alpha, text, reverse scrolling and unsafe cases.
-
-The runtime suite covers layout, diffing, state lifetime, environment scope,
-custom modifiers, button styles and compatibility documentation. Native apps
-can use the Windows backend to test real HWND activation and stable handles.
-`Counter --smoke` opens a real window and exits after three seconds, exercising
-the native application loop. Test metrics and actual font measurements are
-distinct: headless assertions are not pixel conformance claims.
-`Renderer.lastTimings` reports evaluation, environment, layout, finalization,
-diff and backend publication in milliseconds; actual native painting is measured
-separately by host integration benchmarks. Compare like build configurations.
-`WindowsDrawingBackend.lastTimings` separates preparation, display-list recording,
-control synchronization and publication. `lastPaintTimings` reports raster/copy
-CPU time and paint count; `lastReusedPixels` reports successful scroll reuse.
+The test suites cover runtime layout, diffing, multi-window state isolation,
+environment scope, observation, controls/containers, `CrossAppKit` shims,
+`CrossXcodeBuild` project parsing/adaptation, Windows/Linux drawing, and
+[`COMPAT.md`](COMPAT.md) symbol verification (`COMPATTests`). `Counter --smoke`
+opens a real window and exits after three seconds to exercise the native
+application loop. `Renderer.lastTimings`, `WindowsDrawingBackend.lastTimings`,
+`lastPaintTimings`, and `lastReusedPixels` expose frame and rasterization
+telemetry.

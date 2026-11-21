@@ -1,5 +1,7 @@
 # Android Counter
 
+English | [简体中文](./README-ZH.md)
+
 This Android Activity displays the shared [CounterView](../Counter/CounterView.swift)
 from the desktop and web examples. The view imports `SwiftUI` and keeps the count
 in Swift `@State`. The Activity displays the label and buttons using Jetpack
@@ -47,7 +49,8 @@ On each size change and button activation, the Swift renderer updates the
 layout and sends a snapshot over JNI. The host keys composables by the
 renderer’s node IDs and uses a custom Compose layout to apply the Swift frames.
 `@State` lives for the mounted host, so Activity recreation starts a
-new count. See the [Android compatibility plan](../../docs/ANDROID.md) for the
-supported subset and next milestones.
+new count. See the [Android backend documentation](../../docs/ANDROID.md) for
+dual Material 3 / iOS Liquid Glass styling, `.xcodeproj` APK builds, and host
+integration details.
 
 [swift-android]: https://www.swift.org/documentation/articles/swift-sdk-for-android-getting-started.html
