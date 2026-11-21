@@ -123,15 +123,18 @@ swift run --build-system native Counter --smoke
 ```bash
 swift sdk install https://download.swift.org/swift-6.4.2-release/wasm-sdk/swift-6.4.2-RELEASE/swift-6.4.2-RELEASE_wasm.artifactbundle.tar.gz \
   --checksum 83baca83553f8c443cda7b84800912e6e709c3acd2e7ebf277794ca5836c0da5
-./scripts/build-web.sh
-python3 -m http.server 8000 --directory .build/web
+swift run xcodebuild \
+  -project Examples/XcodeDemo/XcodeDemo.xcodeproj \
+  -scheme XcodeDemo \
+  -configuration Release \
+  -destination generic/platform=Wasm \
+  -derivedDataPath build clean build
+python3 -m http.server 8000 --directory build/Build/Products/Release/XcodeDemo
 ```
 
-在 macOS 上若使用 Swiftly，可通过 `swiftly run ./scripts/build-web.sh +6.4.2` 指定 Swift.org 工具链。打开 [localhost:8000](http://localhost:8000) 即可体验 `Counter`，也可将 `.build/web` 部署至任意静态 HTTP 服务器。
+打开 [localhost:8000](http://localhost:8000) 即可体验 `XcodeDemo`，也可将该目录直接部署至任意静态 HTTP 服务器。Web 构建不需要 `nativeapi` 检出目录。浏览器端的具体限制请参见 [docs/DIVERGENCES-ZH.md](docs/DIVERGENCES-ZH.md)。
 
-`scripts/build-web.sh` 通过 `CROSS_SWIFTUI_WEB=1` 选择 Web 包依赖图，使用独立的 SwiftPM 构建缓存目录，并通过 JavaScriptKit 完成打包（支持可选参数，如 `./scripts/build-web.sh Counter debug`）。Web 构建不需要 `nativeapi` 检出目录。浏览器端的具体限制请参见 [docs/DIVERGENCES-ZH.md](docs/DIVERGENCES-ZH.md)。
-
-若在独立 SwiftPM Web 包中使用，请添加本包的 `SwiftUI` 产物与 JavaScriptKit 的 `PackageToJS` 插件依赖，在执行 `swift package --swift-sdk <id> js` 时设置 `CROSS_SWIFTUI_WEB=1`，并参考 [Web/index.html](Web/index.html) 编写宿主页面。
+若在无 `.xcodeproj` 的独立 SwiftPM Web 包中使用，请添加本包的 `SwiftUI` 产物与 JavaScriptKit 的 `PackageToJS` 插件依赖，在执行 `swift package --swift-sdk <id> js` 时设置 `CROSS_SWIFTUI_WEB=1`，并参考 [Web/index.html](Web/index.html) 编写宿主页面。
 
 ## 构建 Android 版本
 

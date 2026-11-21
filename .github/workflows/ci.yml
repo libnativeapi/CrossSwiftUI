@@ -55,8 +55,17 @@ jobs:
           swift sdk install https://download.swift.org/swift-6.4.2-release/wasm-sdk/swift-6.4.2-RELEASE/swift-6.4.2-RELEASE_wasm.artifactbundle.tar.gz \
             --checksum 83baca83553f8c443cda7b84800912e6e709c3acd2e7ebf277794ca5836c0da5
 
-      - name: Build Counter for the browser
-        run: ./scripts/build-web.sh
+      - name: Build XcodeDemo for the browser via xcodebuild
+        run: |
+          swift run xcodebuild \
+            -project Examples/XcodeDemo/XcodeDemo.xcodeproj \
+            -scheme XcodeDemo \
+            -configuration Release \
+            -destination generic/platform=Wasm \
+            -derivedDataPath build \
+            clean build
+          test -f build/Build/Products/Release/XcodeDemo/index.html
+          test -f build/Build/Products/Release/XcodeDemo/app/XcodeDemo.wasm
 
   linux:
     name: build and smoke (Linux, GTK 3)

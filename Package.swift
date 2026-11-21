@@ -45,6 +45,19 @@ import PackageDescription
 let buildForAndroid = ProcessInfo.processInfo.environment["CROSS_SWIFTUI_ANDROID"] == "1"
 let buildForWeb = !buildForAndroid && ProcessInfo.processInfo.environment["CROSS_SWIFTUI_WEB"] == "1"
 let buildForDesktop = !buildForWeb && !buildForAndroid
+let explicitNativeAPIPath = ProcessInfo.processInfo.environment["NATIVEAPI_SWIFT_PATH"]
+#if os(macOS)
+let buildDesktopNative = false
+#else
+let defaultNativeAPIManifest = URL(fileURLWithPath: #filePath)
+  .deletingLastPathComponent()
+  .deletingLastPathComponent()
+  .appendingPathComponent("nativeapi/bindings/swift/Package.swift")
+  .path
+let buildDesktopNative = buildForDesktop
+  && (explicitNativeAPIPath != nil || FileManager.default.fileExists(atPath: defaultNativeAPIManifest))
+#endif
+
 var packageDependencies: [Package.Dependency] = []
 if buildForWeb {
   packageDependencies = [
@@ -52,12 +65,11 @@ if buildForWeb {
   ]
 }
 #if !os(macOS)
-if buildForDesktop {
+if buildDesktopNative {
   packageDependencies = [
     .package(
       name: "NativeAPI",
-      path: ProcessInfo.processInfo.environment["NATIVEAPI_SWIFT_PATH"]
-        ?? "../nativeapi/bindings/swift")
+      path: explicitNativeAPIPath ?? "../nativeapi/bindings/swift")
   ]
 }
 #endif
@@ -78,12 +90,17 @@ var products: [Product] = [
 ]
 
 var crossAppKitDependencies: [Target.Dependency] = []
-if buildForDesktop {
+#if os(macOS)
+let buildCrossAppKit = buildForDesktop
+#else
+let buildCrossAppKit = buildDesktopNative
+#endif
+if buildCrossAppKit {
   products.append(.library(name: "CrossAppKit", targets: ["CrossAppKit"]))
 }
 
 #if os(Windows)
-if buildForDesktop {
+if buildDesktopNative {
   targets.append(
     .target(
       name: "CAppKitWindows",
@@ -138,7 +155,7 @@ let drawingDependencies: [Target.Dependency] = ["CSwiftUIWindows"]
 #elseif !os(macOS)
 let drawingDependencies: [Target.Dependency] = []
 #if os(Linux)
-if buildForDesktop {
+if buildDesktopNative {
   targets.append(
     .target(
       name: "SQLite3",
@@ -184,7 +201,7 @@ if buildForWeb {
 }
 
 #if !os(macOS)
-if buildForDesktop {
+if buildDesktopNative {
   crossAppKitDependencies.append(.product(name: "NativeAPI", package: "NativeAPI"))
   crossAppKitDependencies.append("CoreGraphics")
   crossAppKitDependencies.append("UniformTypeIdentifiers")
@@ -321,7 +338,7 @@ if buildForDesktop {
 }
 #endif
 
-if buildForDesktop {
+if buildCrossAppKit {
   targets += [
     .target(
       name: "CrossAppKit",
@@ -331,6 +348,11 @@ if buildForDesktop {
       name: "CrossAppKitTests",
       dependencies: ["CrossAppKit"]
     ),
+  ]
+}
+
+if buildForDesktop {
+  targets += [
     .target(
       name: "CrossXcodeBuild",
       dependencies: ["SwiftUIRuntime"]
@@ -350,7 +372,12 @@ if buildForDesktop {
   ]
 }
 
-if !buildForAndroid {
+#if os(macOS)
+let buildCounter = !buildForAndroid
+#else
+let buildCounter = buildForWeb || buildDesktopNative
+#endif
+if buildCounter {
   targets.append(
     .executableTarget(
       name: "Counter",

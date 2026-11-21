@@ -165,24 +165,24 @@ on macOS or Linux, with Node.js and npm for packaging:
 ```bash
 swift sdk install https://download.swift.org/swift-6.4.2-release/wasm-sdk/swift-6.4.2-RELEASE/swift-6.4.2-RELEASE_wasm.artifactbundle.tar.gz \
   --checksum 83baca83553f8c443cda7b84800912e6e709c3acd2e7ebf277794ca5836c0da5
-./scripts/build-web.sh
-python3 -m http.server 8000 --directory .build/web
+swift run xcodebuild \
+  -project Examples/XcodeDemo/XcodeDemo.xcodeproj \
+  -scheme XcodeDemo \
+  -configuration Release \
+  -destination generic/platform=Wasm \
+  -derivedDataPath build clean build
+python3 -m http.server 8000 --directory build/Build/Products/Release/XcodeDemo
 ```
 
-With Swiftly on macOS, `swiftly run ./scripts/build-web.sh +6.4.2` selects the
-Swift.org toolchain for this build. Open [localhost:8000](http://localhost:8000)
-to try `Counter`, or serve `.build/web` from any static HTTP host.
+Open [localhost:8000](http://localhost:8000) to try `XcodeDemo`, or serve the
+staged directory from any static HTTP host. Web builds require no `nativeapi`
+checkout. See [docs/DIVERGENCES.md](docs/DIVERGENCES.md) for browser-specific
+limits.
 
-`scripts/build-web.sh` selects the Web package graph (`CROSS_SWIFTUI_WEB=1`),
-uses a separate SwiftPM scratch directory, and packages the executable with
-JavaScriptKit (`./scripts/build-web.sh Counter debug`). Web builds require no
-`nativeapi` checkout. See [docs/DIVERGENCES.md](docs/DIVERGENCES.md) for
-browser-specific limits.
-
-For a separate SwiftPM Web package, depend on the `SwiftUI` product from this
-package and JavaScriptKit's `PackageToJS` plugin, set `CROSS_SWIFTUI_WEB=1` when
-invoking `swift package --swift-sdk <id> js`, and use [Web/index.html](Web/index.html)
-as a host page.
+For a standalone SwiftPM Web package (without an `.xcodeproj`), depend on the
+`SwiftUI` product from this package and JavaScriptKit's `PackageToJS` plugin, set
+`CROSS_SWIFTUI_WEB=1` when invoking `swift package --swift-sdk <id> js`, and use
+[Web/index.html](Web/index.html) as a host page.
 
 ## Build for Android
 
