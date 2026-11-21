@@ -387,7 +387,9 @@ drawing_probe_result drawing_probe(void) {
       }
     const int top_gap = min_ink_y;
     const int bottom_gap = px(30) - 1 - max_ink_y;
-    if (max_ink_y < min_ink_y || std::abs(top_gap - bottom_gap) > 1)
+    // A 1px ClearType grid-fit snap shifts top_gap by +1 and bottom_gap by -1
+    // (a difference of 2px), while uncentered WinAscent layout is off by 6+ px.
+    if (max_ink_y < min_ink_y || std::abs(top_gap - bottom_gap) > 2)
       ++p.result.pixel_errors;
   }
   Frame(p, false, 40);
