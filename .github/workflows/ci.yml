@@ -13,7 +13,7 @@ permissions:
 # brightness, clipboard, and frameless window APIs.
 env:
   NATIVEAPI_REPOSITORY: libnativeapi/nativeapi
-  NATIVEAPI_REF: 34c82eef9db6d49578c215bb9af2b49718688c32
+  NATIVEAPI_REF: f1741bfc34272d9e39eaa8d4395e261129ea2c74
 
 jobs:
   runtime-macos:

@@ -989,8 +989,8 @@ open class NSTextView: NSText {
     #if !os(macOS)
       if let editor = standaloneEditor {
         editor.setSelection(NativeAPI.TextRange(
-          start: UInt(max(0, charRange.location)),
-          length: UInt(max(0, charRange.length))
+          start: CUnsignedLong(max(0, charRange.location)),
+          length: CUnsignedLong(max(0, charRange.length))
         ))
         return
       }
@@ -1005,8 +1005,8 @@ open class NSTextView: NSText {
   public func selectAll(_ sender: Any?) {
     #if !os(macOS)
       if let editor = standaloneEditor {
-        let len = (editor.text as NSString).length
-        editor.setSelection(NativeAPI.TextRange(start: 0, length: UInt(len)))
+        let len = ((editor.text ?? "") as NSString).length
+        editor.setSelection(NativeAPI.TextRange(start: 0, length: CUnsignedLong(len)))
         localSelection = NSRange(location: 0, length: len)
         return
       }
