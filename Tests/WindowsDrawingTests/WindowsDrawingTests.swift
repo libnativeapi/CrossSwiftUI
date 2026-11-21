@@ -149,7 +149,9 @@ final class WindowsDrawingTests: XCTestCase {
   func testHighDpiPixelsAndHoverDoNotRepositionControls() {
     WindowsDrawingBackend.prepareApplication()
     let result = drawing_probe()
-    print("Windows drawing probe: \(result.dpi) DPI, \(result.hover_events) hover transitions")
+    print(
+      "Windows drawing probe: \(result.dpi) DPI, \(result.hover_events) hover transitions, "
+        + "boundary_errors=\(result.boundary_errors), ink_y=\(result.min_ink_y)...\(result.max_ink_y)")
     XCTAssertEqual(result.aware, 1, "Windows must use per-monitor V2 before creating HWNDs")
     XCTAssertGreaterThanOrEqual(result.dpi, 96)
     XCTAssertEqual(result.pixel_errors, 0, "The framebuffer must be copied at physical pixel size")
