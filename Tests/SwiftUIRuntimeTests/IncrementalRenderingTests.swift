@@ -1,5 +1,5 @@
 import XCTest
-#if canImport(CoreGraphics)
+#if (os(macOS) || os(iOS) || os(tvOS) || os(watchOS) || os(visionOS)) && canImport(CoreGraphics)
   import CoreGraphics
 #endif
 
