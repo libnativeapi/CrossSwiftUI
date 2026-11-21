@@ -84,7 +84,7 @@ private func skipWhitespaceAndComments(_ chars: [Character], from start: Int) ->
       i += 1
     } else if c == "/" && i + 1 < n && chars[i + 1] == "/" {
       i += 2
-      while i < n && chars[i] != "\n" { i += 1 }
+      while i < n && !chars[i].isNewline { i += 1 }
     } else if c == "/" && i + 1 < n && chars[i + 1] == "*" {
       i += 2
       var depth = 1
