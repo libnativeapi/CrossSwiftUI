@@ -292,14 +292,16 @@ private struct EntryListProbe: View {
     EntryItem(id: 1, name: "Alpha"),
     EntryItem(id: 2, name: "Beta"),
   ]
+  private var rows: some View {
+    ForEach($items) { $item in
+      Button("\(item.id):\(item.name)") {
+        item.name = "\(item.name)!"
+      }
+    }
+  }
   var body: some View {
     VStack {
-      ForEach($items) { $item in
-        let id = item.id
-        Button("\(id):\(item.name)") {
-          item.name = "\(item.name)!"
-        }
-      }
+      rows
     }
   }
 }
