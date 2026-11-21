@@ -255,47 +255,52 @@ final class CompatibilityExtensionsTests: XCTestCase {
   }
 
   func testEntryMacroAndForEachBindingProjection() throws {
-    struct Probe: View {
-      @Environment(\.testEntryCount) var count
-      @Environment(\.testEntryLabel) var label
-      @Environment(\.testEntryRef) var ref
-      var body: some View {
-        Text("\(count)-\(label ?? "nil")-\(ref?.tag ?? "none")")
-      }
-    }
-    struct Item: Identifiable {
-      let id: Int
-      var name: String
-    }
-    struct ListProbe: View {
-      @State var items: [Item] = [Item(id: 1, name: "Alpha"), Item(id: 2, name: "Beta")]
-      var body: some View {
-        VStack {
-          ForEach($items) { $item in
-            let id = item.id
-            Button("\(id):\(item.name)") {
-              item.name = "\(item.name)!"
-            }
-          }
-        }
-      }
-    }
-
-    let r1 = render(Probe())
+    let r1 = render(EntryProbe())
     XCTAssertNotNil(findNode(in: r1.tree!, text: "42-nil-none"))
 
     let r2 = render(
-      Probe()
+      EntryProbe()
         .environment(\.testEntryCount, 7)
         .environment(\.testEntryLabel, "ok")
         .environment(\.testEntryRef, NonSendableEntryBox(tag: "box"))
     )
     XCTAssertNotNil(findNode(in: r2.tree!, text: "7-ok-box"))
 
-    let r3 = render(ListProbe())
+    let r3 = render(EntryListProbe())
     let btn = try XCTUnwrap(findNode(in: r3.tree!, text: "1:Alpha"))
     r3.performTap(btn.id)
     XCTAssertNotNil(findNode(in: r3.tree!, text: "1:Alpha!"))
+  }
+}
+
+private struct EntryProbe: View {
+  @Environment(\.testEntryCount) var count
+  @Environment(\.testEntryLabel) var label
+  @Environment(\.testEntryRef) var ref
+  var body: some View {
+    Text("\(count)-\(label ?? "nil")-\(ref?.tag ?? "none")")
+  }
+}
+
+private struct EntryItem: Identifiable {
+  let id: Int
+  var name: String
+}
+
+private struct EntryListProbe: View {
+  @State var items: [EntryItem] = [
+    EntryItem(id: 1, name: "Alpha"),
+    EntryItem(id: 2, name: "Beta"),
+  ]
+  var body: some View {
+    VStack {
+      ForEach($items) { $item in
+        let id = item.id
+        Button("\(id):\(item.name)") {
+          item.name = "\(item.name)!"
+        }
+      }
+    }
   }
 }
 
