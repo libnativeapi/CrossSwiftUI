@@ -9,10 +9,11 @@ permissions:
   contents: read
 
 # Pin the workspace revision that exposes Swift main-queue pumping, RunLoopTimer,
-# borderless TextField styling, typography, accessibility, and view resize events.
+# borderless TextField styling, typography, accessibility, view resize events,
+# brightness, clipboard, and frameless window APIs.
 env:
   NATIVEAPI_REPOSITORY: libnativeapi/nativeapi
-  NATIVEAPI_REF: d2af2ffdbaa34379af3076704c34a9410611b77e
+  NATIVEAPI_REF: 34c82eef9db6d49578c215bb9af2b49718688c32
 
 jobs:
   runtime-macos:
@@ -60,7 +61,7 @@ jobs:
   linux:
     name: build and smoke (Linux, GTK 3)
     runs-on: ubuntu-latest
-    container: swift:6.0
+    container: swift:6.4.2-noble
     timeout-minutes: 30
     defaults:
       run:
@@ -84,7 +85,7 @@ jobs:
         run: |
           apt-get update
           apt-get install -y --no-install-recommends \
-            pkg-config libgtk-3-dev libx11-dev libxi-dev xvfb dbus
+            pkg-config libgtk-3-dev libsqlite3-dev libx11-dev libxi-dev xvfb dbus
 
       - name: Build
         run: swift build
@@ -145,11 +146,13 @@ jobs:
       - name: Show Swift version
         run: swift --version
 
+      # Visual Studio 18 (MSVC 14.52) STL requires Clang 22+, while Swift 6.4.2
+      # bundles Clang 21. Allow the compiler/STL version mismatch for C++ targets.
       - name: Build
-        run: swift build --build-system native
+        run: swift build --build-system native -Xcxx -D_ALLOW_COMPILER_AND_STL_VERSION_MISMATCH
 
       - name: Test
-        run: swift test --build-system native
+        run: swift test --build-system native -Xcxx -D_ALLOW_COMPILER_AND_STL_VERSION_MISMATCH
 
       - name: Smoke test
-        run: swift run --build-system native Counter --smoke
+        run: swift run --build-system native -Xcxx -D_ALLOW_COMPILER_AND_STL_VERSION_MISMATCH Counter --smoke
