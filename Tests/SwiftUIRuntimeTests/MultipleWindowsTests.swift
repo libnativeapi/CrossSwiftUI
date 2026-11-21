@@ -24,6 +24,7 @@ private struct WindowCounter: View {
 final class MultipleWindowsTests: XCTestCase {
   override func setUp() { StateRegistry.shared.reset() }
 
+  @MainActor
   func testWindowsKeepIndependentStateAndLifecyclesWhileSharingModels() {
     let model = SharedWindowModel()
     var appearances = 0

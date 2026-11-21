@@ -5,6 +5,7 @@ import NativeAPI
 import SwiftUIRuntime
 import XCTest
 
+@MainActor
 final class WindowsDrawingTests: XCTestCase {
   func testTransparentNativeButtonKeepsShortcutWithoutCoveringCanvas() throws {
     final class Model: ObservableObject {

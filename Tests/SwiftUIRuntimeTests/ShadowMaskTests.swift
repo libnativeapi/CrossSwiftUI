@@ -3,6 +3,7 @@ import XCTest
 
 @testable import SwiftUIRuntime
 
+@MainActor
 final class ShadowMaskTests: XCTestCase {
   private func mask(_ radius: Double, scale: Double = 1) throws -> ShadowMask {
     try XCTUnwrap(
