@@ -371,10 +371,8 @@ drawing_probe_result drawing_probe(void) {
     for (int x = px(5); x < px(120); ++x) {
       const auto expected =
           x >= px(20) && x < px(100) ? RGB(32, 128, 64) : RGB(16, 32, 48);
-      if (GetPixel(parent.dc, x, px(22)) != expected) {
+      if (GetPixel(parent.dc, x, px(22)) != expected)
         ++p.result.pixel_errors;
-        ++p.result.boundary_errors;
-      }
     }
     int min_ink_y = px(30), max_ink_y = -1;
     for (int y = 0; y < px(30); ++y)
@@ -382,13 +380,12 @@ drawing_probe_result drawing_probe(void) {
         const auto color = GetPixel(child.dc, x, y);
         if (color != GetPixel(parent.dc, x + px(20), y + px(20)))
           ++p.result.child_pixel_errors;
-        if (GetRValue(color) > 160 && GetBValue(color) > 160) {
+        // ClearType lights R and B subpixels independently on 1px stems at 96 DPI.
+        if (GetRValue(color) > 160 || GetBValue(color) > 160) {
           if (y < min_ink_y) min_ink_y = y;
           if (y > max_ink_y) max_ink_y = y;
         }
       }
-    p.result.min_ink_y = min_ink_y;
-    p.result.max_ink_y = max_ink_y;
     const int top_gap = min_ink_y;
     const int bottom_gap = px(30) - 1 - max_ink_y;
     if (max_ink_y < min_ink_y || std::abs(top_gap - bottom_gap) > 1)

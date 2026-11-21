@@ -5,7 +5,6 @@ extern "C" {
 #endif
 typedef struct {
   int dpi, aware, pixel_errors, child_pixel_errors;
-  int boundary_errors, min_ink_y, max_ink_y;
   int hover_events, position_changes, immediate_paints, clip_errors,
       atomic_errors;
   int damage_pixels, surface_pixels;
