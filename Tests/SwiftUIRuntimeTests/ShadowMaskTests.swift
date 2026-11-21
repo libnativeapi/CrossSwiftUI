@@ -3,7 +3,6 @@ import XCTest
 
 @testable import SwiftUIRuntime
 
-@MainActor
 final class ShadowMaskTests: XCTestCase {
   private func mask(_ radius: Double, scale: Double = 1) throws -> ShadowMask {
     try XCTUnwrap(
@@ -82,7 +81,7 @@ final class ShadowMaskTests: XCTestCase {
   }
 
   @MainActor
-  func testShadowCornerRadiusFollowsLayeredAndClippedSilhouettes() throws {
+  func testShadowCornerRadiusFollowsLayeredAndClippedSilhouettes() async throws {
     func shadowedCorner<V: View>(_ view: V) throws -> Double {
       let renderer = Renderer(
         backend: FakeBackend(), root: AnyView(view), size: Size(width: 300, height: 200))

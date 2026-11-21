@@ -30,7 +30,7 @@ private final class ExpandState {
 
 final class ControlsAndContainersTests: XCTestCase {
   @MainActor
-  func testGroupedFormTogglePickerAndSectionRenderAndMutate() {
+  func testGroupedFormTogglePickerAndSectionRenderAndMutate() async {
     struct FormDemo: View {
       @State var launchAtLogin = false
       @State var mode = "compact"
@@ -61,7 +61,7 @@ final class ControlsAndContainersTests: XCTestCase {
   }
 
   @MainActor
-  func testSafeAreaInsetUpdatesScrollContentInsetsAndScrollGeometry() {
+  func testSafeAreaInsetUpdatesScrollContentInsetsAndScrollGeometry() async {
     var capturedInsetTop: Double = -1
     var capturedOffset: Double = 999
 
@@ -104,7 +104,7 @@ final class ControlsAndContainersTests: XCTestCase {
   }
 
   @MainActor
-  func testLazyVStackVirtualizesLargeCollectionsInScrollView() {
+  func testLazyVStackVirtualizesLargeCollectionsInScrollView() async {
     var evaluatedCount = 0
     struct CountingRow: View {
       let index: Int
@@ -200,7 +200,7 @@ final class ControlsAndContainersTests: XCTestCase {
   }
 
   @MainActor
-  func testSidebarListSelectionSwitchesObservableTab() {
+  func testSidebarListSelectionSwitchesObservableTab() async {
     struct Sidebar: View {
       @Environment(SidebarTestNav.self) private var nav
       private var selection: Binding<SidebarTestTab?> {
@@ -269,7 +269,7 @@ final class ControlsAndContainersTests: XCTestCase {
   }
 
   @MainActor
-  func testSafeAreaInsetPreservesTextFieldIdentityAcrossCollapsedAndScrollSwap() {
+  func testSafeAreaInsetPreservesTextFieldIdentityAcrossCollapsedAndScrollSwap() async {
     struct PaletteShell: View {
       let model: PaletteModel
       var body: some View {
@@ -329,7 +329,7 @@ final class ControlsAndContainersTests: XCTestCase {
   }
 
   @MainActor
-  func testReentrantRenderIfNeededInsideOnChangeResizePublishesExpandedLayout() {
+  func testReentrantRenderIfNeededInsideOnChangeResizePublishesExpandedLayout() async {
     final class DirectPublishBackend: RenderBackend {
       var tapHandler: ((NodeID) -> Void)?
       var transactionHandler: ((() -> Void) -> Void)?
@@ -392,7 +392,7 @@ final class ControlsAndContainersTests: XCTestCase {
   }
 
   @MainActor
-  func testNavigationStackPushAndBackAndTabViewSelection() {
+  func testNavigationStackPushAndBackAndTabViewSelection() async {
     struct NavDemo: View {
       var body: some View {
         NavigationStack {

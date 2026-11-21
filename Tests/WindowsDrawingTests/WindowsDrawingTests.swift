@@ -5,7 +5,6 @@ import NativeAPI
 import SwiftUIRuntime
 import XCTest
 
-@MainActor
 final class WindowsDrawingTests: XCTestCase {
   func testTransparentNativeButtonKeepsShortcutWithoutCoveringCanvas() throws {
     final class Model: ObservableObject {
@@ -179,7 +178,7 @@ final class WindowsDrawingTests: XCTestCase {
   }
 
   @MainActor
-  func testNSPanelHostsSwiftUIViewWithObservableAndNSViewRepresentable() throws {
+  func testNSPanelHostsSwiftUIViewWithObservableAndNSViewRepresentable() async throws {
     let state = PanelState()
     weak var reportedWindow: CrossAppKit.NSWindow?
     let panel = CrossAppKit.NSPanel(
@@ -208,7 +207,7 @@ final class WindowsDrawingTests: XCTestCase {
   }
 
   @MainActor
-  func testSFSymbolCatalogAndStringLocalizedOnWindows() {
+  func testSFSymbolCatalogAndStringLocalizedOnWindows() async {
     _ = NSHostingView(rootView: SwiftUIRuntime.EmptyView())
     let sampleSymbols = [
       "magnifyingglass", "gearshape", "sparkles", "apple.intelligence",
